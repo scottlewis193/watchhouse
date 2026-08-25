@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { archiveFiles, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, orderedPrefetch, searchResults, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { archiveFiles, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption } from '../src/lib/playback-controls.js';
 
@@ -36,6 +36,38 @@ test('tests NNTP credentials when server replies are split across TCP packets', 
     const { port } = server.address();
     await testNntp({ usenetHost: '127.0.0.1', usenetPort: port, usenetUser: 'user', usenetPass: 'password' });
   } finally { server.close(); }
+});
+
+test('rejects reads after the provider closes between article requests', async () => {
+  const socket = new EventEmitter();
+  socket.write = () => true;
+  socket.end = () => {};
+  const client = new NntpClient(socket);
+  socket.emit('close');
+  await assert.rejects(Promise.race([
+    client.line(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('NNTP read remained pending')), 25))
+  ]), /Provider server closed the connection/);
+});
+
+test('reconnects and retries an article when a direct-stream lane closes', async () => {
+  let connections = 0;
+  const connect = async () => {
+    const connection = ++connections;
+    let reads = 0;
+    return {
+      async body(_id, onLine) {
+        reads++;
+        if (connection === 1 && reads === 2) throw new Error('Provider server closed the connection.');
+        await onLine(connection === 1 ? 'k' : 'l');
+      },
+      close() {}
+    };
+  };
+  const chunks = [];
+  await streamPostedFile({ segments: [{ id: 'one' }, { id: 'two' }] }, { maxConnections: 1 }, chunk => chunks.push(chunk), connect);
+  assert.equal(Buffer.concat(chunks).toString(), 'AB');
+  assert.equal(connections, 2);
 });
 
 test('preserves an explicitly configured API path and query', () => {

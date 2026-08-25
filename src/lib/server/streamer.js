@@ -90,11 +90,11 @@ export async function testNntp(settings) {
   const client = await connectNntp(settings);
   client.close();
 }
-class NntpClient {
-  constructor(socket) { this.socket = socket; this.buffer = Buffer.alloc(0); this.waiters = []; socket.on('data', chunk => this.push(chunk)); socket.on('error', error => this.fail(error)); socket.on('end', () => this.fail(new Error('Provider server closed the connection.'))); }
+export class NntpClient {
+  constructor(socket) { this.socket = socket; this.buffer = Buffer.alloc(0); this.waiters = []; this.error = null; socket.on('data', chunk => this.push(chunk)); socket.on('error', error => this.fail(error)); socket.on('end', () => this.fail(new Error('Provider server closed the connection.'))); socket.on('close', () => this.fail(new Error('Provider server closed the connection.'))); }
   push(chunk) { this.buffer = Buffer.concat([this.buffer, chunk]); while (this.waiters.length) { const end = this.buffer.indexOf('\r\n'); if (end < 0) break; const waiter = this.waiters.shift(); const line = this.buffer.subarray(0, end).toString('latin1'); this.buffer = this.buffer.subarray(end + 2); waiter.resolve(line); } }
-  fail(error) { while (this.waiters.length) this.waiters.shift().reject(error); }
-  line() { const end = this.buffer.indexOf('\r\n'); if (end >= 0) { const line = this.buffer.subarray(0, end).toString('latin1'); this.buffer = this.buffer.subarray(end + 2); return Promise.resolve(line); } return new Promise((resolve, reject) => this.waiters.push({ resolve, reject })); }
+  fail(error) { if (this.error) return; this.error = error; while (this.waiters.length) this.waiters.shift().reject(error); }
+  line() { const end = this.buffer.indexOf('\r\n'); if (end >= 0) { const line = this.buffer.subarray(0, end).toString('latin1'); this.buffer = this.buffer.subarray(end + 2); return Promise.resolve(line); } if (this.error) return Promise.reject(this.error); return new Promise((resolve, reject) => this.waiters.push({ resolve, reject })); }
   async command(value) { this.socket.write(`${value}\r\n`); return this.line(); }
   async has(messageId) { return /^223 /.test(await this.command(`STAT <${messageId.replace(/[<>]/g, '')}>`)); }
   async body(messageId, onLine) { const status = await this.command(`BODY <${messageId.replace(/[<>]/g, '')}>`); if (!/^222 /.test(status)) throw new Error(`Provider server could not retrieve an article (${status}).`); for (;;) { const line = await this.line(); if (line === '.') return; await onLine(line.startsWith('..') ? line.slice(1) : line); } }
@@ -144,18 +144,26 @@ export async function orderedPrefetch(items, concurrency, load, consume) {
     for (const value of values) await consume(value);
   }
 }
-async function streamPostedFile(posted, settings, consume) {
+export async function streamPostedFile(posted, settings, consume, connect = connectNntp) {
   const count = Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, posted.segments.length);
   const clients = [];
   try {
-    const connections = await Promise.allSettled(Array.from({ length: count }, () => connectNntp(settings)));
+    const connections = await Promise.allSettled(Array.from({ length: count }, () => connect(settings)));
     for (const connection of connections) if (connection.status === 'fulfilled') clients.push(connection.value);
     const failed = connections.find(connection => connection.status === 'rejected');
     if (failed) throw failed.reason;
     await orderedPrefetch(posted.segments, count, async (segment, _index, lane) => {
-      const chunks = [];
-      await clients[lane].body(segment.id, line => { if (!line.startsWith('=y')) chunks.push(decodeYenc(line)); });
-      return Buffer.concat(chunks);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const chunks = [];
+        try {
+          await clients[lane].body(segment.id, line => { if (!line.startsWith('=y')) chunks.push(decodeYenc(line)); });
+          return Buffer.concat(chunks);
+        } catch (error) {
+          clients[lane].close();
+          if (attempt) throw error;
+          clients[lane] = await connect(settings);
+        }
+      }
     }, consume);
   } finally { for (const client of clients) client.close(); }
 }
