@@ -5,7 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { archiveFiles, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption } from '../src/lib/playback-controls.js';
+import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption, shouldShowUpNext } from '../src/lib/playback-controls.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
   assert.equal(indexerEndpoint('https://api.nzbgeek.info').href, 'https://api.nzbgeek.info/api');
@@ -213,6 +213,7 @@ test('resumes unfinished playback and marks the final 30 seconds watched', () =>
   assert.equal(shouldMarkWatched(1169, 1200), false);
   assert.equal(shouldMarkWatched(2.981375, 2.981375), false);
   assert.equal(progressDuration('direct', 1200), 0);
+  assert.equal(progressDuration('cached-convert', 1200), 0);
   assert.equal(progressDuration('cached', 1200), 1200);
   assert.equal(resumeStreamUrl('/api/play/job/stream', 'direct', 120), '/api/play/job/stream?start=120');
   assert.equal(resumeStreamUrl('/api/play/job/stream', 'direct', 2), '/api/play/job/stream?start=2');
@@ -228,9 +229,16 @@ test('completed media cannot be overwritten by a trailing playback progress save
   assert.equal(canSavePlaybackProgress('tv:20:s1:e3', 'tv:20:s1:e2'), true);
 });
 
-test('uses the full media runtime for a direct-stream seek timeline', () => {
+test('uses the full media runtime for streams whose browser duration grows', () => {
   assert.deepEqual(playbackTimeline('direct', 30, 2700, 600, 1200), { position: 1230, duration: 2700 });
+  assert.deepEqual(playbackTimeline('cached-convert', 30, 2700, 35), { position: 30, duration: 2700 });
   assert.deepEqual(playbackTimeline('cached', 30, 2700, 600, 1200), { position: 30, duration: 600 });
+});
+
+test('shows Up Next only during the final 30 seconds of the full runtime', () => {
+  assert.equal(shouldShowUpNext(true, 35, 2700), false);
+  assert.equal(shouldShowUpNext(true, 2670, 2700), true);
+  assert.equal(shouldShowUpNext(false, 2670, 2700), false);
 });
 
 test('recovers a direct stream that ends long before the media runtime', () => {

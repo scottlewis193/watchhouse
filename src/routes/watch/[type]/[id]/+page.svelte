@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption } from '$lib/playback-controls.js';
+  import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption, shouldShowUpNext } from '$lib/playback-controls.js';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
 
   const media = { id: Number(page.params.id), type: page.params.type, title: page.url.searchParams.get('title') || '', year: page.url.searchParams.get('year') || '', poster: page.url.searchParams.get('poster') || '' };
@@ -245,7 +245,7 @@
 
   function restorePlaybackProgress() {
     const key = itemKey(currentMedia), entry = progressFor(currentMedia);
-    if (playback?.mode === 'direct') { restoredMediaKey = key; return; }
+    if (hasGrowingStreamDuration(playback?.mode)) { restoredMediaKey = key; return; }
     const duration = progressDuration(playback?.mode, player?.duration) || currentMedia?.durationHint || entry?.duration || 0;
     const position = recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0);
     if (!position || restoredMediaKey === key) return;
@@ -305,8 +305,8 @@
     playerPosition = Number.isFinite(player?.currentTime) ? player.currentTime : 0;
     playerDuration = Number.isFinite(player?.duration) ? player.duration : 0;
     restorePlaybackProgress();
-    const duration = progressDuration(playback?.mode, player?.duration);
-    if (nextMedia && duration && duration - player.currentTime <= 30) showUpNext = true;
+    const timeline = controlTimeline();
+    showUpNext = shouldShowUpNext(autoPlayNext && Boolean(nextMedia), timeline.position, timeline.duration);
     void savePlaybackProgress();
   }
   function handleEnded() {
@@ -314,7 +314,7 @@
     const timeline = controlTimeline();
     if (shouldRecoverPlaybackInterruption(playback?.mode, timeline.position, timeline.duration)) { void fallback(); return; }
     if (autoPlayNext && nextMedia) playNextEpisode();
-    else if (player && shouldMarkWatched(player.currentTime, progressDuration(playback?.mode, player.duration))) void setWatched(currentMedia, true);
+    else if (shouldMarkWatched(timeline.position, timeline.duration)) void setWatched(currentMedia, true);
     else if (player && playback?.mode === 'direct' && currentPlaybackPosition() >= 30) void setWatched(currentMedia, true);
     else void savePlaybackProgress(true);
   }
@@ -327,7 +327,8 @@
   function togglePlayback() { if (!player) return; if (player.paused) void player.play(); else player.pause(); }
   function hidePlayerControls() {
     const focused = document.activeElement;
-    if (playing && (!focused || focused === player || !playerShell?.contains(focused))) controlsVisible = false;
+    const keyboardFocusedControl = focused instanceof HTMLElement && focused !== player && Boolean(playerShell?.contains(focused)) && focused.matches(':focus-visible');
+    if (playing && !keyboardFocusedControl) controlsVisible = false;
   }
   function schedulePlayerControlsHide() { clearTimeout(controlHideTimer); if (playing) controlHideTimer = setTimeout(hidePlayerControls, 2500); }
   function showPlayerControls() { controlsVisible = true; schedulePlayerControlsHide(); }
@@ -349,6 +350,7 @@
   function setVolume(event) { if (!player) return; const volume = Number(event.currentTarget.value); if (!Number.isFinite(volume)) return; player.volume = volume; player.muted = volume === 0; }
   function toggleMute() { if (player) player.muted = !player.muted; }
   async function toggleFullscreen() { if (!playerShell) return; if (document.fullscreenElement) await document.exitFullscreen(); else await playerShell.requestFullscreen(); }
+  function handleFullscreenChange() { fullscreen = Boolean(document.fullscreenElement); showPlayerControls(); }
   function handlePlayerKeydown(event) {
     if (event.target.matches('button, input')) return;
     if (event.key === ' ' || event.key.toLowerCase() === 'k') { event.preventDefault(); togglePlayback(); }
@@ -359,7 +361,7 @@
   }
 </script>
 
-<svelte:window onfullscreenchange={() => { fullscreen = Boolean(document.fullscreenElement); }} />
+<svelte:window onfullscreenchange={handleFullscreenChange} />
 
 <svelte:head><title>{media.title ? `${media.title} · Watchhouse` : 'Watch · Watchhouse'}</title></svelte:head>
 

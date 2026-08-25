@@ -36,17 +36,26 @@ export function canSavePlaybackProgress(mediaKey, completedMediaKey) {
   return Boolean(mediaKey) && mediaKey !== completedMediaKey;
 }
 
+export function hasGrowingStreamDuration(playbackMode) {
+  return playbackMode === 'direct' || playbackMode === 'cached-convert';
+}
+
 export function progressDuration(playbackMode, duration) {
-  return playbackMode !== 'direct' && Number.isFinite(duration) && duration > 0 ? duration : 0;
+  return !hasGrowingStreamDuration(playbackMode) && Number.isFinite(duration) && duration > 0 ? duration : 0;
 }
 
 export function playbackTimeline(playbackMode, position, mediaDuration, streamDuration, streamOffset = 0) {
   const relativePosition = Number.isFinite(position) && position > 0 ? position : 0;
   const offset = Number.isFinite(streamOffset) && streamOffset > 0 ? streamOffset : 0;
   const videoDuration = Number.isFinite(streamDuration) && streamDuration > 0 ? streamDuration : 0;
-  if (playbackMode !== 'direct') return { position: Math.min(relativePosition, videoDuration || relativePosition), duration: videoDuration };
-  const duration = Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : offset + videoDuration;
-  return { position: Math.min(offset + relativePosition, duration || offset + relativePosition), duration };
+  if (!hasGrowingStreamDuration(playbackMode)) return { position: Math.min(relativePosition, videoDuration || relativePosition), duration: videoDuration };
+  const positionOffset = playbackMode === 'direct' ? offset : 0;
+  const duration = Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : positionOffset + videoDuration;
+  return { position: Math.min(positionOffset + relativePosition, duration || positionOffset + relativePosition), duration };
+}
+
+export function shouldShowUpNext(eligible, position, duration, threshold = 30) {
+  return Boolean(eligible) && Number.isFinite(position) && position >= 0 && Number.isFinite(duration) && duration > threshold && duration - position <= threshold;
 }
 
 export function resumeStreamUrl(url, playbackMode, position) {
