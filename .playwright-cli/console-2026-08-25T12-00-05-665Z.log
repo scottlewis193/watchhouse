@@ -1,0 +1,73 @@
+[    1917ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:5173/favicon.ico:0
+[    8214ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/state/progress:0
+[    8215ms] TypeError: Failed to fetch
+    at window.fetch (http://127.0.0.1:5173/_app/immutable/chunks/BmFmd51S.js:1:1510)
+    at s (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:693)
+    at Object.put (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:835)
+    at re (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:10403)
+    at HTMLVideoElement.gt (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:12104)
+    at http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:330
+    at ne (http://127.0.0.1:5173/_app/immutable/chunks/DBpuS4Rk.js:1:7605)
+    at HTMLVideoElement.n (http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:321)
+[   18307ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/state/progress:0
+[   18307ms] TypeError: Failed to fetch
+    at window.fetch (http://127.0.0.1:5173/_app/immutable/chunks/BmFmd51S.js:1:1510)
+    at s (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:693)
+    at Object.put (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:835)
+    at re (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:10403)
+    at HTMLVideoElement.gt (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:12104)
+    at http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:330
+    at ne (http://127.0.0.1:5173/_app/immutable/chunks/DBpuS4Rk.js:1:7605)
+    at HTMLVideoElement.n (http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:321)
+[   23206ms] [ERROR] Failed to load resource: net::ERR_INCOMPLETE_CHUNKED_ENCODING @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   23507ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   23858ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   24259ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   24710ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   25212ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   25763ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   26364ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   27015ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   27716ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   28401ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/state/progress:0
+[   28401ms] TypeError: Failed to fetch
+    at window.fetch (http://127.0.0.1:5173/_app/immutable/chunks/BmFmd51S.js:1:1510)
+    at s (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:693)
+    at Object.put (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:835)
+    at re (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:10403)
+    at HTMLVideoElement.gt (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:12104)
+    at http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:330
+    at ne (http://127.0.0.1:5173/_app/immutable/chunks/DBpuS4Rk.js:1:7605)
+    at HTMLVideoElement.n (http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:321)
+[   28467ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   29268ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   30119ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   31020ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   31971ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   32972ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   34023ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   35124ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   36275ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   37476ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   38728ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   40029ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   41380ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   42781ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   44232ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   45733ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   47284ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   48885ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   50537ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   52238ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   53989ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/stream:0
+[   53991ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/play/2a4f9552-3539-4636-b827-c224ba357e27/fallback:0
+[   53992ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:5173/api/state/progress:0
+[   53992ms] TypeError: Failed to fetch
+    at window.fetch (http://127.0.0.1:5173/_app/immutable/chunks/BmFmd51S.js:1:1510)
+    at s (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:693)
+    at Object.put (http://127.0.0.1:5173/_app/immutable/chunks/Blhs04nZ.js:2:835)
+    at re (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:10403)
+    at HTMLVideoElement.gt (http://127.0.0.1:5173/_app/immutable/nodes/5.CJYcT1Fi.js:1:12104)
+    at http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:330
+    at ne (http://127.0.0.1:5173/_app/immutable/chunks/DBpuS4Rk.js:1:7605)
+    at HTMLVideoElement.n (http://127.0.0.1:5173/_app/immutable/chunks/BQuedgLQ.js:1:321)

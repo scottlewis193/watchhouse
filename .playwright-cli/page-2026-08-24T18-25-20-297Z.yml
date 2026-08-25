@@ -1,0 +1,89 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: ▶
+      - text: Usenet Streamer
+    - generic [ref=e6]: Configuration saved
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - heading [level=1] [ref=e11]:
+        - text: Find something
+        - emphasis [ref=e12]: great
+        - text: to watch.
+      - paragraph [ref=e13]: Search your configured NZB indexer for movies and television through your local Usenet server.
+      - generic [ref=e14]:
+        - generic [ref=e15]: ⌕
+        - searchbox "Search movies and shows" [ref=e16]
+        - button "Search" [ref=e17] [cursor=pointer]
+    - region [ref=e18]:
+      - generic [ref=e19]:
+        - heading "Discover" [level=2] [ref=e20]
+        - generic [ref=e21]: 6 titles
+      - generic [ref=e22]:
+        - article [ref=e23] [cursor=pointer]:
+          - generic [ref=e24]: Movie
+          - heading "The Signal" [level=3] [ref=e25]
+          - paragraph [ref=e26]: 2024 · Movie
+        - article [ref=e27] [cursor=pointer]:
+          - generic [ref=e28]: Series
+          - heading "Northern Lights" [level=3] [ref=e29]
+          - paragraph [ref=e30]: 2023 · Series
+        - article [ref=e31] [cursor=pointer]:
+          - generic [ref=e32]: Movie
+          - heading "After Midnight" [level=3] [ref=e33]
+          - paragraph [ref=e34]: 2024 · Movie
+        - article [ref=e35] [cursor=pointer]:
+          - generic [ref=e36]: Series
+          - heading "The Archive" [level=3] [ref=e37]
+          - paragraph [ref=e38]: 2022 · Series
+        - article [ref=e39] [cursor=pointer]:
+          - generic [ref=e40]: Movie
+          - heading "Open Water" [level=3] [ref=e41]
+          - paragraph [ref=e42]: 2023 · Movie
+        - article [ref=e43] [cursor=pointer]:
+          - generic [ref=e44]: Series
+          - heading "Static Dreams" [level=3] [ref=e45]
+          - paragraph [ref=e46]: 2024 · Series
+    - region [ref=e47]:
+      - generic [ref=e48]:
+        - generic [ref=e49]: ⚙
+        - generic [ref=e50]:
+          - heading "Connection settings" [level=2] [ref=e51]
+          - paragraph [ref=e52]: Credentials stay on this local server and are never sent to the browser after saving.
+      - generic [ref=e53]:
+        - generic [ref=e54]:
+          - generic [ref=e55]:
+            - heading "NZB indexer" [level=3] [ref=e56]
+            - generic [ref=e57]:
+              - generic [ref=e58]:
+                - generic [ref=e59]: Indexer URL
+                - textbox "Indexer URL" [ref=e60]:
+                  - /placeholder: https://api.example-indexer.com
+                  - text: https://api.nzbgeek.info
+              - generic [ref=e61]:
+                - generic [ref=e62]: API key
+                - textbox "API key" [ref=e63]:
+                  - /placeholder: Your indexer API key
+          - generic [ref=e64]:
+            - heading "Usenet provider" [level=3] [ref=e65]
+            - generic [ref=e66]:
+              - generic [ref=e67]:
+                - generic [ref=e68]: Server host
+                - textbox "Server host" [ref=e69]:
+                  - /placeholder: news.example.com
+                  - text: news.eweka.nl
+              - generic [ref=e70]:
+                - generic [ref=e71]: Port
+                - spinbutton "Port" [ref=e72]: "563"
+              - generic [ref=e73]:
+                - generic [ref=e74]: Username
+                - textbox "Username" [ref=e75]: b4ad63220bcb5d05
+              - generic [ref=e76]:
+                - generic [ref=e77]: Password
+                - textbox "Password" [ref=e78]
+        - generic [ref=e79]:
+          - generic [ref=e80]: Settings saved
+          - button "Test Usenet" [ref=e81] [cursor=pointer]
+          - button "Clear" [ref=e82] [cursor=pointer]
+          - button "Save settings" [ref=e83] [cursor=pointer]
+  - contentinfo [ref=e84]: Usenet Streamer · A local media discovery interface

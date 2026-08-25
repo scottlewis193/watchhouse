@@ -1,0 +1,44 @@
+- generic [ref=f4e3]:
+  - banner [ref=f4e4]:
+    - generic [ref=f4e5]:
+      - link "PH Picture House" [ref=f4e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=f4e7]: PH
+        - text: Picture House
+      - generic [ref=f4e8]:
+        - searchbox "Search movies and shows" [ref=f4e9]
+        - button "Submit search" [ref=f4e10] [cursor=pointer]: Search
+      - navigation "Main navigation" [ref=f4e11]:
+        - link "Library" [ref=f4e12] [cursor=pointer]:
+          - /url: /library
+        - link "Settings" [ref=f4e13] [cursor=pointer]:
+          - /url: /settings
+  - main [ref=f4e14]:
+    - generic [ref=f4e15]:
+      - link "← Back to discover" [ref=f4e16] [cursor=pointer]:
+        - /url: /
+      - generic [ref=f4e17]:
+        - generic [ref=f4e18]:
+          - paragraph [ref=f4e19]: SERIES · 2008
+          - heading "Breaking Bad" [level=1] [ref=f4e20]
+        - generic [ref=f4e21]:
+          - button "+ Add to library" [ref=f4e22] [cursor=pointer]
+          - button "Mark watched" [disabled]
+      - generic [ref=f4e23]:
+        - generic [ref=f4e26]:
+          - paragraph [ref=f4e27]: Choose an episode to begin.
+          - progressbar [ref=f4e28]
+        - complementary [ref=f4e29]:
+          - generic [ref=f4e30]:
+            - generic [ref=f4e31]:
+              - heading "Episodes" [level=2] [ref=f4e32]
+              - paragraph [ref=f4e33]: Select an episode to start watching
+            - generic [ref=f4e34]:
+              - generic [ref=f4e35]: Season
+              - combobox "Season" [ref=f4e36]
+  - contentinfo [ref=f4e37]:
+    - paragraph [ref=f4e38]: PICTURE HOUSE · PRIVATE MEDIA LIBRARY
+    - link "TMDB This product uses the TMDB API but is not endorsed or certified by TMDB." [ref=f4e39] [cursor=pointer]:
+      - /url: https://www.themoviedb.org
+      - img "TMDB" [ref=f4e40]
+      - generic [ref=f4e41]: This product uses the TMDB API but is not endorsed or certified by TMDB.

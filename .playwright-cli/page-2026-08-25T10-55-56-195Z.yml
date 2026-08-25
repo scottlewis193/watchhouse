@@ -1,0 +1,24 @@
+- generic [ref=f2e3]:
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - link "PH Picture House" [ref=f2e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=f2e7]: PH
+        - text: Picture House
+      - link "Connection settings" [ref=f2e9] [cursor=pointer]:
+        - /url: /settings
+  - main [ref=f2e10]:
+    - generic [ref=f2e11]:
+      - paragraph [ref=f2e12]: DISCOVER
+      - heading "Choose the next thing to watch." [level=1] [ref=f2e13]
+      - paragraph [ref=f2e14]: Search films and series, then start watching with a few simple steps.
+      - generic [ref=f2e15]:
+        - searchbox "Search movies and shows" [ref=f2e16]
+        - button "Search" [ref=f2e17] [cursor=pointer]
+    - region "Browse films and series" [ref=f2e18]
+  - contentinfo [ref=f2e82]:
+    - paragraph [ref=f2e83]: PICTURE HOUSE · PRIVATE MEDIA LIBRARY
+    - link "TMDB This product uses the TMDB API but is not endorsed or certified by TMDB." [ref=f2e84] [cursor=pointer]:
+      - /url: https://www.themoviedb.org
+      - img "TMDB" [ref=f2e85]
+      - generic [ref=f2e86]: This product uses the TMDB API but is not endorsed or certified by TMDB.

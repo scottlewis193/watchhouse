@@ -1,0 +1,4 @@
+data/settings.json
+data/media-state.json
+data/cache/
+node_modules/

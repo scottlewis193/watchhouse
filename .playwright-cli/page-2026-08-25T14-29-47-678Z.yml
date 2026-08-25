@@ -1,0 +1,21 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - link "WH Watchhouse" [ref=f1e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=f1e7]: WH
+        - text: Watchhouse
+      - searchbox "Search movies and shows" [ref=f1e9]
+      - navigation "Main navigation" [ref=f1e10]:
+        - link "Library" [ref=f1e11] [cursor=pointer]:
+          - /url: /library
+        - link "Settings" [ref=f1e12] [cursor=pointer]:
+          - /url: /settings
+  - main [ref=f1e13]:
+    - region "Browse films and series" [ref=f1e14]
+  - contentinfo [ref=f1e78]:
+    - paragraph [ref=f1e79]: WATCHHOUSE · PRIVATE MEDIA LIBRARY
+    - link "TMDB This product uses the TMDB API but is not endorsed or certified by TMDB." [ref=f1e80] [cursor=pointer]:
+      - /url: https://www.themoviedb.org
+      - img "TMDB" [ref=f1e81]
+      - generic [ref=f1e82]: This product uses the TMDB API but is not endorsed or certified by TMDB.

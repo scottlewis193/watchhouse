@@ -1,0 +1,67 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: ▶
+      - text: Usenet Streamer
+    - generic [ref=e6]: Configuration saved
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - heading [level=1] [ref=e11]:
+        - text: Find something
+        - emphasis [ref=e12]: great
+        - text: to watch.
+      - paragraph [ref=e13]: Search your configured NZB indexer for movies and television through your local Usenet server.
+      - generic [ref=e14]:
+        - generic [ref=e15]: ⌕
+        - searchbox "Search movies and shows" [ref=e16]
+        - button "Search" [ref=e17] [cursor=pointer]
+      - group "Result type" [ref=e18]:
+        - button "Movies" [ref=e19] [cursor=pointer]
+        - button "Shows" [ref=e20] [cursor=pointer]
+    - region [ref=e21]:
+      - generic [ref=e22]:
+        - heading "Results" [level=2] [ref=e23]
+        - generic [ref=e24]: Choose a type and search
+    - region [ref=e25]:
+      - generic [ref=e26]:
+        - generic [ref=e27]: ⚙
+        - generic [ref=e28]:
+          - heading "Connection settings" [level=2] [ref=e29]
+          - paragraph [ref=e30]: Credentials stay on this local server and are never sent to the browser after saving.
+      - generic [ref=e31]:
+        - generic [ref=e32]:
+          - generic [ref=e33]:
+            - heading "NZB indexer" [level=3] [ref=e34]
+            - generic [ref=e35]:
+              - generic [ref=e36]:
+                - generic [ref=e37]: Indexer URL
+                - textbox "Indexer URL" [ref=e38]:
+                  - /placeholder: https://api.example-indexer.com
+                  - text: https://api.nzbgeek.info
+              - generic [ref=e39]:
+                - generic [ref=e40]: API key
+                - textbox "API key" [ref=e41]:
+                  - /placeholder: Your indexer API key
+          - generic [ref=e42]:
+            - heading "Usenet provider" [level=3] [ref=e43]
+            - generic [ref=e44]:
+              - generic [ref=e45]:
+                - generic [ref=e46]: Server host
+                - textbox "Server host" [ref=e47]:
+                  - /placeholder: news.example.com
+                  - text: news.eweka.nl
+              - generic [ref=e48]:
+                - generic [ref=e49]: Port
+                - spinbutton "Port" [ref=e50]: "563"
+              - generic [ref=e51]:
+                - generic [ref=e52]: Username
+                - textbox "Username" [ref=e53]: b4ad63220bcb5d05
+              - generic [ref=e54]:
+                - generic [ref=e55]: Password
+                - textbox "Password" [ref=e56]
+        - generic [ref=e57]:
+          - generic [ref=e58]: Settings saved
+          - button "Test Usenet" [ref=e59] [cursor=pointer]
+          - button "Clear" [ref=e60] [cursor=pointer]
+          - button "Save settings" [ref=e61] [cursor=pointer]
+  - contentinfo [ref=e62]: Usenet Streamer · A local media discovery interface

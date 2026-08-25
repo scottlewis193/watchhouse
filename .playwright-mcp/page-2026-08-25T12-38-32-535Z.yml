@@ -1,0 +1,23 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - link "PH Picture House" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e7]: PH
+        - text: Picture House
+      - generic [ref=e8]:
+        - searchbox "Search movies and shows" [ref=e9]
+        - button "Submit search" [ref=e10] [cursor=pointer]: Search
+      - navigation "Main navigation" [ref=e11]:
+        - link "Library" [ref=e12] [cursor=pointer]:
+          - /url: /library
+        - link "Settings" [ref=e13] [cursor=pointer]:
+          - /url: /settings
+  - main [ref=e14]:
+    - region "Browse films and series" [ref=e15]
+  - contentinfo [ref=e79]:
+    - paragraph [ref=e80]: PICTURE HOUSE · PRIVATE MEDIA LIBRARY
+    - link "TMDB This product uses the TMDB API but is not endorsed or certified by TMDB." [ref=e81] [cursor=pointer]:
+      - /url: https://www.themoviedb.org
+      - img "TMDB" [ref=e82]
+      - generic [ref=e83]: This product uses the TMDB API but is not endorsed or certified by TMDB.

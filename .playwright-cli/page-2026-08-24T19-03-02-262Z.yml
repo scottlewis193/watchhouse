@@ -1,0 +1,70 @@
+- generic [ref=e2]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: ▶
+      - text: Usenet Streamer
+    - generic [ref=e6]: Setup required
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - heading [level=1] [ref=e11]:
+        - text: Find something
+        - emphasis [ref=e12]: great
+        - text: to watch.
+      - paragraph [ref=e13]: Search a clean movie and TV catalogue. We’ll find and prepare the best available Usenet release automatically.
+      - generic [ref=e14]:
+        - generic [ref=e15]: ⌕
+        - searchbox "Search movies and shows" [ref=e16]
+        - button "Search" [ref=e17] [cursor=pointer]
+    - region [ref=e18]:
+      - generic [ref=e19]:
+        - heading "Movies & shows" [level=2] [ref=e20]
+        - generic [ref=e21]: Search to begin
+    - region [ref=e22]:
+      - generic [ref=e23]:
+        - generic [ref=e24]: ⚙
+        - generic [ref=e25]:
+          - heading "Connection settings" [level=2] [ref=e26]
+          - paragraph [ref=e27]: Credentials stay on this local server and are never sent to the browser after saving.
+      - generic [ref=e28]:
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - heading "TMDB catalogue" [level=3] [ref=e31]
+            - generic [ref=e33]:
+              - generic [ref=e34]: Read Access Token
+              - textbox "Read Access Token" [ref=e35]:
+                - /placeholder: TMDB API Read Access Token
+          - generic [ref=e36]:
+            - heading "NZB indexer" [level=3] [ref=e37]
+            - generic [ref=e38]:
+              - generic [ref=e39]:
+                - generic [ref=e40]: Indexer URL
+                - textbox "Indexer URL" [ref=e41]:
+                  - /placeholder: https://api.example-indexer.com
+                  - text: https://api.nzbgeek.info
+              - generic [ref=e42]:
+                - generic [ref=e43]: API key
+                - textbox "API key" [ref=e44]:
+                  - /placeholder: Your indexer API key
+          - generic [ref=e45]:
+            - heading "Usenet provider" [level=3] [ref=e46]
+            - generic [ref=e47]:
+              - generic [ref=e48]:
+                - generic [ref=e49]: Server host
+                - textbox "Server host" [ref=e50]:
+                  - /placeholder: news.example.com
+                  - text: news.eweka.nl
+              - generic [ref=e51]:
+                - generic [ref=e52]: Port
+                - spinbutton "Port" [ref=e53]: "563"
+              - generic [ref=e54]:
+                - generic [ref=e55]: Username
+                - textbox "Username" [ref=e56]: b4ad63220bcb5d05
+              - generic [ref=e57]:
+                - generic [ref=e58]: Password
+                - textbox "Password" [ref=e59]
+        - generic [ref=e60]:
+          - generic [ref=e61]: Settings saved
+          - button "Test Usenet" [ref=e62] [cursor=pointer]
+          - button "Clear" [ref=e63] [cursor=pointer]
+          - button "Save settings" [ref=e64] [cursor=pointer]
+  - contentinfo [ref=e65]: Usenet Streamer · A local media discovery interface

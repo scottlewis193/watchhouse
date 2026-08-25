@@ -1,0 +1,703 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - link "PH Picture House" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e7]: PH
+        - text: Picture House
+      - generic [ref=e8]:
+        - searchbox "Search movies and shows" [ref=e9]
+        - button "Submit search" [ref=e10] [cursor=pointer]: Search
+      - navigation "Main navigation" [ref=e11]:
+        - link "Library" [ref=e12] [cursor=pointer]:
+          - /url: /library
+        - link "Settings" [ref=e13] [cursor=pointer]:
+          - /url: /settings
+  - main [ref=e14]:
+    - region "Browse films and series" [ref=e15]:
+      - region [ref=e16]:
+        - heading "Popular movies" [level=2] [ref=e18]
+        - generic [ref=e19]:
+          - button "Previous Popular movies" [disabled]:
+            - generic: ‹
+          - generic [ref=e20]:
+            - 'article "Spider-Man: Brand New Day, 2026" [ref=e21]':
+              - 'link "Spider-Man: Brand New Day, 2026" [ref=e22] [cursor=pointer]':
+                - /url: /watch/movie/969681?title=Spider-Man%3A+Brand+New+Day&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FghF1JYv7P5BgWHYfq9dqhqqNfz8.jpg
+                - figure [ref=e23]
+              - 'button "Add Spider-Man: Brand New Day to library" [ref=e25]': +
+            - article "The Odyssey, 2026" [ref=e26]:
+              - link "The Odyssey, 2026" [ref=e27] [cursor=pointer]:
+                - /url: /watch/movie/1368337?title=The+Odyssey&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F5rhTDKUhPYvpdQIijFIs5VoWsON.jpg
+                - figure [ref=e28]
+              - button "Add The Odyssey to library" [ref=e30]: +
+            - article "Mutiny, 2026" [ref=e31]:
+              - link "Mutiny, 2026" [ref=e32] [cursor=pointer]:
+                - /url: /watch/movie/1288445?title=Mutiny&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FaAnTt6KpmbbHbd6xH3FQFlppZjc.jpg
+                - figure [ref=e33]
+              - button "Add Mutiny to library" [ref=e35]: +
+            - article "Rage of Stars, 2026" [ref=e36]:
+              - link "Rage of Stars, 2026" [ref=e37] [cursor=pointer]:
+                - /url: /watch/movie/1323244?title=Rage+of+Stars&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FoLld47ZT1I3iecM3OWhIphohQUJ.jpg
+                - figure [ref=e38]
+              - button "Add Rage of Stars to library" [ref=e40]: +
+            - article "Toy Story 5, 2026" [ref=e41]:
+              - link "Toy Story 5, 2026" [ref=e42] [cursor=pointer]:
+                - /url: /watch/movie/1084244?title=Toy+Story+5&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FsfQtVlIHljToOwYjhe21KPGzZWK.jpg
+                - figure [ref=e43]
+              - button "Add Toy Story 5 to library" [ref=e45]: +
+            - article "Obsession, 2026" [ref=e46]:
+              - link "Obsession, 2026" [ref=e47] [cursor=pointer]:
+                - /url: /watch/movie/1339713?title=Obsession&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FbRwnj8WEKBCvmfeUNOukJPwB43K.jpg
+                - figure [ref=e48]
+              - button "Add Obsession to library" [ref=e50]: +
+            - 'article "Spider-Man: No Way Home, 2021" [ref=e51]':
+              - 'link "Spider-Man: No Way Home, 2021" [ref=e52] [cursor=pointer]':
+                - /url: /watch/movie/634649?title=Spider-Man%3A+No+Way+Home&year=2021&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F1g0dhYtq4irTY1GPXvft6k4YLjm.jpg
+                - figure [ref=e53]
+              - 'button "Add Spider-Man: No Way Home to library" [ref=e55]': +
+            - article "Facing El Chapo, 2026" [ref=e56]:
+              - link "Facing El Chapo, 2026" [ref=e57] [cursor=pointer]:
+                - /url: /watch/movie/1621552?title=Facing+El+Chapo&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Falpf5v4UqSFawPmG9RX03Or4BDk.jpg
+                - figure [ref=e58]
+              - button "Add Facing El Chapo to library" [ref=e60]: +
+            - article "Moana, 2026" [ref=e61]:
+              - link "Moana, 2026" [ref=e62] [cursor=pointer]:
+                - /url: /watch/movie/1108427?title=Moana&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FzKVgiv5qHCvCLT4A2ymJi5QeXDH.jpg
+                - figure [ref=e63]
+              - button "Add Moana to library" [ref=e65]: +
+            - article "Minions & Monsters, 2026" [ref=e66]:
+              - link "Minions & Monsters, 2026" [ref=e67] [cursor=pointer]:
+                - /url: /watch/movie/1315772?title=Minions+%26+Monsters&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F4LwvU9SZc8QQzW1X1FAPhNbXnEU.jpg
+                - figure [ref=e68]
+              - button "Add Minions & Monsters to library" [ref=e70]: +
+            - article "Colony, 2026" [ref=e71]:
+              - link "Colony, 2026" [ref=e72] [cursor=pointer]:
+                - /url: /watch/movie/1375646?title=Colony&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FtN799oUR0f1gUKDYdMNrDaY7I51.jpg
+                - figure [ref=e73]
+              - button "Add Colony to library" [ref=e75]: +
+            - article "Hotel Desire, 2011" [ref=e76]:
+              - link "Hotel Desire, 2011" [ref=e77] [cursor=pointer]:
+                - /url: /watch/movie/82023?title=Hotel+Desire&year=2011&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F47XRWH95ATv4szxdWHl723guWXP.jpg
+                - figure [ref=e78]
+              - button "Add Hotel Desire to library" [ref=e80]: +
+          - button "Next Popular movies" [ref=e81]:
+            - generic [ref=e82]: ›
+      - region [ref=e83]:
+        - heading "Popular shows" [level=2] [ref=e85]
+        - generic [ref=e86]:
+          - button "Previous Popular shows" [disabled]:
+            - generic: ‹
+          - generic [ref=e87]:
+            - article "Reacher, 2022" [ref=e88]:
+              - link "Reacher, 2022" [ref=e89] [cursor=pointer]:
+                - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg
+                - figure [ref=e90]
+              - button "Add Reacher to library" [ref=e92]: +
+            - article "The Mentalist, 2008" [ref=e93]:
+              - link "The Mentalist, 2008" [ref=e94] [cursor=pointer]:
+                - /url: /watch/tv/5920?title=The+Mentalist&year=2008&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FacYXu4KaDj1NIkMgObnhe4C4a0T.jpg
+                - figure [ref=e95]
+              - button "Add The Mentalist to library" [ref=e97]: +
+            - article "Tagesschau, 1952" [ref=e98]:
+              - link "Tagesschau, 1952" [ref=e99] [cursor=pointer]:
+                - /url: /watch/tv/94722?title=Tagesschau&year=1952&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F7dFZJ2ZJJdcmkp05B9NWlqTJ5tq.jpg
+                - figure [ref=e100]
+              - button "Add Tagesschau to library" [ref=e102]: +
+            - article "Lioness, 2023" [ref=e103]:
+              - link "Lioness, 2023" [ref=e104] [cursor=pointer]:
+                - /url: /watch/tv/113962?title=Lioness&year=2023&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FrzpHPSEgPTpRs8EHbygwsOw7jC0.jpg
+                - figure [ref=e105]
+              - button "Add Lioness to library" [ref=e107]: +
+            - article "The Tonight Show Starring Jimmy Fallon, 2014" [ref=e108]:
+              - link "The Tonight Show Starring Jimmy Fallon, 2014" [ref=e109] [cursor=pointer]:
+                - /url: /watch/tv/59941?title=The+Tonight+Show+Starring+Jimmy+Fallon&year=2014&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F1N4o5PmmqhlVDrcdJ2RlCFWbLGX.jpg
+                - figure [ref=e110]
+              - button "Add The Tonight Show Starring Jimmy Fallon to library" [ref=e112]: +
+            - article "Lanterns, 2026" [ref=e113]:
+              - link "Lanterns, 2026" [ref=e114] [cursor=pointer]:
+                - /url: /watch/tv/95350?title=Lanterns&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgpC7h43xPMEV3goYMQShfJbTtLq.jpg
+                - figure [ref=e115]
+              - button "Add Lanterns to library" [ref=e117]: +
+            - article "Paradise Hotel, 2005" [ref=e118]:
+              - link "Paradise Hotel, 2005" [ref=e119] [cursor=pointer]:
+                - /url: /watch/tv/51025?title=Paradise+Hotel&year=2005&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FycSBcACecVR0zSnP2ZF83k5f7he.jpg
+                - figure [ref=e120]
+              - button "Add Paradise Hotel to library" [ref=e122]: +
+            - article "Family Guy, 1999" [ref=e123]:
+              - link "Family Guy, 1999" [ref=e124] [cursor=pointer]:
+                - /url: /watch/tv/1434?title=Family+Guy&year=1999&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F3PFsEuAiyLkWsP4GG6dIV37Q6gu.jpg
+                - figure [ref=e125]
+              - button "Add Family Guy to library" [ref=e127]: +
+            - article "Silo, 2023" [ref=e128]:
+              - link "Silo, 2023" [ref=e129] [cursor=pointer]:
+                - /url: /watch/tv/125988?title=Silo&year=2023&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgMYZZvnkVNTqSVnVCphWbPXwWwb.jpg
+                - figure [ref=e130]
+              - button "Add Silo to library" [ref=e132]: +
+            - article "Outer Banks, 2020" [ref=e133]:
+              - link "Outer Banks, 2020" [ref=e134] [cursor=pointer]:
+                - /url: /watch/tv/100757?title=Outer+Banks&year=2020&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FovDgO2LPfwdVRfvScAqo9aMiIW.jpg
+                - figure [ref=e135]
+              - button "Add Outer Banks to library" [ref=e137]: +
+            - article "Watch What Happens Live with Andy Cohen, 2009" [ref=e138]:
+              - link "Watch What Happens Live with Andy Cohen, 2009" [ref=e139] [cursor=pointer]:
+                - /url: /watch/tv/22980?title=Watch+What+Happens+Live+with+Andy+Cohen&year=2009&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FonSD9UXfJwrMXWhq7UY7hGF2S1h.jpg
+                - figure [ref=e140]
+              - button "Add Watch What Happens Live with Andy Cohen to library" [ref=e142]: +
+            - 'article "Law & Order: Special Victims Unit, 1999" [ref=e143]':
+              - 'link "Law & Order: Special Victims Unit, 1999" [ref=e144] [cursor=pointer]':
+                - /url: /watch/tv/2734?title=Law+%26+Order%3A+Special+Victims+Unit&year=1999&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FiofokHZoUB4Qhik4PflvJl8TT6a.jpg
+                - figure [ref=e145]
+              - 'button "Add Law & Order: Special Victims Unit to library" [ref=e147]': +
+          - button "Next Popular shows" [ref=e148]:
+            - generic [ref=e149]: ›
+      - region [ref=e150]:
+        - heading "Action movies" [level=2] [ref=e152]
+        - generic [ref=e153]:
+          - button "Previous Action movies" [disabled]:
+            - generic: ‹
+          - generic [ref=e154]:
+            - 'article "Spider-Man: Brand New Day, 2026" [ref=e155]':
+              - 'link "Spider-Man: Brand New Day, 2026" [ref=e156] [cursor=pointer]':
+                - /url: /watch/movie/969681?title=Spider-Man%3A+Brand+New+Day&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FghF1JYv7P5BgWHYfq9dqhqqNfz8.jpg
+                - figure [ref=e157]
+              - 'button "Add Spider-Man: Brand New Day to library" [ref=e159]': +
+            - article "The Odyssey, 2026" [ref=e160]:
+              - link "The Odyssey, 2026" [ref=e161] [cursor=pointer]:
+                - /url: /watch/movie/1368337?title=The+Odyssey&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F5rhTDKUhPYvpdQIijFIs5VoWsON.jpg
+                - figure [ref=e162]
+              - button "Add The Odyssey to library" [ref=e164]: +
+            - article "Mutiny, 2026" [ref=e165]:
+              - link "Mutiny, 2026" [ref=e166] [cursor=pointer]:
+                - /url: /watch/movie/1288445?title=Mutiny&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FaAnTt6KpmbbHbd6xH3FQFlppZjc.jpg
+                - figure [ref=e167]
+              - button "Add Mutiny to library" [ref=e169]: +
+            - article "Rage of Stars, 2026" [ref=e170]:
+              - link "Rage of Stars, 2026" [ref=e171] [cursor=pointer]:
+                - /url: /watch/movie/1323244?title=Rage+of+Stars&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FoLld47ZT1I3iecM3OWhIphohQUJ.jpg
+                - figure [ref=e172]
+              - button "Add Rage of Stars to library" [ref=e174]: +
+            - 'article "Spider-Man: No Way Home, 2021" [ref=e175]':
+              - 'link "Spider-Man: No Way Home, 2021" [ref=e176] [cursor=pointer]':
+                - /url: /watch/movie/634649?title=Spider-Man%3A+No+Way+Home&year=2021&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F1g0dhYtq4irTY1GPXvft6k4YLjm.jpg
+                - figure [ref=e177]
+              - 'button "Add Spider-Man: No Way Home to library" [ref=e179]': +
+            - article "Facing El Chapo, 2026" [ref=e180]:
+              - link "Facing El Chapo, 2026" [ref=e181] [cursor=pointer]:
+                - /url: /watch/movie/1621552?title=Facing+El+Chapo&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Falpf5v4UqSFawPmG9RX03Or4BDk.jpg
+                - figure [ref=e182]
+              - button "Add Facing El Chapo to library" [ref=e184]: +
+            - article "Colony, 2026" [ref=e185]:
+              - link "Colony, 2026" [ref=e186] [cursor=pointer]:
+                - /url: /watch/movie/1375646?title=Colony&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FtN799oUR0f1gUKDYdMNrDaY7I51.jpg
+                - figure [ref=e187]
+              - button "Add Colony to library" [ref=e189]: +
+            - article "The Death of Robin Hood, 2026" [ref=e190]:
+              - link "The Death of Robin Hood, 2026" [ref=e191] [cursor=pointer]:
+                - /url: /watch/movie/1284465?title=The+Death+of+Robin+Hood&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F92Tsfx7SFafOqWsotvrlJbHyehd.jpg
+                - figure [ref=e192]
+              - button "Add The Death of Robin Hood to library" [ref=e194]: +
+            - article "Supergirl, 2026" [ref=e195]:
+              - link "Supergirl, 2026" [ref=e196] [cursor=pointer]:
+                - /url: /watch/movie/1081003?title=Supergirl&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F1QCWdqzTfh2x9UylVpspIU6QTuM.jpg
+                - figure [ref=e197]
+              - button "Add Supergirl to library" [ref=e199]: +
+            - article "Masters of the Universe, 2026" [ref=e200]:
+              - link "Masters of the Universe, 2026" [ref=e201] [cursor=pointer]:
+                - /url: /watch/movie/454639?title=Masters+of+the+Universe&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FoRuyGUHdoaQxWP3SDfafGkStxTC.jpg
+                - figure [ref=e202]
+              - button "Add Masters of the Universe to library" [ref=e204]: +
+            - 'article "Jackass: Best and Last, 2026" [ref=e205]':
+              - 'link "Jackass: Best and Last, 2026" [ref=e206] [cursor=pointer]':
+                - /url: /watch/movie/1612018?title=Jackass%3A+Best+and+Last&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FtfgccePxnswMqhmtxafliLlcCVR.jpg
+                - figure [ref=e207]
+              - 'button "Add Jackass: Best and Last to library" [ref=e209]': +
+            - article "Lucky Strike, 2026" [ref=e210]:
+              - link "Lucky Strike, 2026" [ref=e211] [cursor=pointer]:
+                - /url: /watch/movie/1594914?title=Lucky+Strike&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F7AEBdyGYXumXWmMFeynE8227KeZ.jpg
+                - figure [ref=e212]
+              - button "Add Lucky Strike to library" [ref=e214]: +
+          - button "Next Action movies" [ref=e215]:
+            - generic [ref=e216]: ›
+      - region [ref=e217]:
+        - heading "Comedy movies" [level=2] [ref=e219]
+        - generic [ref=e220]:
+          - button "Previous Comedy movies" [disabled]:
+            - generic: ‹
+          - generic [ref=e221]:
+            - article "Toy Story 5, 2026" [ref=e222]:
+              - link "Toy Story 5, 2026" [ref=e223] [cursor=pointer]:
+                - /url: /watch/movie/1084244?title=Toy+Story+5&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FsfQtVlIHljToOwYjhe21KPGzZWK.jpg
+                - figure [ref=e224]
+              - button "Add Toy Story 5 to library" [ref=e226]: +
+            - article "Moana, 2026" [ref=e227]:
+              - link "Moana, 2026" [ref=e228] [cursor=pointer]:
+                - /url: /watch/movie/1108427?title=Moana&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FzKVgiv5qHCvCLT4A2ymJi5QeXDH.jpg
+                - figure [ref=e229]
+              - button "Add Moana to library" [ref=e231]: +
+            - article "Minions & Monsters, 2026" [ref=e232]:
+              - link "Minions & Monsters, 2026" [ref=e233] [cursor=pointer]:
+                - /url: /watch/movie/1315772?title=Minions+%26+Monsters&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F4LwvU9SZc8QQzW1X1FAPhNbXnEU.jpg
+                - figure [ref=e234]
+              - button "Add Minions & Monsters to library" [ref=e236]: +
+            - article "Scary Movie, 2026" [ref=e237]:
+              - link "Scary Movie, 2026" [ref=e238] [cursor=pointer]:
+                - /url: /watch/movie/1273221?title=Scary+Movie&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FznHT8peERZRWG1ME3r0Db0EV8k8.jpg
+                - figure [ref=e239]
+              - button "Add Scary Movie to library" [ref=e241]: +
+            - article "Rosebush Pruning, 2026" [ref=e242]:
+              - link "Rosebush Pruning, 2026" [ref=e243] [cursor=pointer]:
+                - /url: /watch/movie/1130948?title=Rosebush+Pruning&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FtXsTtSgguTsk5J115jokwK55awF.jpg
+                - figure [ref=e244]
+              - button "Add Rosebush Pruning to library" [ref=e246]: +
+            - article "Pyaar Prema Kalyanam, 2026" [ref=e247]:
+              - link "Pyaar Prema Kalyanam, 2026" [ref=e248] [cursor=pointer]:
+                - /url: /watch/movie/1538273?title=Pyaar+Prema+Kalyanam&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FAjaNAeMXOrK9n0YqGqX0Lz5qxYu.jpg
+                - figure [ref=e249]
+              - button "Add Pyaar Prema Kalyanam to library" [ref=e251]: +
+            - 'article "Jackass: Best and Last, 2026" [ref=e252]':
+              - 'link "Jackass: Best and Last, 2026" [ref=e253] [cursor=pointer]':
+                - /url: /watch/movie/1612018?title=Jackass%3A+Best+and+Last&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FtfgccePxnswMqhmtxafliLlcCVR.jpg
+                - figure [ref=e254]
+              - 'button "Add Jackass: Best and Last to library" [ref=e256]': +
+            - article "The Super Mario Galaxy Movie, 2026" [ref=e257]:
+              - link "The Super Mario Galaxy Movie, 2026" [ref=e258] [cursor=pointer]:
+                - /url: /watch/movie/1226863?title=The+Super+Mario+Galaxy+Movie&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FeJGWx219ZcEMVQJhAgMiqo8tYY.jpg
+                - figure [ref=e259]
+              - button "Add The Super Mario Galaxy Movie to library" [ref=e261]: +
+            - article "The Devil Wears Prada 2, 2026" [ref=e262]:
+              - link "The Devil Wears Prada 2, 2026" [ref=e263] [cursor=pointer]:
+                - /url: /watch/movie/1314481?title=The+Devil+Wears+Prada+2&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FxTI42pmsP5EDnvsNJPEDubwWBQO.jpg
+                - figure [ref=e264]
+              - button "Add The Devil Wears Prada 2 to library" [ref=e266]: +
+            - article "Zootopia 2, 2025" [ref=e267]:
+              - link "Zootopia 2, 2025" [ref=e268] [cursor=pointer]:
+                - /url: /watch/movie/1084242?title=Zootopia+2&year=2025&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FoJ7g2CifqpStmoYQyaLQgEU32qO.jpg
+                - figure [ref=e269]
+              - button "Add Zootopia 2 to library" [ref=e271]: +
+            - article "Animals, 2026" [ref=e272]:
+              - link "Animals, 2026" [ref=e273] [cursor=pointer]:
+                - /url: /watch/movie/1599993?title=Animals&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F9fbZdiOI9fRinl44mNm3CYgEtYR.jpg
+                - figure [ref=e274]
+              - button "Add Animals to library" [ref=e276]: +
+            - article "Deadpool & Wolverine, 2024" [ref=e277]:
+              - link "Deadpool & Wolverine, 2024" [ref=e278] [cursor=pointer]:
+                - /url: /watch/movie/533535?title=Deadpool+%26+Wolverine&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F8cdWjvZQUExUUTzyp4t6EDMubfO.jpg
+                - figure [ref=e279]
+              - button "Add Deadpool & Wolverine to library" [ref=e281]: +
+          - button "Next Comedy movies" [ref=e282]:
+            - generic [ref=e283]: ›
+      - region [ref=e284]:
+        - heading "Crime movies" [level=2] [ref=e286]
+        - generic [ref=e287]:
+          - button "Previous Crime movies" [disabled]:
+            - generic: ‹
+          - generic [ref=e288]:
+            - article "Facing El Chapo, 2026" [ref=e289]:
+              - link "Facing El Chapo, 2026" [ref=e290] [cursor=pointer]:
+                - /url: /watch/movie/1621552?title=Facing+El+Chapo&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Falpf5v4UqSFawPmG9RX03Or4BDk.jpg
+                - figure [ref=e291]
+              - button "Add Facing El Chapo to library" [ref=e293]: +
+            - article "The Shawshank Redemption, 1994" [ref=e294]:
+              - link "The Shawshank Redemption, 1994" [ref=e295] [cursor=pointer]:
+                - /url: /watch/movie/278?title=The+Shawshank+Redemption&year=1994&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F9cqNxx0GxF0bflZmeSMuL5tnGzr.jpg
+                - figure [ref=e296]
+              - button "Add The Shawshank Redemption to library" [ref=e298]: +
+            - 'article "The Punisher: One Last Kill, 2026" [ref=e299]':
+              - 'link "The Punisher: One Last Kill, 2026" [ref=e300] [cursor=pointer]':
+                - /url: /watch/movie/1439930?title=The+Punisher%3A+One+Last+Kill&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FqQclTgLMDvGBuUBFGHRipxkEwWR.jpg
+                - figure [ref=e301]
+              - 'button "Add The Punisher: One Last Kill to library" [ref=e303]': +
+            - article "Woman in the Moon, 1988" [ref=e304]:
+              - link "Woman in the Moon, 1988" [ref=e305] [cursor=pointer]:
+                - /url: /watch/movie/194117?title=Woman+in+the+Moon&year=1988&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6uiz2xx61qhGv3ZcZg0n5tgahY3.jpg
+                - figure [ref=e306]
+              - button "Add Woman in the Moon to library" [ref=e308]: +
+            - article "Shelter, 2026" [ref=e309]:
+              - link "Shelter, 2026" [ref=e310] [cursor=pointer]:
+                - /url: /watch/movie/1290821?title=Shelter&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FbuPFnHZ3xQy6vZEHxbHgL1Pc6CR.jpg
+                - figure [ref=e311]
+              - button "Add Shelter to library" [ref=e313]: +
+            - article "The Furious, 2026" [ref=e314]:
+              - link "The Furious, 2026" [ref=e315] [cursor=pointer]:
+                - /url: /watch/movie/1280738?title=The+Furious&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FzP19YO60jwEsfKd5Qf1UvA5uJu8.jpg
+                - figure [ref=e316]
+              - button "Add The Furious to library" [ref=e318]: +
+            - article "The Godfather, 1972" [ref=e319]:
+              - link "The Godfather, 1972" [ref=e320] [cursor=pointer]:
+                - /url: /watch/movie/238?title=The+Godfather&year=1972&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F3bhkrj58Vtu7enYsRolD1fZdja1.jpg
+                - figure [ref=e321]
+              - button "Add The Godfather to library" [ref=e323]: +
+            - article "The Dark Knight, 2008" [ref=e324]:
+              - link "The Dark Knight, 2008" [ref=e325] [cursor=pointer]:
+                - /url: /watch/movie/155?title=The+Dark+Knight&year=2008&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FqJ2tW6WMUDux911r6m7haRef0WH.jpg
+                - figure [ref=e326]
+              - button "Add The Dark Knight to library" [ref=e328]: +
+            - article "The Shadow's Edge, 2025" [ref=e329]:
+              - link "The Shadow's Edge, 2025" [ref=e330] [cursor=pointer]:
+                - /url: /watch/movie/1419406?title=The+Shadow%27s+Edge&year=2025&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FcHKo3m8N1fwvEy2ZEr0xGmmMODV.jpg
+                - figure [ref=e331]
+              - button "Add The Shadow's Edge to library" [ref=e333]: +
+            - article "The Debt Collector, 2026" [ref=e334]:
+              - link "The Debt Collector, 2026" [ref=e335] [cursor=pointer]:
+                - /url: /watch/movie/1630409?title=The+Debt+Collector&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FqADBUb5ybrkRVGZEFF8Z4RuOwys.jpg
+                - figure [ref=e336]
+              - button "Add The Debt Collector to library" [ref=e338]: +
+            - article "Citizen Vigilante, 2026" [ref=e339]:
+              - link "Citizen Vigilante, 2026" [ref=e340] [cursor=pointer]:
+                - /url: /watch/movie/1413976?title=Citizen+Vigilante&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6LmJD3Wohe0g4U62wgi7RyJqfE4.jpg
+                - figure [ref=e341]
+              - button "Add Citizen Vigilante to library" [ref=e343]: +
+            - article "The Dollmaker, 2025" [ref=e344]:
+              - link "The Dollmaker, 2025" [ref=e345] [cursor=pointer]:
+                - /url: /watch/movie/1193950?title=The+Dollmaker&year=2025&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Fs7nDatJ7AiwiyzOd8hh9XXpJDOJ.jpg
+                - figure [ref=e346]
+              - button "Add The Dollmaker to library" [ref=e348]: +
+          - button "Next Crime movies" [ref=e349]:
+            - generic [ref=e350]: ›
+      - region [ref=e351]:
+        - heading "Science fiction movies" [level=2] [ref=e353]
+        - generic [ref=e354]:
+          - button "Previous Science fiction movies" [disabled]:
+            - generic: ‹
+          - generic [ref=e355]:
+            - 'article "Spider-Man: Brand New Day, 2026" [ref=e356]':
+              - 'link "Spider-Man: Brand New Day, 2026" [ref=e357] [cursor=pointer]':
+                - /url: /watch/movie/969681?title=Spider-Man%3A+Brand+New+Day&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FbjiS5ipwxb9JFy3XRRN4OAilSeX.jpg
+                - figure [ref=e358]
+              - 'button "Add Spider-Man: Brand New Day to library" [ref=e360]': +
+            - article "Rage of Stars, 2026" [ref=e361]:
+              - link "Rage of Stars, 2026" [ref=e362] [cursor=pointer]:
+                - /url: /watch/movie/1323244?title=Rage+of+Stars&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FoLld47ZT1I3iecM3OWhIphohQUJ.jpg
+                - figure [ref=e363]
+              - button "Add Rage of Stars to library" [ref=e365]: +
+            - 'article "Spider-Man: No Way Home, 2021" [ref=e366]':
+              - 'link "Spider-Man: No Way Home, 2021" [ref=e367] [cursor=pointer]':
+                - /url: /watch/movie/634649?title=Spider-Man%3A+No+Way+Home&year=2021&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F1g0dhYtq4irTY1GPXvft6k4YLjm.jpg
+                - figure [ref=e368]
+              - 'button "Add Spider-Man: No Way Home to library" [ref=e370]': +
+            - article "Colony, 2026" [ref=e371]:
+              - link "Colony, 2026" [ref=e372] [cursor=pointer]:
+                - /url: /watch/movie/1375646?title=Colony&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FtN799oUR0f1gUKDYdMNrDaY7I51.jpg
+                - figure [ref=e373]
+              - button "Add Colony to library" [ref=e375]: +
+            - article "Disclosure Day, 2026" [ref=e376]:
+              - link "Disclosure Day, 2026" [ref=e377] [cursor=pointer]:
+                - /url: /watch/movie/1275779?title=Disclosure+Day&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FAnJ8IQJI23hNpYXVNaythu061Ru.jpg
+                - figure [ref=e378]
+              - button "Add Disclosure Day to library" [ref=e380]: +
+            - article "The Last House, 2026" [ref=e381]:
+              - link "The Last House, 2026" [ref=e382] [cursor=pointer]:
+                - /url: /watch/movie/1284041?title=The+Last+House&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6JU7E8Vv2M11egkctWVOScxWR75.jpg
+                - figure [ref=e383]
+              - button "Add The Last House to library" [ref=e385]: +
+            - article "Backrooms, 2026" [ref=e386]:
+              - link "Backrooms, 2026" [ref=e387] [cursor=pointer]:
+                - /url: /watch/movie/1083381?title=Backrooms&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FrhGx6E3qRNMgj3i5su2oukNHwIQ.jpg
+                - figure [ref=e388]
+              - button "Add Backrooms to library" [ref=e390]: +
+            - article "The End of Oak Street, 2026" [ref=e391]:
+              - link "The End of Oak Street, 2026" [ref=e392] [cursor=pointer]:
+                - /url: /watch/movie/1101383?title=The+End+of+Oak+Street&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FfYXqpgPmHMphSF2W30GbTeJVIa5.jpg
+                - figure [ref=e393]
+              - button "Add The End of Oak Street to library" [ref=e395]: +
+            - 'article "Greenland 2: Migration, 2026" [ref=e396]':
+              - 'link "Greenland 2: Migration, 2026" [ref=e397] [cursor=pointer]':
+                - /url: /watch/movie/840464?title=Greenland+2%3A+Migration&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Fz2tqCJLsw6uEJ8nJV8BsQXGa3dr.jpg
+                - figure [ref=e398]
+              - 'button "Add Greenland 2: Migration to library" [ref=e400]': +
+            - article "Supergirl, 2026" [ref=e401]:
+              - link "Supergirl, 2026" [ref=e402] [cursor=pointer]:
+                - /url: /watch/movie/1081003?title=Supergirl&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F1QCWdqzTfh2x9UylVpspIU6QTuM.jpg
+                - figure [ref=e403]
+              - button "Add Supergirl to library" [ref=e405]: +
+            - article "Masters of the Universe, 2026" [ref=e406]:
+              - link "Masters of the Universe, 2026" [ref=e407] [cursor=pointer]:
+                - /url: /watch/movie/454639?title=Masters+of+the+Universe&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FoRuyGUHdoaQxWP3SDfafGkStxTC.jpg
+                - figure [ref=e408]
+              - button "Add Masters of the Universe to library" [ref=e410]: +
+            - article "Project Hail Mary, 2026" [ref=e411]:
+              - link "Project Hail Mary, 2026" [ref=e412] [cursor=pointer]:
+                - /url: /watch/movie/687163?title=Project+Hail+Mary&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FyihdXomYb5kTeSivtFndMy5iDmf.jpg
+                - figure [ref=e413]
+              - button "Add Project Hail Mary to library" [ref=e415]: +
+          - button "Next Science fiction movies" [ref=e416]:
+            - generic [ref=e417]: ›
+      - region [ref=e418]:
+        - heading "Action & adventure shows" [level=2] [ref=e420]
+        - generic [ref=e421]:
+          - button "Previous Action & adventure shows" [disabled]:
+            - generic: ‹
+          - generic [ref=e422]:
+            - article "Reacher, 2022" [ref=e423]:
+              - link "Reacher, 2022" [ref=e424] [cursor=pointer]:
+                - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg
+                - figure [ref=e425]
+              - button "Add Reacher to library" [ref=e427]: +
+            - article "Outer Banks, 2020" [ref=e428]:
+              - link "Outer Banks, 2020" [ref=e429] [cursor=pointer]:
+                - /url: /watch/tv/100757?title=Outer+Banks&year=2020&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FovDgO2LPfwdVRfvScAqo9aMiIW.jpg
+                - figure [ref=e430]
+              - button "Add Outer Banks to library" [ref=e432]: +
+            - article "House of the Dragon, 2022" [ref=e433]:
+              - link "House of the Dragon, 2022" [ref=e434] [cursor=pointer]:
+                - /url: /watch/tv/94997?title=House+of+the+Dragon&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F7V0Ebks0GgpKvQ7QbLAIdX5dos4.jpg
+                - figure [ref=e435]
+              - button "Add House of the Dragon to library" [ref=e437]: +
+            - article "NCIS, 2003" [ref=e438]:
+              - link "NCIS, 2003" [ref=e439] [cursor=pointer]:
+                - /url: /watch/tv/4614?title=NCIS&year=2003&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FmBcu8d6x6zB1el3MPNl7cZQEQ31.jpg
+                - figure [ref=e440]
+              - button "Add NCIS to library" [ref=e442]: +
+            - article "Kamen Rider, 1971" [ref=e443]:
+              - link "Kamen Rider, 1971" [ref=e444] [cursor=pointer]:
+                - /url: /watch/tv/2661?title=Kamen+Rider&year=1971&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F2DIBDFHiKQawz4WPsYekl9DHwyA.jpg
+                - figure [ref=e445]
+              - button "Add Kamen Rider to library" [ref=e447]: +
+            - article "Rick and Morty, 2013" [ref=e448]:
+              - link "Rick and Morty, 2013" [ref=e449] [cursor=pointer]:
+                - /url: /watch/tv/60625?title=Rick+and+Morty&year=2013&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FowhkU6KRqdXoUQpjV8uyZGPtX58.jpg
+                - figure [ref=e450]
+              - button "Add Rick and Morty to library" [ref=e452]: +
+            - article "Game of Thrones, 2011" [ref=e453]:
+              - link "Game of Thrones, 2011" [ref=e454] [cursor=pointer]:
+                - /url: /watch/tv/1399?title=Game+of+Thrones&year=2011&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F37sTgAG9QardbdzCq51FoUw1Ijb.jpg
+                - figure [ref=e455]
+              - button "Add Game of Thrones to library" [ref=e457]: +
+            - article "The Walking Dead, 2010" [ref=e458]:
+              - link "The Walking Dead, 2010" [ref=e459] [cursor=pointer]:
+                - /url: /watch/tv/1402?title=The+Walking+Dead&year=2010&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FaN29llVoCFtBTwDZFtqdD9d8dHb.jpg
+                - figure [ref=e460]
+              - button "Add The Walking Dead to library" [ref=e462]: +
+            - article "FBI, 2018" [ref=e463]:
+              - link "FBI, 2018" [ref=e464] [cursor=pointer]:
+                - /url: /watch/tv/80748?title=FBI&year=2018&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FzfKS4WL0OZ9udpNoSYZw91VB3aH.jpg
+                - figure [ref=e465]
+              - button "Add FBI to library" [ref=e467]: +
+            - 'article "All Elite Wrestling: Dynamite, 2019" [ref=e468]':
+              - 'link "All Elite Wrestling: Dynamite, 2019" [ref=e469] [cursor=pointer]':
+                - /url: /watch/tv/91555?title=All+Elite+Wrestling%3A+Dynamite&year=2019&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgPNWVCp0zrHRmwfovUpUQO44sts.jpg
+                - figure [ref=e470]
+              - 'button "Add All Elite Wrestling: Dynamite to library" [ref=e472]': +
+            - article "Bleach, 2004" [ref=e473]:
+              - link "Bleach, 2004" [ref=e474] [cursor=pointer]:
+                - /url: /watch/tv/30984?title=Bleach&year=2004&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F2EewmxXe72ogD0EaWM8gqa0ccIw.jpg
+                - figure [ref=e475]
+              - button "Add Bleach to library" [ref=e477]: +
+            - article "Doraemon, 2005" [ref=e478]:
+              - link "Doraemon, 2005" [ref=e479] [cursor=pointer]:
+                - /url: /watch/tv/65733?title=Doraemon&year=2005&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F9ZN1P32SHviL3SV51qLivxycvcx.jpg
+                - figure [ref=e480]
+              - button "Add Doraemon to library" [ref=e482]: +
+          - button "Next Action & adventure shows" [ref=e483]:
+            - generic [ref=e484]: ›
+      - region [ref=e485]:
+        - heading "Comedy shows" [level=2] [ref=e487]
+        - generic [ref=e488]:
+          - button "Previous Comedy shows" [disabled]:
+            - generic: ‹
+          - generic [ref=e489]:
+            - article "The Tonight Show Starring Jimmy Fallon, 2014" [ref=e490]:
+              - link "The Tonight Show Starring Jimmy Fallon, 2014" [ref=e491] [cursor=pointer]:
+                - /url: /watch/tv/59941?title=The+Tonight+Show+Starring+Jimmy+Fallon&year=2014&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F1N4o5PmmqhlVDrcdJ2RlCFWbLGX.jpg
+                - figure [ref=e492]
+              - button "Add The Tonight Show Starring Jimmy Fallon to library" [ref=e494]: +
+            - article "Family Guy, 1999" [ref=e495]:
+              - link "Family Guy, 1999" [ref=e496] [cursor=pointer]:
+                - /url: /watch/tv/1434?title=Family+Guy&year=1999&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F3PFsEuAiyLkWsP4GG6dIV37Q6gu.jpg
+                - figure [ref=e497]
+              - button "Add Family Guy to library" [ref=e499]: +
+            - article "Watch What Happens Live with Andy Cohen, 2009" [ref=e500]:
+              - link "Watch What Happens Live with Andy Cohen, 2009" [ref=e501] [cursor=pointer]:
+                - /url: /watch/tv/22980?title=Watch+What+Happens+Live+with+Andy+Cohen&year=2009&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FonSD9UXfJwrMXWhq7UY7hGF2S1h.jpg
+                - figure [ref=e502]
+              - button "Add Watch What Happens Live with Andy Cohen to library" [ref=e504]: +
+            - article "The Simpsons, 1989" [ref=e505]:
+              - link "The Simpsons, 1989" [ref=e506] [cursor=pointer]:
+                - /url: /watch/tv/456?title=The+Simpsons&year=1989&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FuWpG7GqfKGQqX4YMAo3nv5OrglV.jpg
+                - figure [ref=e507]
+              - button "Add The Simpsons to library" [ref=e509]: +
+            - article "The Rookie, 2018" [ref=e510]:
+              - link "The Rookie, 2018" [ref=e511] [cursor=pointer]:
+                - /url: /watch/tv/79744?title=The+Rookie&year=2018&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F70kTz0OmjjZe7zHvIDrq2iKW7PJ.jpg
+                - figure [ref=e512]
+              - button "Add The Rookie to library" [ref=e514]: +
+            - article "Ted Lasso, 2020" [ref=e515]:
+              - link "Ted Lasso, 2020" [ref=e516] [cursor=pointer]:
+                - /url: /watch/tv/97546?title=Ted+Lasso&year=2020&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FuRHsiw1wLxPHFXkkv4Ix1s0O6f4.jpg
+                - figure [ref=e517]
+              - button "Add Ted Lasso to library" [ref=e519]: +
+            - article "Rick and Morty, 2013" [ref=e520]:
+              - link "Rick and Morty, 2013" [ref=e521] [cursor=pointer]:
+                - /url: /watch/tv/60625?title=Rick+and+Morty&year=2013&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FowhkU6KRqdXoUQpjV8uyZGPtX58.jpg
+                - figure [ref=e522]
+              - button "Add Rick and Morty to library" [ref=e524]: +
+            - article "The Daily Show, 1996" [ref=e525]:
+              - link "The Daily Show, 1996" [ref=e526] [cursor=pointer]:
+                - /url: /watch/tv/2224?title=The+Daily+Show&year=1996&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FixcfyK7it6FjRM36Te4OdblAq4X.jpg
+                - figure [ref=e527]
+              - button "Add The Daily Show to library" [ref=e529]: +
+            - article "Men on a Mission, 2015" [ref=e530]:
+              - link "Men on a Mission, 2015" [ref=e531] [cursor=pointer]:
+                - /url: /watch/tv/70672?title=Men+on+a+Mission&year=2015&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F2jIi55JtYKJTL1km8qHMuUilOWo.jpg
+                - figure [ref=e532]
+              - button "Add Men on a Mission to library" [ref=e534]: +
+            - article "Futurama, 1999" [ref=e535]:
+              - link "Futurama, 1999" [ref=e536] [cursor=pointer]:
+                - /url: /watch/tv/615?title=Futurama&year=1999&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FeM8bbTn8C8vUwwS6upzzm7gX31u.jpg
+                - figure [ref=e537]
+              - button "Add Futurama to library" [ref=e539]: +
+            - article "American Dad!, 2005" [ref=e540]:
+              - link "American Dad!, 2005" [ref=e541] [cursor=pointer]:
+                - /url: /watch/tv/1433?title=American+Dad%21&year=2005&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Feb9sH2am9IUSQ8GhXTNAVoujk8W.jpg
+                - figure [ref=e542]
+              - button "Add American Dad! to library" [ref=e544]: +
+            - article "Shameless, 2011" [ref=e545]:
+              - link "Shameless, 2011" [ref=e546] [cursor=pointer]:
+                - /url: /watch/tv/34307?title=Shameless&year=2011&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Fifo31fMWLmyOVpdak9K0kY4jldQ.jpg
+                - figure [ref=e547]
+              - button "Add Shameless to library" [ref=e549]: +
+          - button "Next Comedy shows" [ref=e550]:
+            - generic [ref=e551]: ›
+      - region [ref=e552]:
+        - heading "Crime shows" [level=2] [ref=e554]
+        - generic [ref=e555]:
+          - button "Previous Crime shows" [disabled]:
+            - generic: ‹
+          - generic [ref=e556]:
+            - article "Reacher, 2022" [ref=e557]:
+              - link "Reacher, 2022" [ref=e558] [cursor=pointer]:
+                - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg
+                - figure [ref=e559]
+              - button "Add Reacher to library" [ref=e561]: +
+            - article "The Mentalist, 2008" [ref=e562]:
+              - link "The Mentalist, 2008" [ref=e563] [cursor=pointer]:
+                - /url: /watch/tv/5920?title=The+Mentalist&year=2008&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FacYXu4KaDj1NIkMgObnhe4C4a0T.jpg
+                - figure [ref=e564]
+              - button "Add The Mentalist to library" [ref=e566]: +
+            - 'article "Law & Order: Special Victims Unit, 1999" [ref=e567]':
+              - 'link "Law & Order: Special Victims Unit, 1999" [ref=e568] [cursor=pointer]':
+                - /url: /watch/tv/2734?title=Law+%26+Order%3A+Special+Victims+Unit&year=1999&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FiofokHZoUB4Qhik4PflvJl8TT6a.jpg
+                - figure [ref=e569]
+              - 'button "Add Law & Order: Special Victims Unit to library" [ref=e571]': +
+            - article "The Rookie, 2018" [ref=e572]:
+              - link "The Rookie, 2018" [ref=e573] [cursor=pointer]:
+                - /url: /watch/tv/79744?title=The+Rookie&year=2018&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F70kTz0OmjjZe7zHvIDrq2iKW7PJ.jpg
+                - figure [ref=e574]
+              - button "Add The Rookie to library" [ref=e576]: +
+            - article "NCIS, 2003" [ref=e577]:
+              - link "NCIS, 2003" [ref=e578] [cursor=pointer]:
+                - /url: /watch/tv/4614?title=NCIS&year=2003&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FmBcu8d6x6zB1el3MPNl7cZQEQ31.jpg
+                - figure [ref=e579]
+              - button "Add NCIS to library" [ref=e581]: +
+            - 'article "CSI: Crime Scene Investigation, 2000" [ref=e582]':
+              - 'link "CSI: Crime Scene Investigation, 2000" [ref=e583] [cursor=pointer]':
+                - /url: /watch/tv/1431?title=CSI%3A+Crime+Scene+Investigation&year=2000&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Fi5hmoRjHNWady4AtAGICTUXknKH.jpg
+                - figure [ref=e584]
+              - 'button "Add CSI: Crime Scene Investigation to library" [ref=e586]': +
+            - article "Criminal Minds, 2005" [ref=e587]:
+              - link "Criminal Minds, 2005" [ref=e588] [cursor=pointer]:
+                - /url: /watch/tv/4057?title=Criminal+Minds&year=2005&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FhWSb4UnIjlTvnvrP98NbFSO60HA.jpg
+                - figure [ref=e589]
+              - button "Add Criminal Minds to library" [ref=e591]: +
+            - article "Law & Order, 1990" [ref=e592]:
+              - link "Law & Order, 1990" [ref=e593] [cursor=pointer]:
+                - /url: /watch/tv/549?title=Law+%26+Order&year=1990&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FhaJ9eHytVO3H3JooMJG1DiWwDNm.jpg
+                - figure [ref=e594]
+              - button "Add Law & Order to library" [ref=e596]: +
+            - article "Midsomer Murders, 1997" [ref=e597]:
+              - link "Midsomer Murders, 1997" [ref=e598] [cursor=pointer]:
+                - /url: /watch/tv/764?title=Midsomer+Murders&year=1997&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Fpz7tsWxe0TTdfJnWPjZAEnrSl5M.jpg
+                - figure [ref=e599]
+              - button "Add Midsomer Murders to library" [ref=e601]: +
+            - article "FBI, 2018" [ref=e602]:
+              - link "FBI, 2018" [ref=e603] [cursor=pointer]:
+                - /url: /watch/tv/80748?title=FBI&year=2018&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FzfKS4WL0OZ9udpNoSYZw91VB3aH.jpg
+                - figure [ref=e604]
+              - button "Add FBI to library" [ref=e606]: +
+            - article "Breaking Bad, 2008" [ref=e607]:
+              - link "Breaking Bad, 2008" [ref=e608] [cursor=pointer]:
+                - /url: /watch/tv/1396?title=Breaking+Bad&year=2008&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FanFx9aTOOYqgS3v7x3R84Kz67ly.jpg
+                - figure [ref=e609]
+              - button "Add Breaking Bad to library" [ref=e611]: +
+            - article "The Blacklist, 2013" [ref=e612]:
+              - link "The Blacklist, 2013" [ref=e613] [cursor=pointer]:
+                - /url: /watch/tv/46952?title=The+Blacklist&year=2013&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F4HTfd1PhgFUenJxVuBDNdLmdr0c.jpg
+                - figure [ref=e614]
+              - button "Add The Blacklist to library" [ref=e616]: +
+          - button "Next Crime shows" [ref=e617]:
+            - generic [ref=e618]: ›
+      - region [ref=e619]:
+        - heading "Sci-fi & fantasy shows" [level=2] [ref=e621]
+        - generic [ref=e622]:
+          - button "Previous Sci-fi & fantasy shows" [disabled]:
+            - generic: ‹
+          - generic [ref=e623]:
+            - article "Lanterns, 2026" [ref=e624]:
+              - link "Lanterns, 2026" [ref=e625] [cursor=pointer]:
+                - /url: /watch/tv/95350?title=Lanterns&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgpC7h43xPMEV3goYMQShfJbTtLq.jpg
+                - figure [ref=e626]
+              - button "Add Lanterns to library" [ref=e628]: +
+            - article "Silo, 2023" [ref=e629]:
+              - link "Silo, 2023" [ref=e630] [cursor=pointer]:
+                - /url: /watch/tv/125988?title=Silo&year=2023&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgMYZZvnkVNTqSVnVCphWbPXwWwb.jpg
+                - figure [ref=e631]
+              - button "Add Silo to library" [ref=e633]: +
+            - article "House of the Dragon, 2022" [ref=e634]:
+              - link "House of the Dragon, 2022" [ref=e635] [cursor=pointer]:
+                - /url: /watch/tv/94997?title=House+of+the+Dragon&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F7V0Ebks0GgpKvQ7QbLAIdX5dos4.jpg
+                - figure [ref=e636]
+              - button "Add House of the Dragon to library" [ref=e638]: +
+            - article "Supernatural, 2005" [ref=e639]:
+              - link "Supernatural, 2005" [ref=e640] [cursor=pointer]:
+                - /url: /watch/tv/1622?title=Supernatural&year=2005&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F8iixmfGx5EIFPdpNvB2JvI3VIqX.jpg
+                - figure [ref=e641]
+              - button "Add Supernatural to library" [ref=e643]: +
+            - article "Kamen Rider, 1971" [ref=e644]:
+              - link "Kamen Rider, 1971" [ref=e645] [cursor=pointer]:
+                - /url: /watch/tv/2661?title=Kamen+Rider&year=1971&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F2DIBDFHiKQawz4WPsYekl9DHwyA.jpg
+                - figure [ref=e646]
+              - button "Add Kamen Rider to library" [ref=e648]: +
+            - article "Rick and Morty, 2013" [ref=e649]:
+              - link "Rick and Morty, 2013" [ref=e650] [cursor=pointer]:
+                - /url: /watch/tv/60625?title=Rick+and+Morty&year=2013&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FowhkU6KRqdXoUQpjV8uyZGPtX58.jpg
+                - figure [ref=e651]
+              - button "Add Rick and Morty to library" [ref=e653]: +
+            - article "Game of Thrones, 2011" [ref=e654]:
+              - link "Game of Thrones, 2011" [ref=e655] [cursor=pointer]:
+                - /url: /watch/tv/1399?title=Game+of+Thrones&year=2011&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F37sTgAG9QardbdzCq51FoUw1Ijb.jpg
+                - figure [ref=e656]
+              - button "Add Game of Thrones to library" [ref=e658]: +
+            - article "The Walking Dead, 2010" [ref=e659]:
+              - link "The Walking Dead, 2010" [ref=e660] [cursor=pointer]:
+                - /url: /watch/tv/1402?title=The+Walking+Dead&year=2010&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FaN29llVoCFtBTwDZFtqdD9d8dHb.jpg
+                - figure [ref=e661]
+              - button "Add The Walking Dead to library" [ref=e663]: +
+            - article "FROM, 2022" [ref=e664]:
+              - link "FROM, 2022" [ref=e665] [cursor=pointer]:
+                - /url: /watch/tv/124364?title=FROM&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpRtJagIxpfODzzb0T0NAvZSzErC.jpg
+                - figure [ref=e666]
+              - button "Add FROM to library" [ref=e668]: +
+            - article "Futurama, 1999" [ref=e669]:
+              - link "Futurama, 1999" [ref=e670] [cursor=pointer]:
+                - /url: /watch/tv/615?title=Futurama&year=1999&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FeM8bbTn8C8vUwwS6upzzm7gX31u.jpg
+                - figure [ref=e671]
+              - button "Add Futurama to library" [ref=e673]: +
+            - article "Bleach, 2004" [ref=e674]:
+              - link "Bleach, 2004" [ref=e675] [cursor=pointer]:
+                - /url: /watch/tv/30984?title=Bleach&year=2004&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F2EewmxXe72ogD0EaWM8gqa0ccIw.jpg
+                - figure [ref=e676]
+              - button "Add Bleach to library" [ref=e678]: +
+            - article "Doraemon, 2005" [ref=e679]:
+              - link "Doraemon, 2005" [ref=e680] [cursor=pointer]:
+                - /url: /watch/tv/65733?title=Doraemon&year=2005&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F9ZN1P32SHviL3SV51qLivxycvcx.jpg
+                - figure [ref=e681]
+              - button "Add Doraemon to library" [ref=e683]: +
+          - button "Next Sci-fi & fantasy shows" [ref=e684]:
+            - generic [ref=e685]: ›
+  - contentinfo [ref=e686]:
+    - paragraph [ref=e687]: PICTURE HOUSE · PRIVATE MEDIA LIBRARY
+    - link "TMDB This product uses the TMDB API but is not endorsed or certified by TMDB." [ref=e688] [cursor=pointer]:
+      - /url: https://www.themoviedb.org
+      - img "TMDB" [ref=e689]
+      - generic [ref=e690]: This product uses the TMDB API but is not endorsed or certified by TMDB.

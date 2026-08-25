@@ -1,0 +1,23 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - link "▶ Usenet Streamer" [ref=e6] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e7]: ▶
+        - text: Usenet Streamer
+      - link "Connection settings" [ref=e9] [cursor=pointer]:
+        - /url: /settings
+  - main [ref=e10]:
+    - generic [ref=e11]:
+      - generic [ref=e12]: Local media discovery
+      - heading "Find something great to watch." [level=1] [ref=e13]
+      - paragraph [ref=e14]: Search a movie and TV catalogue. We’ll find and prepare the best available Usenet release automatically.
+      - generic [ref=e15]:
+        - searchbox "Search movies and shows" [ref=e16]
+        - button "Search" [ref=e17] [cursor=pointer]
+    - region [ref=e18]:
+      - generic [ref=e19]:
+        - heading "Movies & shows" [level=2] [ref=e20]
+        - generic [ref=e21]: Search to begin
+      - generic [ref=e22]: No matches yet. Search for a movie or show to begin.
+  - contentinfo [ref=e23]: Usenet Streamer · A local media discovery interface

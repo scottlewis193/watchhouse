@@ -1,0 +1,117 @@
+<script>
+  import { onMount } from 'svelte';
+  import { api } from '$lib/api';
+
+  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, detailedPlaybackProgress: false, playbackQuality: 'balanced', maxConnections: '4', cacheRetentionHours: '24' });
+  let loading = $state(true);
+  let saving = $state(false);
+  let notice = $state('');
+  let noticeType = $state('success');
+  let configured = $state(false);
+
+  onMount(async () => {
+    try { const config = await api.get('/api/settings'); form = { ...form, ...Object.fromEntries(Object.entries(config).filter(([key]) => key in form)) }; configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); }
+    catch (e) { show(e.message, 'error'); }
+    finally { loading = false; }
+  });
+  function show(message, type = 'success') { notice = message; noticeType = type; }
+  async function save() { saving = true; try { const config = await api.put('/api/settings', form); configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); form.indexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
+  async function testConnection() { try { show('Testing Usenet connection…'); show((await api.post('/api/usenet/test', form)).message); } catch (e) { show(e.message, 'error'); } }
+  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, detailedPlaybackProgress: false, playbackQuality: 'balanced', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
+</script>
+
+<svelte:head><title>Connection settings · Watchhouse</title></svelte:head>
+
+<div class="mx-auto max-w-4xl">
+  <div class="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-base-300 pb-6"><div><p class="mb-3 text-xs font-semibold tracking-[0.18em] text-base-content/50">PRIVATE CONFIGURATION</p><h1 class="text-4xl font-semibold tracking-tight">Connection settings</h1><p class="mt-3 max-w-2xl text-base-content/65">Configure catalogue search, indexer access, and playback. Passwords and API keys stay on this local server.</p></div><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
+  {#if notice}<div class="alert alert-{noticeType} mb-6"><span>{notice}</span></div>{/if}
+  {#if loading}
+    <div class="flex justify-center p-16"><span class="loading loading-spinner loading-lg"></span></div>
+  {:else}
+    <form class="settings-form space-y-8" onsubmit={(event) => { event.preventDefault(); save(); }}>
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-0 p-5 sm:p-7">
+          <h2 class="card-title">TMDB catalogue</h2>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">Used for discovery, artwork, search, seasons, and episodes.</p>
+          <label class="mt-6 grid gap-2">
+            <span class="text-sm font-medium">API read access token</span>
+            <input class="input input-bordered w-full" bind:value={form.tmdbToken} type="password" placeholder="TMDB bearer token" autocomplete="off" />
+          </label>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-0 p-5 sm:p-7">
+          <h2 class="card-title">NZB indexer</h2>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">A Newznab-compatible indexer used to find releases.</p>
+
+          <div class="mt-6 grid gap-5 md:grid-cols-2">
+            <label class="grid gap-2">
+              <span class="text-sm font-medium">Indexer URL</span>
+              <input class="input input-bordered w-full" bind:value={form.indexerUrl} type="url" placeholder="https://api.example-indexer.com" />
+            </label>
+            <label class="grid gap-2">
+              <span class="text-sm font-medium">API key</span>
+              <input class="input input-bordered w-full" bind:value={form.indexerKey} type="password" placeholder="Indexer API key" />
+            </label>
+          </div>
+
+          <div class="mt-6 grid gap-5 border-t border-base-300 pt-6 md:grid-cols-2">
+            <label class="grid content-start gap-2">
+              <span class="text-sm font-medium">Playback preference</span>
+              <select class="select select-bordered w-full" bind:value={form.playbackQuality}><option value="fast">Start fastest</option><option value="balanced">Balanced</option><option value="quality">Best quality</option></select>
+              <span class="text-xs leading-relaxed text-base-content/55">Fastest favours browser-friendly files over large archives.</span>
+            </label>
+            <label class="grid content-start gap-2">
+              <span class="text-sm font-medium">Parallel connections</span>
+              <input class="input input-bordered w-full" bind:value={form.maxConnections} type="number" min="1" max="50" />
+              <span class="text-xs leading-relaxed text-base-content/55">Use no more than your provider allows.</span>
+            </label>
+          </div>
+
+          <label class="mt-6 flex cursor-pointer items-start gap-3 border-t border-base-300 pt-6">
+            <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.manualReleaseSelection} />
+            <span><span class="block text-sm font-medium">Choose releases manually</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Show ranked results before playback instead of selecting one automatically.</span></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-0 p-5 sm:p-7">
+          <h2 class="card-title">Playback experience</h2>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">Choose how much technical information Watchhouse shows while preparing a title.</p>
+
+          <label class="mt-6 flex cursor-pointer items-start gap-3 border-y border-base-300 py-5">
+            <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.detailedPlaybackProgress} />
+            <span><span class="block text-sm font-medium">Detailed playback progress</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Show release checks, preparation stages, percentages, and download speed.</span></span>
+          </label>
+
+          <label class="mt-6 grid max-w-sm gap-2">
+            <span class="text-sm font-medium">Clear inactive files after</span>
+            <input class="input input-bordered w-full" bind:value={form.cacheRetentionHours} type="number" min="1" max="168" />
+            <span class="text-xs leading-relaxed text-base-content/55">Hours; active playback files are cleared automatically.</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-0 p-5 sm:p-7">
+          <h2 class="card-title">Usenet provider</h2>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">Credentials are used only when testing availability or streaming a release.</p>
+          <div class="mt-6 grid gap-5 md:grid-cols-2">
+            <label class="grid gap-2"><span class="text-sm font-medium">Server host</span><input class="input input-bordered w-full" bind:value={form.usenetHost} placeholder="news.example.com" /></label>
+            <label class="grid gap-2"><span class="text-sm font-medium">Port</span><input class="input input-bordered w-full" bind:value={form.usenetPort} type="number" placeholder="563" /></label>
+            <label class="grid gap-2"><span class="text-sm font-medium">Username</span><input class="input input-bordered w-full" bind:value={form.usenetUser} autocomplete="username" /></label>
+            <label class="grid gap-2"><span class="text-sm font-medium">Password</span><input class="input input-bordered w-full" bind:value={form.usenetPass} type="password" autocomplete="current-password" /></label>
+          </div>
+        </div>
+      </section>
+
+      <div class="flex flex-wrap justify-end gap-3 border-t border-base-300 pt-6">
+        <button class="btn btn-ghost" type="button" onclick={clear}>Clear settings</button>
+        <button class="btn btn-outline" type="button" onclick={testConnection}>Test Usenet</button>
+        <button class="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</button>
+      </div>
+    </form>
+  {/if}
+</div>
