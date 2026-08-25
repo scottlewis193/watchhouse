@@ -353,14 +353,15 @@
   {#if bulkError}<div class="alert alert-error mt-4"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}
   <div class="mt-8 grid gap-8 {media.type === 'tv' || releaseChoices.length ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''}">
     <div>
-      {#if playback?.status === 'ready'}
-        {@const timeline = controlTimeline()}
-        <div class="group/player relative overflow-hidden bg-black shadow-2xl" bind:this={playerShell}>
-          <!-- svelte-ignore a11y_media_has_caption -->
-          <video class="aspect-video w-full bg-black transition-opacity focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" class:opacity-0={resumeStarting} bind:this={player} tabindex={resumeStarting ? -1 : 0} aria-hidden={resumeStarting} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onkeydown={handlePlayerKeydown} onerror={fallback} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
-          {#if resumeStarting}
-            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} /></div>
-          {:else}<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/85 to-transparent px-3 pb-3 pt-10 text-white sm:px-4 sm:pb-4">
+      {#if currentMedia}
+        <div class="player-shell group/player relative aspect-video overflow-hidden bg-black shadow-2xl" bind:this={playerShell}>
+          {#if playback?.status === 'ready'}
+            {@const timeline = controlTimeline()}
+            <!-- svelte-ignore a11y_media_has_caption -->
+            <video class="h-full w-full bg-black object-contain transition-opacity focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" class:opacity-0={resumeStarting} bind:this={player} tabindex={resumeStarting ? -1 : 0} aria-hidden={resumeStarting} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onkeydown={handlePlayerKeydown} onerror={fallback} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
+            {#if resumeStarting}
+              <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} /></div>
+            {:else}<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/85 to-transparent px-3 pb-3 pt-10 text-white sm:px-4 sm:pb-4">
             <label class="sr-only" for="playback-position">Playback position</label>
             <input id="playback-position" class="range range-primary range-xs block w-full" type="range" min="0" max={timeline.duration || 0} step="0.1" value={timeline.position} disabled={!timeline.duration} oninput={previewSeek} onchange={commitSeek} aria-valuetext={`${formatPosition(timeline.position)} of ${formatPosition(timeline.duration)}`} />
             <div class="mt-3 flex items-center gap-2 sm:gap-3">
@@ -382,13 +383,16 @@
                 {#if fullscreen}<svg class="size-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3v5H3m9-5v5h5M8 17v-5H3m9 5v-5h5" /></svg>{:else}<svg class="size-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 8V3h5m4 0h5v5M3 12v5h5m4 0h5v-5" /></svg>{/if}
               </button>
             </div>
-          </div>{/if}
+            </div>{/if}
+          {:else}
+            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} /></div>
+          {/if}
+          {#if showUpNext && nextMedia}<div class="absolute inset-x-3 bottom-24 z-30 flex flex-wrap items-center justify-between gap-3 border border-primary/50 bg-base-200/95 p-4 text-base-content shadow-xl backdrop-blur-sm sm:left-auto sm:right-4 sm:w-96"><div><p class="text-xs font-semibold tracking-[0.14em] text-primary">UP NEXT</p><p class="mt-1">{nextMedia.episode}. {nextMedia.episodeTitle}{nextJob?.status === 'ready' ? ' · ready to play' : ' · preparing in background'}</p></div><div class="flex gap-2"><button class="btn btn-sm btn-primary" onclick={playNextEpisode}>Play next</button><button class="btn btn-sm btn-ghost" onclick={() => { autoPlayNext = false; showUpNext = false; }}>Cancel autoplay</button></div></div>{/if}
         </div>
       {:else}
         <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} /></div>
       {/if}
       {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}</div>{/if}
-      {#if showUpNext && nextMedia}<div class="mt-4 flex flex-wrap items-center justify-between gap-3 border border-primary/50 bg-base-200 p-4"><div><p class="text-xs font-semibold tracking-[0.14em] text-primary">UP NEXT</p><p class="mt-1">{nextMedia.episode}. {nextMedia.episodeTitle}{nextJob?.status === 'ready' ? ' · ready to play' : ' · preparing in background'}</p></div><div class="flex gap-2"><button class="btn btn-sm btn-primary" onclick={playNextEpisode}>Play next</button><button class="btn btn-sm btn-ghost" onclick={() => { autoPlayNext = false; showUpNext = false; }}>Cancel autoplay</button></div></div>{/if}
     </div>
     {#if media.type === 'tv' || releaseChoices.length}<aside class="border-t border-base-300 pt-6 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0">
       {#if media.type === 'tv'}
@@ -434,3 +438,11 @@
     </aside>{/if}
   </div>
 </section>
+
+<style>
+  .player-shell:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    aspect-ratio: auto;
+  }
+</style>
