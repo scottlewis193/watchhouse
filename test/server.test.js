@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { Readable } from 'node:stream';
 import { archiveFiles, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, orderedPrefetch, searchResults, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched } from '../src/lib/playback-controls.js';
+import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption } from '../src/lib/playback-controls.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
   assert.equal(indexerEndpoint('https://api.nzbgeek.info').href, 'https://api.nzbgeek.info/api');
@@ -199,6 +199,12 @@ test('completed media cannot be overwritten by a trailing playback progress save
 test('uses the full media runtime for a direct-stream seek timeline', () => {
   assert.deepEqual(playbackTimeline('direct', 30, 2700, 600, 1200), { position: 1230, duration: 2700 });
   assert.deepEqual(playbackTimeline('cached', 30, 2700, 600, 1200), { position: 30, duration: 600 });
+});
+
+test('recovers a direct stream that ends long before the media runtime', () => {
+  assert.equal(shouldRecoverPlaybackInterruption('direct', 127, 2700), true);
+  assert.equal(shouldRecoverPlaybackInterruption('direct', 2675, 2700), false);
+  assert.equal(shouldRecoverPlaybackInterruption('cached', 127, 2700), false);
 });
 
 test('writes a media stream to the SvelteKit response interface without pipe()', async () => {
