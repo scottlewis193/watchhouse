@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" data-theme="night">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#171716" />
+    <title>Offline · Watchhouse</title>
+    <style>
+      :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #171716; color: #eeeae0; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; }
+      main { width: min(28rem, calc(100% - 3rem)); text-align: center; }
+      img { width: 5rem; height: 5rem; }
+      h1 { margin: 1.5rem 0 .5rem; font-size: 1.5rem; }
+      p { margin: 0 0 1.5rem; color: #aaa9a4; line-height: 1.6; }
+      button { border: 1px solid #e8e5dc; background: transparent; color: inherit; padding: .7rem 1rem; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icon.svg" alt="" />
+      <h1>Watchhouse is offline</h1>
+      <p>Reconnect to your Watchhouse server to browse your library or start playback.</p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+  </body>
+</html>

@@ -34,7 +34,13 @@
 <div class="min-h-screen bg-base-200 text-base-content">
   <header class="app-header border-b border-base-300">
     <div class="mx-auto grid min-h-18 max-w-6xl grid-cols-[auto_1fr_auto] items-center gap-3 px-4 py-3 sm:gap-6 sm:px-6">
-      <a class="brand-link flex items-center gap-3 font-semibold tracking-tight" href="/"><span class="brand-mark grid size-7 place-items-center border border-base-content text-[10px] font-bold"><span class="brand-initials">WH</span></span> Watchhouse</a>
+      <a class="brand-link flex items-center gap-3 font-semibold tracking-tight" href="/">
+        <svg class="brand-mark size-7 shrink-0" viewBox="0 0 512 512" aria-hidden="true">
+          <rect x="64" y="64" width="384" height="384" rx="8" fill="none" stroke="currentColor" stroke-width="18" />
+          <path fill="currentColor" d="M140 206h20l15 81 18-55h18l18 55 15-81h20l-24 100h-21l-17-52-17 52h-21zm144 0h22v39h44v-39h22v100h-22v-42h-44v42h-22z" />
+        </svg>
+        Watchhouse
+      </a>
       <form class="nav-search order-3 col-span-3 mx-auto flex w-full max-w-xl items-center border-b border-base-content/30 sm:order-none sm:col-span-1" action="/" method="get" role="search">
         <input class="input input-ghost min-w-0 flex-1 px-0 text-sm focus:outline-none" name="q" type="search" value={page.url.searchParams.get('q') || ''} placeholder="Search films and series…" aria-label="Search movies and shows" />
       </form>

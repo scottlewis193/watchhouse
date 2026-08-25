@@ -8,8 +8,16 @@
   let notice = $state('');
   let noticeType = $state('success');
   let configured = $state(false);
+  let theme = $state('watchhouse');
+  const themes = [
+    { id: 'watchhouse', name: 'Watchhouse', description: 'Warm charcoal and gold', colours: ['#171716', '#30302c', '#c9a96e'] },
+    { id: 'midnight', name: 'Midnight', description: 'Deep navy and cyan', colours: ['#0d1722', '#283b4d', '#73c9d8'] },
+    { id: 'cinema', name: 'Cinema', description: 'Near-black and red', colours: ['#140f10', '#3e2d2f', '#dc6b61'] },
+    { id: 'paper', name: 'Paper', description: 'Warm light and teal', colours: ['#f3efe6', '#d8d0c1', '#326b71'] }
+  ];
 
   onMount(async () => {
+    theme = themes.some(option => option.id === document.documentElement.dataset.theme) ? document.documentElement.dataset.theme : 'watchhouse';
     try { const config = await api.get('/api/settings'); form = { ...form, ...Object.fromEntries(Object.entries(config).filter(([key]) => key in form)) }; configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); }
     catch (e) { show(e.message, 'error'); }
     finally { loading = false; }
@@ -18,17 +26,46 @@
   async function save() { saving = true; try { const config = await api.put('/api/settings', form); configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); form.indexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
   async function testConnection() { try { show('Testing Usenet connection…'); show((await api.post('/api/usenet/test', form)).message); } catch (e) { show(e.message, 'error'); } }
   async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, detailedPlaybackProgress: false, playbackQuality: 'balanced', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
+  function selectTheme(nextTheme) {
+    theme = nextTheme;
+    document.documentElement.dataset.theme = nextTheme;
+    localStorage.setItem('watchhouse-theme', nextTheme);
+  }
 </script>
 
-<svelte:head><title>Connection settings · Watchhouse</title></svelte:head>
+<svelte:head><title>Settings · Watchhouse</title></svelte:head>
 
 <div class="mx-auto max-w-4xl">
-  <div class="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-base-300 pb-6"><div><p class="mb-3 text-xs font-semibold tracking-[0.18em] text-base-content/50">PRIVATE CONFIGURATION</p><h1 class="text-4xl font-semibold tracking-tight">Connection settings</h1><p class="mt-3 max-w-2xl text-base-content/65">Configure catalogue search, indexer access, and playback. Passwords and API keys stay on this local server.</p></div><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
+  <div class="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-base-300 pb-6"><div><p class="mb-3 text-xs font-semibold tracking-[0.18em] text-base-content/50">PRIVATE CONFIGURATION</p><h1 class="text-4xl font-semibold tracking-tight">Settings</h1><p class="mt-3 max-w-2xl text-base-content/65">Personalise Watchhouse and configure catalogue search, indexer access, and playback.</p></div><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
   {#if notice}<div class="alert alert-{noticeType} mb-6"><span>{notice}</span></div>{/if}
   {#if loading}
     <div class="flex justify-center p-16"><span class="loading loading-spinner loading-lg"></span></div>
   {:else}
     <form class="settings-form space-y-8" onsubmit={(event) => { event.preventDefault(); save(); }}>
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-0 p-5 sm:p-7">
+          <h2 class="card-title">Appearance</h2>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">Choose a theme for this browser. Changes apply immediately and do not affect other devices.</p>
+          <div class="mt-6 grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Colour theme">
+            {#each themes as option}
+              <button
+                class="flex items-center gap-4 border p-4 text-left transition {theme === option.id ? 'border-primary bg-primary/10' : 'border-base-300 hover:border-base-content/40'}"
+                type="button"
+                role="radio"
+                aria-checked={theme === option.id}
+                onclick={() => selectTheme(option.id)}
+              >
+                <span class="flex overflow-hidden rounded-full border border-base-content/15" aria-hidden="true">
+                  {#each option.colours as colour}<span class="size-5" style={`background:${colour}`}></span>{/each}
+                </span>
+                <span class="min-w-0 flex-1"><span class="block text-sm font-semibold">{option.name}</span><span class="mt-0.5 block text-xs text-base-content/55">{option.description}</span></span>
+                <span class="size-3 rounded-full border border-base-content/40 {theme === option.id ? 'bg-primary ring-2 ring-primary/25 ring-offset-2 ring-offset-base-100' : ''}" aria-hidden="true"></span>
+              </button>
+            {/each}
+          </div>
+        </div>
+      </section>
+
       <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body gap-0 p-5 sm:p-7">
           <h2 class="card-title">TMDB catalogue</h2>
