@@ -198,19 +198,27 @@ export async function writeStreamToResponse(stream, res) {
   res.end();
 }
 async function extractedVideo(directory) { const names = await readdir(directory, { recursive: true }); return names.find(name => /\.(mkv|mp4|m4v|mov|webm)$/i.test(name)); }
-export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0) { return ['-y', '-loglevel', 'error', '-i', input, ...(start > 0 ? ['-ss', String(start)] : []), '-map', '0:v:0', '-map', '0:a:0?', '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output]; }
+export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0) { return ['-y', '-loglevel', 'error', '-i', input, ...(start > 0 ? ['-ss', String(start)] : []), '-map', '0:v:0', '-map', '0:a:m:language:eng:?', '-map', '0:a:m:language:en:?', '-map', '0:a:0?', '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output]; }
+export function audioAwarePlaybackStrategy(suggested, streams = []) {
+  return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
+}
 async function cachedPlaybackStrategy(path, release) {
   const suggested = playbackStrategy(path, release);
   try {
-    const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name,pix_fmt', '-of', 'json', path]));
-    const video = probe.streams?.[0];
+    const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt:stream_tags=language', '-of', 'json', path]));
+    const video = probe.streams?.find(stream => stream.codec_type === 'video');
     if (video?.codec_name !== 'h264' || video?.pix_fmt !== 'yuv420p') return 'transcode';
-    return suggested;
+    return audioAwarePlaybackStrategy(suggested, probe.streams);
   } catch { return suggested; }
 }
 async function optimizeCachedVideo(job, path) {
   const strategy = await cachedPlaybackStrategy(path, job.release); if (strategy === 'raw') return { path, mime: videoType(path) };
   return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy };
+}
+async function audioSafeOfflineRecord(record) {
+  if (record.mode !== 'cached' || !record.path) return record;
+  const strategy = await cachedPlaybackStrategy(record.path, record.release);
+  return strategy === 'raw' ? record : { ...record, mode: 'cached-convert', sourcePath: record.path, mime: 'video/mp4', strategy };
 }
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
   const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, 'pipe:0', 'pipe:1', true, start)); let stderr = '';
@@ -513,7 +521,7 @@ export async function handleRequest(req, res) {
     if (req.method === 'GET' && offlineStreamMatch) {
       const record = (await readOfflineRecords()).get(decodeURIComponent(offlineStreamMatch[1]));
       if (!record || record.status !== 'ready') return json(res, 404, { error: 'This title is not available offline.' });
-      const local = { ...record };
+      const local = await audioSafeOfflineRecord(record);
       if (local.mode === 'cached-convert') return await streamCachedConversion(req, res, local);
       return await serveLocalVideo(req, res, local);
     }
@@ -548,7 +556,8 @@ export async function handleRequest(req, res) {
       if (media.type === 'tv' && (!Number.isInteger(media.season) || media.season < 1 || !Number.isInteger(media.episode) || media.episode < 1)) return json(res, 400, { error: 'Select a season and episode first.' });
       const offline = (await readOfflineRecords()).get(offlineMediaKey(media));
       if (offline?.status === 'ready') {
-        const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: offline.mode, path: offline.path, sourcePath: offline.sourcePath, mime: offline.mime, strategy: offline.strategy, release: offline.release || '' };
+        const local = await audioSafeOfflineRecord(offline);
+        const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '' };
         playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
       }
       const settings = await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });

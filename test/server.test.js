@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { archiveFiles, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { archiveFiles, audioAwarePlaybackStrategy, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption, shouldShowUpNext } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodes, offlineMediaKey } from '../src/lib/offline.js';
@@ -222,6 +222,10 @@ test('resumes unfinished playback and marks the final 30 seconds watched', () =>
   const args = ffmpegArgs('remux', 'pipe:0', 'pipe:1', true, 120);
   assert.ok(args.indexOf('-ss') > args.indexOf('-i'));
   assert.equal(args[args.indexOf('-ss') + 1], '120');
+  const maps = args.flatMap((arg, index) => arg === '-map' ? [args[index + 1]] : []);
+  assert.deepEqual(maps, ['0:v:0', '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:0?']);
+  assert.ok(args.includes('-disposition:a:0'));
+  assert.equal(args[args.indexOf('-disposition:a:0') + 1], 'default');
 });
 
 test('completed media cannot be overwritten by a trailing playback progress save', () => {
@@ -352,7 +356,10 @@ test('only requests a download fallback for a direct stream', () => {
 });
 
 test('chooses browser conversion strategies from container and codec', () => {
-  assert.equal(playbackStrategy('movie.mp4 yEnc', 'Movie H.264'), 'raw');
+  assert.equal(playbackStrategy('movie.mp4 yEnc', 'Movie H.264'), 'remux');
+  assert.equal(playbackStrategy('movie.webm yEnc', 'Movie VP9'), 'transcode');
   assert.equal(playbackStrategy('movie.mkv yEnc', 'Movie x264 DTS'), 'remux');
   assert.equal(playbackStrategy('movie.mkv yEnc', 'Movie HEVC'), 'transcode');
+  assert.equal(audioAwarePlaybackStrategy('raw', [{ codec_type: 'video' }, { codec_type: 'audio' }, { codec_type: 'audio', tags: { language: 'eng' } }]), 'remux');
+  assert.equal(audioAwarePlaybackStrategy('raw', [{ codec_type: 'video' }, { codec_type: 'audio' }]), 'raw');
 });

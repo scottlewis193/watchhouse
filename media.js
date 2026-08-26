@@ -101,8 +101,8 @@ export function releaseReadiness(release) {
 export function playbackStrategy(subject, releaseTitle = '') {
   const extension = (subject.match(/\.(mkv|mp4|m4v|mov|webm)(?:\"|\s|$)/i) || [])[1]?.toLowerCase();
   const description = `${subject} ${releaseTitle}`.toLowerCase();
-  if (extension === 'webm') return 'raw';
-  if (['mp4', 'm4v', 'mov'].includes(extension) && !/hevc|h[ .]?265|x265|av1/.test(description)) return 'raw';
+  if (extension === 'webm') return 'transcode';
+  if (['mp4', 'm4v', 'mov'].includes(extension) && !/hevc|h[ .]?265|x265|av1/.test(description)) return 'remux';
   if (extension === 'mkv' && /h[ .]?264|x264|avc/.test(description)) return 'remux';
   return 'transcode';
 }
