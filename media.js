@@ -59,7 +59,7 @@ export function titleVariants(title) {
 
 export function releaseScore(release, media, preferences = {}) {
   const text = release.title.toLowerCase();
-  let score = 0;
+  let score = releaseAudioConfidence(release) * 20;
   const tag = episodeTag(media).toLowerCase();
   if (tag && text.includes(tag)) score += 120;
   else if (tag && text.includes(`${media.season}x${String(media.episode).padStart(2, '0')}`)) score += 100;
@@ -80,10 +80,16 @@ export function releaseScore(release, media, preferences = {}) {
   return score;
 }
 
-export function englishAudioRelease(release) {
+export function releaseAudioConfidence(release) {
   const text = ` ${String(release?.title || '').toLowerCase().replace(/[._-]+/g, ' ')} `;
-  if (/\b(?:eng|english)\b/.test(text)) return true;
-  return !/\b(?:german|deutsch|french|truefrench|vff|vfq|italian|ita|spanish|castilian|latino|rus|russian|ukr|ukrainian|polish|pldub|dutch|nl|danish|swedish|norwegian|finnish|hindi|tamil|telugu|korean|japanese|jpn|chinese|mandarin|cantonese|turkish|arabic)\b/.test(text);
+  if (/\b(?:eng|english)\b/.test(text)) return 3;
+  if (/\b(?:dual(?: audio)?|multi(?: audio)?|dubbed|dub)\b/.test(text)) return 2;
+  if (/\b(?:german|deutsch|french|truefrench|vff|vfq|italian|ita|spanish|castilian|latino|rus|russian|ukr|ukrainian|polish|pldub|dutch|nl|danish|swedish|norwegian|finnish|hindi|tamil|telugu|korean|japanese|jpn|chinese|mandarin|cantonese|turkish|arabic)\b/.test(text)) return 0;
+  return 1;
+}
+
+export function englishAudioRelease(release) {
+  return releaseAudioConfidence(release) > 0;
 }
 
 export function rankReleases(releases, media, preferences) {

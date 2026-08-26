@@ -198,7 +198,11 @@ export async function writeStreamToResponse(stream, res) {
   res.end();
 }
 async function extractedVideo(directory) { const names = await readdir(directory, { recursive: true }); return names.find(name => /\.(mkv|mp4|m4v|mov|webm)$/i.test(name)); }
-export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0) { return ['-y', '-loglevel', 'error', '-i', input, ...(start > 0 ? ['-ss', String(start)] : []), '-map', '0:v:0', '-map', '0:a:m:language:eng:?', '-map', '0:a:m:language:en:?', '-map', '0:a:0?', '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output]; }
+export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2) {
+  const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
+  const audioMaps = ['0:a:m:language:eng:?', '0:a:m:language:en:?', ...(fallbackIndex ? [`0:a:${fallbackIndex}?`] : []), '0:a:0?'];
+  return ['-y', '-loglevel', 'error', '-i', input, ...(start > 0 ? ['-ss', String(start)] : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
+}
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
 }
@@ -221,14 +225,14 @@ async function audioSafeOfflineRecord(record) {
   return strategy === 'raw' ? record : { ...record, mode: 'cached-convert', sourcePath: record.path, mime: 'video/mp4', strategy };
 }
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
-  const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, 'pipe:0', 'pipe:1', true, start)); let stderr = '';
+  const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack)); let stderr = '';
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
   try { await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }); child.stdin.end(); const [code] = await once(child, 'close'); await output; if (code !== 0 && !res.destroyed) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`); }
   catch (error) { child.kill(); await output.catch(() => {}); if (!closed) throw error; }
 }
-async function streamCachedConversion(req, res, job) {
-  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true)); let stderr = '';
+async function streamCachedConversion(req, res, job, settings) {
+  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true, 0, settings.untaggedAudioTrack)); let stderr = '';
   child.stderr.on('data', chunk => stderr += chunk); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res); void output.catch(() => {});
   req.on('close', () => child.kill());
   const [code] = await once(child, 'close');
@@ -522,7 +526,7 @@ export async function handleRequest(req, res) {
       const record = (await readOfflineRecords()).get(decodeURIComponent(offlineStreamMatch[1]));
       if (!record || record.status !== 'ready') return json(res, 404, { error: 'This title is not available offline.' });
       const local = await audioSafeOfflineRecord(record);
-      if (local.mode === 'cached-convert') return await streamCachedConversion(req, res, local);
+      if (local.mode === 'cached-convert') return await streamCachedConversion(req, res, local, await readSettings());
       return await serveLocalVideo(req, res, local);
     }
     if (req.method === 'POST' && url.pathname === '/api/usenet/test') {
@@ -557,13 +561,14 @@ export async function handleRequest(req, res) {
       const offline = (await readOfflineRecords()).get(offlineMediaKey(media));
       if (offline?.status === 'ready') {
         const local = await audioSafeOfflineRecord(offline);
-        const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '' };
+        const playbackSettings = await readSettings();
+        const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
         playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
       }
       const settings = await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
       const choice = media.releaseId ? manualReleases.get(media.releaseId) : undefined;
       if (media.releaseId && (!choice || choice.expires < Date.now())) return json(res, 404, { error: 'That release selection expired. Search again.' });
-      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), events: [] }; jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, settings); return json(res, 202, publicJob(job));
+      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] }; jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, settings); return json(res, 202, publicJob(job));
     }
     const playMatch = url.pathname.match(/^\/api\/play\/([\w-]+)(?:\/(stream|fallback|retry))?$/);
     if (playMatch) {
@@ -574,7 +579,7 @@ export async function handleRequest(req, res) {
       if (req.method === 'GET' && playMatch[2] === 'stream') {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get('start')) || 0));
         jobEvent(job, 'stream-request', start ? `Browser requested playback from ${Math.round(start)}s.` : 'Browser requested the video stream.');
-        if (job.status !== 'ready') return json(res, 409, { error: 'Video is not ready yet.' }); if (job.mode === 'cached-convert') return await streamCachedConversion(req, res, job); if (job.mode === 'cached') return await serveLocalVideo(req, res, job); if (job.strategy !== 'raw' || start) return await streamConverted(req, res, job, await readSettings(), start, start && job.strategy === 'raw' ? 'remux' : '');
+        if (job.status !== 'ready') return json(res, 409, { error: 'Video is not ready yet.' }); if (job.mode === 'cached-convert') return await streamCachedConversion(req, res, job, await readSettings()); if (job.mode === 'cached') return await serveLocalVideo(req, res, job); if (job.strategy !== 'raw' || start) return await streamConverted(req, res, job, await readSettings(), start, start && job.strategy === 'raw' ? 'remux' : '');
         let closed = false; req.on('close', () => { closed = true; });
         res.writeHead(200, { 'content-type': videoType(job.file.subject), 'content-disposition': `inline; filename="${filename(job.file.subject, 'video')}"`, 'cache-control': 'no-store' });
         try { await streamPostedFile(job.file, await readSettings(), async chunk => { if (closed) throw new Error('Playback connection closed.'); if (res.write(chunk) === false && res.waitForDrain) await res.waitForDrain(); }); }

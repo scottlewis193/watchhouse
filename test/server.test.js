@@ -223,9 +223,11 @@ test('resumes unfinished playback and marks the final 30 seconds watched', () =>
   assert.ok(args.indexOf('-ss') > args.indexOf('-i'));
   assert.equal(args[args.indexOf('-ss') + 1], '120');
   const maps = args.flatMap((arg, index) => arg === '-map' ? [args[index + 1]] : []);
-  assert.deepEqual(maps, ['0:v:0', '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:0?']);
+  assert.deepEqual(maps, ['0:v:0', '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:1?', '0:a:0?']);
   assert.ok(args.includes('-disposition:a:0'));
   assert.equal(args[args.indexOf('-disposition:a:0') + 1], 'default');
+  const thirdTrackArgs = ffmpegArgs('remux', 'pipe:0', 'pipe:1', true, 0, 3);
+  assert.ok(thirdTrackArgs.includes('0:a:2?'));
 });
 
 test('completed media cannot be overwritten by a trailing playback progress save', () => {
@@ -307,6 +309,24 @@ test('auto-selection excludes releases explicitly labelled with non-English audi
   assert.deepEqual(rankReleases(releases, { title: 'Show', season: 1, episode: 1 }).map(item => item.title), [
     'Show.S01E01.2160p.WEB-DL.MULTI.ENG',
     'Show.S01E01.720p.WEB-DL.ENGLISH'
+  ]);
+});
+
+test('treats dual, multi-audio, and dubbed titles as possible English-track releases', () => {
+  const releases = [
+    { title: 'Show.S01E01.1080p.WEB-DL' },
+    { title: 'Show.S01E01.1080p.WEB-DL.GERMAN.DUAL.AUDIO' },
+    { title: 'Show.S01E01.1080p.WEB-DL.JAPANESE.MULTI' },
+    { title: 'Show.S01E01.1080p.WEB-DL.FRENCH.DUBBED' },
+    { title: 'Show.S01E01.1080p.WEB-DL.ENGLISH' },
+    { title: 'Show.S01E01.1080p.WEB-DL.GERMAN' }
+  ];
+  assert.deepEqual(rankReleases(releases, { title: 'Show', season: 1, episode: 1 }).map(item => item.title), [
+    'Show.S01E01.1080p.WEB-DL.ENGLISH',
+    'Show.S01E01.1080p.WEB-DL.GERMAN.DUAL.AUDIO',
+    'Show.S01E01.1080p.WEB-DL.JAPANESE.MULTI',
+    'Show.S01E01.1080p.WEB-DL.FRENCH.DUBBED',
+    'Show.S01E01.1080p.WEB-DL'
   ]);
 });
 
