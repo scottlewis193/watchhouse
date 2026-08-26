@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { archiveFiles, audioAwarePlaybackStrategy, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { archiveFiles, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackInterruptionAction, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption, shouldShowUpNext } from '../src/lib/playback-controls.js';
+import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldShowUpNext } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodes, offlineMediaKey } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
@@ -248,18 +248,6 @@ test('shows Up Next only during the final 30 seconds of the full runtime', () =>
   assert.equal(shouldShowUpNext(false, 2670, 2700), false);
 });
 
-test('detects a direct stream that ends long before the media runtime', () => {
-  assert.equal(shouldRecoverPlaybackInterruption('direct', 127, 2700), true);
-  assert.equal(shouldRecoverPlaybackInterruption('direct', 2675, 2700), false);
-  assert.equal(shouldRecoverPlaybackInterruption('cached', 127, 2700), false);
-});
-
-test('asks before replacing interrupted direct playback with a full download', () => {
-  assert.equal(playbackInterruptionAction('direct', 127, 2700), 'prompt');
-  assert.equal(playbackInterruptionAction('direct', 2675, 2700), 'continue');
-  assert.equal(playbackInterruptionAction('cached', 127, 2700), 'continue');
-});
-
 test('writes a media stream to the SvelteKit response interface without pipe()', async () => {
   const chunks = [];
   const response = {
@@ -269,6 +257,23 @@ test('writes a media stream to the SvelteKit response interface without pipe()',
   await writeStreamToResponse(Readable.from([Buffer.from('video')]), response);
   assert.equal(Buffer.concat(chunks.slice(0, -1)).toString(), 'video');
   assert.equal(chunks.at(-1).toString(), 'end');
+});
+
+test('can defer ending a streamed response until its producer succeeds', async () => {
+  let ended = false;
+  const response = {
+    write() { return true; },
+    end() { ended = true; }
+  };
+  await writeStreamToResponse(Readable.from([Buffer.from('partial video')]), response, { end: false });
+  assert.equal(ended, false);
+});
+
+test('rejects conversion errors even when ffmpeg exits successfully', () => {
+  assert.equal(conversionSucceeded(0, ''), true);
+  assert.equal(conversionSucceeded(0, 'Error during demuxing: Invalid data found when processing input'), false);
+  assert.equal(conversionSucceeded(0, '', 0), false);
+  assert.equal(conversionSucceeded(1, ''), false);
 });
 
 test('prefetches stream segments concurrently while preserving article order', async () => {

@@ -28,14 +28,6 @@ export function shouldMarkWatched(position, duration, threshold = 30) {
   return Number.isFinite(position) && Number.isFinite(duration) && duration > threshold && position >= threshold && duration - position <= threshold;
 }
 
-export function shouldRecoverPlaybackInterruption(playbackMode, position, duration, threshold = 30) {
-  return playbackMode === 'direct' && Number.isFinite(position) && position >= 0 && Number.isFinite(duration) && duration > threshold && duration - position > threshold;
-}
-
-export function playbackInterruptionAction(playbackMode, position, duration, threshold = 30) {
-  return shouldRecoverPlaybackInterruption(playbackMode, position, duration, threshold) ? 'prompt' : 'continue';
-}
-
 export function canSavePlaybackProgress(mediaKey, completedMediaKey) {
   return Boolean(mediaKey) && mediaKey !== completedMediaKey;
 }

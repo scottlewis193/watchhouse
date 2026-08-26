@@ -193,10 +193,16 @@ export async function streamPostedFile(posted, settings, consume, connect = conn
 function filename(subject, fallback) { return (subject.match(/([^/\\\"]+\.(?:part\d+\.rar|rar|r\d\d|7z(?:\.\d{3})?|zip(?:\.\d{3})?|z\d\d|mkv|mp4|m4v|mov|webm))/i) || [, fallback])[1].replace(/[^a-z0-9._ -]/gi, '_'); }
 function run(command, args, cwd) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd }); let stderr = ''; child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve() : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
 function runOutput(command, args, cwd) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd }); let stdout = '', stderr = ''; child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
-export async function writeStreamToResponse(stream, res) {
-  for await (const chunk of stream) if (res.write(chunk) === false && res.waitForDrain) await res.waitForDrain();
-  res.end();
+export async function writeStreamToResponse(stream, res, { end = true } = {}) {
+  let bytes = 0;
+  for await (const chunk of stream) {
+    bytes += chunk.length;
+    if (res.write(chunk) === false && res.waitForDrain) await res.waitForDrain();
+  }
+  if (end) res.end();
+  return bytes;
 }
+export function conversionSucceeded(code, stderr = '', bytes = 1) { return code === 0 && !String(stderr).trim() && bytes > 0; }
 async function extractedVideo(directory) { const names = await readdir(directory, { recursive: true }); return names.find(name => /\.(mkv|mp4|m4v|mov|webm)$/i.test(name)); }
 export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
@@ -227,17 +233,20 @@ async function audioSafeOfflineRecord(record) {
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
   const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack)); let stderr = '';
   let closed = false;
-  child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
-  try { await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }); child.stdin.end(); const [code] = await once(child, 'close'); await output; if (code !== 0 && !res.destroyed) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`); }
+  child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
+  try { await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }); child.stdin.end(); const [code] = await once(child, 'close'); const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end(); }
   catch (error) { child.kill(); await output.catch(() => {}); if (!closed) throw error; }
 }
 async function streamCachedConversion(req, res, job, settings) {
   const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true, 0, settings.untaggedAudioTrack)); let stderr = '';
-  child.stderr.on('data', chunk => stderr += chunk); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res); void output.catch(() => {});
-  req.on('close', () => child.kill());
+  let closed = false;
+  child.stderr.on('data', chunk => stderr += chunk); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {});
+  req.on('close', () => { closed = true; child.kill(); });
   const [code] = await once(child, 'close');
-  await output;
-  if (code !== 0 && !res.destroyed) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
+  const bytes = await output;
+  if (closed) return;
+  if (!conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`);
+  res.end();
 }
 function firstArchive(archives) { return archives.find(item => /\.part0*1\.rar/i.test(item.subject)) || archives.find(item => /\.rar/i.test(item.subject)) || archives.find(item => /\.(?:7z|zip)\.0*1/i.test(item.subject)) || archives.find(item => /\.(?:7z|zip)/i.test(item.subject)); }
 async function extractPostedArchive(directory, archives) { const first = firstArchive(archives); if (!first) throw new Error('No supported archive entry point was found.'); const name = filename(first.subject, 'archive'); if (/\.(?:rar|r\d\d)$/i.test(name)) await run('unrar', ['x', '-o+', '-idq', name], directory); else await run('7z', ['x', '-y', name, `-o${directory}`], directory); }

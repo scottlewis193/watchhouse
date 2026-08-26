@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackInterruptionAction, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldShowUpNext } from '$lib/playback-controls.js';
+  import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldShowUpNext } from '$lib/playback-controls.js';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodes } from '$lib/offline.js';
@@ -39,7 +39,7 @@
       const savedDuration = progressFor(media)?.duration;
       if (savedDuration) media.durationHint = savedDuration;
       else try { media.durationHint = (await api.get(`/api/catalog/movies/${media.id}/runtime`)).duration; } catch {}
-      return startPlayback(media);
+      return startPlayback(media, null, shouldResume && Boolean(progressFor(media)?.position));
     }
     playback = { status: 'selecting', message: 'Loading seasons…', progress: 3 };
     try {
@@ -389,7 +389,6 @@
     playing = false;
     captureVideoDiagnostics('ended');
     const timeline = controlTimeline();
-    if (playbackInterruptionAction(playback?.mode, timeline.position, timeline.duration) === 'prompt') { offerPlaybackRecovery('The direct stream ended before the title was finished.'); return; }
     if (autoPlayNext && nextMedia) playNextEpisode();
     else if (shouldMarkWatched(timeline.position, timeline.duration)) void setWatched(currentMedia, true);
     else if (player && playback?.mode === 'direct' && currentPlaybackPosition() >= 30) void setWatched(currentMedia, true);
