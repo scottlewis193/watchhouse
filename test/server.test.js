@@ -329,7 +329,21 @@ test('auto-selection excludes releases explicitly labelled with non-English audi
   ]);
 });
 
-test('treats dual, multi-audio, and dubbed titles as possible English-track releases', () => {
+test('anime auto-selection requires affirmative English audio evidence', () => {
+  const releases = [
+    { title: 'Attack.on.Titan.2013.S01E01.1080p.B-Global.WEB-DL.H.264.AAC-UBWEB', category: 'TV > Anime' },
+    { title: 'Attack.on.Titan.S01E01.1080p.WEB-DL.x265.MULTi.VO.VFF-C2H7NO3S', category: 'TV > Anime' },
+    { title: 'Attack.on.Titan.S01E01.1080p.Blu-ray.10-bit.Dual-Audio.TrueHD.x265-IAHD', category: 'TV > Anime' },
+    { title: 'Attack.on.Titan.Junior.High.S01E01.SUBBED.WEB.h264-W4F', category: 'TV > SD' }
+  ];
+  assert.equal(englishAudioRelease(releases[0]), false);
+  assert.equal(englishAudioRelease(releases[1]), false);
+  assert.equal(englishAudioRelease(releases[2]), true);
+  assert.equal(englishAudioRelease(releases[3]), false);
+  assert.deepEqual(rankReleases(releases, { title: 'Attack on Titan', season: 1, episode: 1 }).map(item => item.title), [releases[2].title]);
+});
+
+test('allows dual audio but rejects foreign multi-audio and dubbed titles without English evidence', () => {
   const releases = [
     { title: 'Show.S01E01.1080p.WEB-DL' },
     { title: 'Show.S01E01.1080p.WEB-DL.GERMAN.DUAL.AUDIO' },
@@ -341,8 +355,6 @@ test('treats dual, multi-audio, and dubbed titles as possible English-track rele
   assert.deepEqual(rankReleases(releases, { title: 'Show', season: 1, episode: 1 }).map(item => item.title), [
     'Show.S01E01.1080p.WEB-DL.ENGLISH',
     'Show.S01E01.1080p.WEB-DL.GERMAN.DUAL.AUDIO',
-    'Show.S01E01.1080p.WEB-DL.JAPANESE.MULTI',
-    'Show.S01E01.1080p.WEB-DL.FRENCH.DUBBED',
     'Show.S01E01.1080p.WEB-DL'
   ]);
 });

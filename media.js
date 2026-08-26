@@ -83,12 +83,18 @@ export function releaseScore(release, media, preferences = {}) {
 export function releaseAudioConfidence(release) {
   const text = ` ${String(release?.title || '').toLowerCase().replace(/[._-]+/g, ' ')} `;
   if (/\b(?:eng|english)\b/.test(text)) return 3;
-  if (/\b(?:dual(?: audio)?|multi(?: audio)?|dubbed|dub)\b/.test(text)) return 2;
+  if (/\bsubbed\b/.test(text)) return 0;
+  if (/\bdual(?: audio)?\b/.test(text)) return 2;
   if (/\b(?:german|deutsch|french|truefrench|vff|vfq|italian|ita|spanish|castilian|latino|rus|russian|ukr|ukrainian|polish|pldub|dutch|nl|danish|swedish|norwegian|finnish|hindi|tamil|telugu|korean|japanese|jpn|chinese|mandarin|cantonese|turkish|arabic)\b/.test(text)) return 0;
+  if (/\b(?:multi(?: audio)?|dubbed|dub)\b/.test(text)) return 2;
   return 1;
 }
 
 export function englishAudioRelease(release) {
+  if (/anime/i.test(String(release?.category || ''))) {
+    const text = String(release?.title || '').toLowerCase().replace(/[._-]+/g, ' ');
+    return /\b(?:eng|english|dual(?: audio)?)\b/.test(text);
+  }
   return releaseAudioConfidence(release) > 0;
 }
 
