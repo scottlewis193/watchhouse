@@ -80,8 +80,14 @@ export function releaseScore(release, media, preferences = {}) {
   return score;
 }
 
+export function englishAudioRelease(release) {
+  const text = ` ${String(release?.title || '').toLowerCase().replace(/[._-]+/g, ' ')} `;
+  if (/\b(?:eng|english)\b/.test(text)) return true;
+  return !/\b(?:german|deutsch|french|truefrench|vff|vfq|italian|ita|spanish|castilian|latino|rus|russian|ukr|ukrainian|polish|pldub|dutch|nl|danish|swedish|norwegian|finnish|hindi|tamil|telugu|korean|japanese|jpn|chinese|mandarin|cantonese|turkish|arabic)\b/.test(text);
+}
+
 export function rankReleases(releases, media, preferences) {
-  return [...releases].sort((a, b) => releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
+  return releases.filter(englishAudioRelease).sort((a, b) => releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
 }
 
 export function releaseReadiness(release) {

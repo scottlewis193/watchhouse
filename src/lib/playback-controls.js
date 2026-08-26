@@ -68,3 +68,11 @@ export function resumePosition(entry, duration, threshold = 30) {
   if (!entry || entry.watched || !Number.isFinite(duration) || duration <= 0 || entry.position < 5 || duration - entry.position <= threshold) return 0;
   return Math.min(entry.position, Math.max(0, duration - threshold - 1));
 }
+export function createPlaybackRequestGuard() {
+  let generation = 0;
+  return {
+    begin() { return ++generation; },
+    cancel() { generation++; },
+    isCurrent(token) { return token === generation; }
+  };
+}

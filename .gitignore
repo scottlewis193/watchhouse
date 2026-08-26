@@ -1,4 +1,6 @@
 data/settings.json
 data/media-state.json
 data/cache/
+data/offline/
+data/offline-downloads.json
 node_modules/

@@ -3,11 +3,12 @@ import { build, files, version } from '$service-worker';
 const worker = /** @type {ServiceWorkerGlobalScope} */ (self);
 const cacheName = `watchhouse-${version}`;
 const appFiles = [...build, ...files];
+const shellFiles = [...appFiles, '/library'];
 
 worker.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(cacheName)
-      .then((cache) => cache.addAll(appFiles))
+      .then((cache) => cache.addAll(shellFiles))
       .then(() => worker.skipWaiting())
   );
 });
@@ -44,6 +45,6 @@ async function networkFirstPage(request) {
     if (response.ok) await cache.put(request, response.clone());
     return response;
   } catch {
-    return (await cache.match(request)) || (await cache.match('/offline.html'));
+    return (await cache.match(request)) || (await cache.match(new URL(request.url).pathname)) || (await cache.match('/offline.html'));
   }
 }

@@ -4,8 +4,9 @@ import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { archiveFiles, connectionTestSettings, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
-import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canUseFallback, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption, shouldShowUpNext } from '../src/lib/playback-controls.js';
+import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
+import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldRecoverPlaybackInterruption, shouldShowUpNext } from '../src/lib/playback-controls.js';
+import { offlineAvailability, offlineEpisodes, offlineMediaKey } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
   assert.equal(indexerEndpoint('https://api.nzbgeek.info').href, 'https://api.nzbgeek.info/api');
@@ -288,6 +289,41 @@ test('searches apostrophe titles both verbatim and without apostrophes', () => {
 test('ranks high-quality matching-year releases ahead of poor captures', () => {
   const ranked = rankReleases([{ title: 'Film 2024 CAM' }, { title: 'Film 2024 1080p WEB-DL' }], { year: '2024' });
   assert.match(ranked[0].title, /1080p/);
+});
+
+test('auto-selection excludes releases explicitly labelled with non-English audio', () => {
+  const releases = [
+    { title: 'Show.S01E01.1080p.WEB-DL.GERMAN.DL' },
+    { title: 'Show.S01E01.720p.WEB-DL.ENGLISH' },
+    { title: 'Show.S01E01.2160p.WEB-DL.MULTI.ENG' }
+  ];
+  assert.equal(englishAudioRelease(releases[0]), false);
+  assert.equal(englishAudioRelease(releases[1]), true);
+  assert.equal(englishAudioRelease(releases[2]), true);
+  assert.deepEqual(rankReleases(releases, { title: 'Show', season: 1, episode: 1 }).map(item => item.title), [
+    'Show.S01E01.2160p.WEB-DL.MULTI.ENG',
+    'Show.S01E01.720p.WEB-DL.ENGLISH'
+  ]);
+});
+
+test('ignores playback responses from an episode superseded by a quick selection', async () => {
+  const guard = createPlaybackRequestGuard();
+  let displayedJob = null;
+  const first = guard.begin();
+  const second = guard.begin();
+  if (guard.isCurrent(second)) displayedJob = { episode: 2, status: 'ready' };
+  if (guard.isCurrent(first)) displayedJob = { episode: 1, status: 'ready' };
+  assert.deepEqual(displayedJob, { episode: 2, status: 'ready' });
+});
+
+test('identifies persistent offline copies for movies and individual episodes', () => {
+  const movie = { id: 10, type: 'movie', title: 'Film' };
+  const episode = { id: 20, type: 'tv', title: 'Show', season: 2, episode: 3 };
+  assert.equal(offlineMediaKey(movie), 'movie:10');
+  assert.equal(offlineMediaKey(episode), 'tv:20:s2:e3');
+  const downloads = [{ status: 'ready', media: episode }, { status: 'error', media: { ...episode, episode: 4 } }];
+  assert.deepEqual(offlineAvailability({ id: 20, type: 'tv' }, downloads), { available: true, count: 1 });
+  assert.deepEqual(offlineEpisodes(downloads, 20), [episode]);
 });
 
 test('keeps title-only fallback ranking anchored to the selected year', () => {

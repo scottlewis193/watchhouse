@@ -7,6 +7,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants } from '../../../media.js';
+import { offlineMediaKey } from '../offline.js';
 import { createMediaStateStore } from './media-state.js';
 
 const ROOT = process.cwd();
@@ -15,12 +16,17 @@ const MEDIA_STATE_PATH = join(ROOT, 'data', 'media-state.json');
 const PLAYBACK_CACHE_ROOT = join(ROOT, 'data', 'cache');
 const DISCOVERY_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, 'tmdb-discovery-v3.json');
 const RUNTIME_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, 'tmdb-runtime-v1.json');
+const OFFLINE_ROOT = join(ROOT, 'data', 'offline');
+const OFFLINE_STATE_PATH = join(ROOT, 'data', 'offline-downloads.json');
 const downloads = new Map();
 const playbackJobs = new Map();
 const manualReleases = new Map();
+const offlineJobs = new Map();
+const offlineSeriesJobs = new Map();
 const mediaState = createMediaStateStore(MEDIA_STATE_PATH);
 let discoveryCache = null;
 let runtimeCache = null;
+let offlineRecords = null;
 const CACHE_SWEEP_MS = 60 * 60 * 1000;
 const DISCOVERY_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -40,6 +46,23 @@ async function readSettings() {
 async function saveSettings(next) {
   await mkdir(join(ROOT, 'data'), { recursive: true });
   await writeFile(SETTINGS_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
+}
+async function readOfflineRecords() {
+  if (offlineRecords) return offlineRecords;
+  const stored = await readFile(OFFLINE_STATE_PATH, 'utf8').then(JSON.parse).catch(() => ({ downloads: [] }));
+  offlineRecords = new Map((stored.downloads || []).filter(download => existsSync(download.path || download.sourcePath || '')).map(download => [download.key, download]));
+  return offlineRecords;
+}
+async function writeOfflineRecords() {
+  await mkdir(join(ROOT, 'data'), { recursive: true });
+  await writeFile(OFFLINE_STATE_PATH, JSON.stringify({ version: 1, downloads: [...offlineRecords.values()] }, null, 2), { mode: 0o600 });
+}
+function publicOfflineRecord(record) {
+  const { path, sourcePath, directory, mime, strategy, ...safe } = record;
+  return { ...safe, streamUrl: `/api/offline/${encodeURIComponent(record.key)}/stream` };
+}
+function publicOfflineJob(job) {
+  return { id: job.id, key: job.offlineKey || offlineMediaKey(job.media), media: job.media, status: job.status, message: job.message, progress: job.progress, download: job.download || null, created: job.created };
 }
 async function clearExpiredPlaybackCache() {
   const settings = await readSettings(), retentionHours = Math.min(168, Math.max(1, Number(settings.cacheRetentionHours) || 24));
@@ -319,7 +342,17 @@ async function probeObfuscatedNzb(nzb, settings) {
     client.close(); return { direct: undefined, archives: [] };
   } catch (error) { client.close(); throw error; }
 }
-function setJob(job, status, message, progress = job.progress) { Object.assign(job, { status, message, progress }); }
+function jobEvent(job, activity, message, details = {}) {
+  if (!job.diagnosticsEnabled) return;
+  job.events ||= [];
+  job.events.push({ at: Date.now(), activity, message, ...details });
+  if (job.events.length > 80) job.events.splice(0, job.events.length - 80);
+}
+function setJob(job, status, message, progress = job.progress) {
+  const changed = job.status !== status || job.message !== message;
+  Object.assign(job, { status, message, progress });
+  if (changed) jobEvent(job, status, message, { progress });
+}
 function updateDownload(job, state, maximum = 85) {
   const elapsed = Math.max((Date.now() - state.started) / 1000, 0.1);
   const speed = state.bytes / elapsed;
@@ -371,24 +404,69 @@ async function writePostedFile(posted, path, settings, job, state, maximum) {
 }
 async function cacheDirect(job, settings) {
   setJob(job, 'downloading', 'Direct playback was unavailable. Downloading the video first…', 0); await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true }); const directory = job.directory || await mkdtemp(join(PLAYBACK_CACHE_ROOT, 'playback-')); job.directory = directory;
-  try { const path = join(directory, filename(job.file.subject, 'video')), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() }; await writePostedFile(job.file, path, settings, job, state, 90); const optimized = await optimizeCachedVideo(job, path); Object.assign(job, { status: 'ready', message: optimized.mode === 'cached-convert' ? 'Download complete. Starting the browser stream…' : 'Download complete. Starting playback…', progress: 100, mode: 'cached', ...optimized }); }
+  try { const path = join(directory, filename(job.file.subject, 'video')), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() }; await writePostedFile(job.file, path, settings, job, state, 90); const optimized = await optimizeCachedVideo(job, path); Object.assign(job, { status: 'ready', message: optimized.mode === 'cached-convert' ? 'Download complete. Starting the browser stream…' : 'Download complete. Starting playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode }); }
   catch (error) { throw error; }
 }
 async function prepareArchive(job, settings, archives) {
   setJob(job, 'downloading', 'This release cannot stream directly. Downloading the archive first…', 0); await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true }); const directory = job.directory || await mkdtemp(join(PLAYBACK_CACHE_ROOT, 'playback-')); job.directory = directory; const total = archives.reduce((sum, file) => sum + file.segments.length, 0), state = { completed: 0, total, bytes: 0, started: Date.now() };
   try {
     for (const archive of archives) await writePostedFile(archive, join(directory, filename(archive.subject, 'archive.rar')), settings, job, state, 85);
-    setJob(job, 'extracting', 'Download complete. Extracting the video…', 90); await extractPostedArchive(directory, archives); const extracted = await extractedVideo(directory); if (!extracted) throw new Error('The archive did not contain a supported video file.'); const optimized = await optimizeCachedVideo(job, join(directory, extracted)); Object.assign(job, { status: 'ready', message: optimized.mode === 'cached-convert' ? 'Extraction complete. Starting the browser stream…' : 'Ready to play.', progress: 100, mode: 'cached', ...optimized });
+    setJob(job, 'extracting', 'Download complete. Extracting the video…', 90); await extractPostedArchive(directory, archives); const extracted = await extractedVideo(directory); if (!extracted) throw new Error('The archive did not contain a supported video file.'); const optimized = await optimizeCachedVideo(job, join(directory, extracted)); Object.assign(job, { status: 'ready', message: optimized.mode === 'cached-convert' ? 'Extraction complete. Starting the browser stream…' : 'Ready to play.', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
   } catch (error) { throw error; }
 }
 async function preparePlayback(job, settings) {
   try {
-    setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await findReleases(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await findReleases(settings, job.media, false); if (!releases.length) throw new Error('No compatible releases were found for this title.'); const archiveChoices = [];
-    let obfuscatedProbes = 0; for (let i = 0; i < Math.min(releases.length, 10); i++) { setJob(job, 'selecting', `Checking release ${i + 1} of ${Math.min(releases.length, 10)}…`, 5 + i * 4); try { const nzb = await loadNzb(releases[i], settings); let direct = videoFile(nzb), archives = archiveFiles(nzb); if (!direct && !archives.length && obfuscatedProbes < 2) { obfuscatedProbes++; setJob(job, 'selecting', 'Inspecting an obfuscated release…', 12 + i * 4); ({ direct, archives } = await probeObfuscatedNzb(nzb, settings)); } if (direct) { setJob(job, 'selecting', 'Checking article availability…', 45); if (!await postedFileAvailable(direct, settings)) continue; const strategy = playbackStrategy(direct.subject, releases[i].title); Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct', strategy, file: direct, release: releases[i].title }); return; } if (archives.length) archiveChoices.push({ archives, release: releases[i].title }); } catch {} }
+    setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await findReleases(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await findReleases(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
+    let obfuscatedProbes = 0; for (let i = 0; i < Math.min(releases.length, 10); i++) { const release = releases[i]; setJob(job, 'selecting', `Checking release ${i + 1} of ${Math.min(releases.length, 10)}…`, 5 + i * 4); jobEvent(job, 'release-check', release.title, { candidate: i + 1 }); try { const nzb = await loadNzb(release, settings); let direct = videoFile(nzb), archives = archiveFiles(nzb); if (!direct && !archives.length && obfuscatedProbes < 2) { obfuscatedProbes++; setJob(job, 'selecting', 'Inspecting an obfuscated release…', 12 + i * 4); ({ direct, archives } = await probeObfuscatedNzb(nzb, settings)); } if (direct) { setJob(job, 'selecting', 'Checking article availability…', 45); if (!await postedFileAvailable(direct, settings)) { jobEvent(job, 'release-rejected', 'Required articles are unavailable.', { release: release.title }); continue; } const strategy = playbackStrategy(direct.subject, release.title); Object.assign(job, { file: direct, release: release.title, strategy }); if (job.offlineDownload) { await cacheDirect(job, settings); return; } Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' }); jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' }); return; } if (archives.length) { archiveChoices.push({ archives, release: release.title }); jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title }); } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title }); } catch (error) { jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); } }
     if (!archiveChoices.length) throw new Error('No compatible video release was found.'); let lastError; for (const choice of archiveChoices) { try { job.release = choice.release; job.archives = choice.archives; await prepareArchive(job, settings, choice.archives); return; } catch (error) { lastError = error; setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
 }
-function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null }; }
+async function startOfflineMediaDownload(media, settings) {
+  const key = offlineMediaKey(media), records = await readOfflineRecords();
+  if (!key || key === `tv:${media.id}`) throw new Error('Choose an individual episode or the whole series.');
+  if (records.get(key)?.status === 'ready') return null;
+  const existing = [...offlineJobs.values()].find(job => job.offlineKey === key && job.status !== 'error');
+  if (existing) return existing;
+  const id = randomUUID(), directory = join(OFFLINE_ROOT, id);
+  const job = { id, offlineKey: key, offlineDownload: true, directory, media: { ...media }, status: 'selecting', message: 'Queued for offline download…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), events: [] };
+  offlineJobs.set(id, job);
+  job.completion = (async () => {
+    await preparePlayback(job, settings);
+    if (job.status === 'ready') {
+      records.set(key, { key, media: job.media, status: 'ready', mode: job.mode, path: job.path, sourcePath: job.sourcePath, directory: job.directory, mime: job.mime, strategy: job.strategy, release: job.release || '', downloadedAt: Date.now() });
+      await writeOfflineRecords();
+    }
+    return job;
+  })();
+  return job;
+}
+async function startSeriesDownload(media, settings) {
+  const existing = [...offlineSeriesJobs.values()].find(job => job.media.id === media.id && !['ready', 'error'].includes(job.status));
+  if (existing) return existing;
+  const job = { id: randomUUID(), media: { ...media }, status: 'selecting', message: 'Loading series episodes…', progress: 0, created: Date.now(), completed: 0, total: 0 };
+  offlineSeriesJobs.set(job.id, job);
+  void (async () => {
+    try {
+      const items = [];
+      const today = new Date().toISOString().slice(0, 10);
+      for (const season of await catalogueSeasons(settings, media.id)) {
+        for (const episode of await catalogueEpisodes(settings, media.id, season.number)) if (!episode.airDate || episode.airDate <= today) items.push({ ...media, season: season.number, episode: episode.number, episodeTitle: episode.name, ...(episode.runtime ? { durationHint: episode.runtime * 60 } : {}) });
+      }
+      job.total = items.length;
+      if (!items.length) throw new Error('No episodes were found for this series.');
+      let failures = 0, lastFailure = '';
+      for (const item of items) {
+        job.status = 'downloading'; job.message = `Downloading S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')} · ${job.completed + 1}/${job.total}`;
+        const child = await startOfflineMediaDownload(item, settings);
+        if (child) { await child.completion; if (child.status === 'error') { failures++; lastFailure = `${item.episodeTitle || `Episode ${item.episode}`}: ${child.message}`; } }
+        job.completed++; job.progress = Math.round(job.completed / job.total * 100);
+      }
+      job.status = failures ? 'error' : 'ready'; job.message = failures ? `${job.total - failures} episodes downloaded; ${failures} failed. ${lastFailure}` : `${job.total} episodes available offline.`;
+    } catch (error) { job.status = 'error'; job.message = error.message || 'Series download failed.'; }
+  })();
+  return job;
+}
+function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, created: job.created, events: events || [] } } : {}) }; }
 async function serveLocalVideo(req, res, job) {
   const info = await stat(job.path), range = req.headers.range; let start = 0, end = info.size - 1, status = 200;
   if (range) { const match = range.match(/bytes=(\d*)-(\d*)/); if (match) { start = Number(match[1] || 0); end = Math.min(Number(match[2] || end), end); status = 206; } }
@@ -410,6 +488,35 @@ export async function handleRequest(req, res) {
     if (req.method === 'PUT' && url.pathname === '/api/state/library') { const input = await body(req); return json(res, 200, await mediaState.setLibrary(input.media, input.inLibrary)); }
     if (req.method === 'PUT' && url.pathname === '/api/state/progress/bulk') { const input = await body(req); return json(res, 200, await mediaState.setProgressMany(input.media, input)); }
     if (req.method === 'PUT' && url.pathname === '/api/state/progress') { const input = await body(req); return json(res, 200, await mediaState.setProgress(input.media, input)); }
+    if (req.method === 'GET' && url.pathname === '/api/offline') {
+      const records = await readOfflineRecords();
+      return json(res, 200, { downloads: [...records.values()].map(publicOfflineRecord), jobs: [...offlineSeriesJobs.values()].filter(job => job.status !== 'ready').map(publicOfflineJob).concat([...offlineJobs.values()].filter(job => job.status !== 'ready').map(publicOfflineJob)) });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/offline') {
+      const media = await body(req);
+      if (!media.title || !['movie', 'tv'].includes(media.type) || !Number.isInteger(Number(media.id))) return json(res, 400, { error: 'A valid movie or series is required.' });
+      const settings = await readSettings();
+      if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
+      await mediaState.setLibrary(media, true);
+      const wholeSeries = media.type === 'tv' && (!Number.isInteger(Number(media.season)) || !Number.isInteger(Number(media.episode)));
+      const job = wholeSeries ? await startSeriesDownload(media, settings) : await startOfflineMediaDownload({ ...media, id: Number(media.id), season: media.season ? Number(media.season) : undefined, episode: media.episode ? Number(media.episode) : undefined }, settings);
+      if (!job) return json(res, 200, { alreadyDownloaded: true });
+      return json(res, 202, publicOfflineJob(job));
+    }
+    const offlineDeleteMatch = url.pathname.match(/^\/api\/offline\/(movie|tv)\/(\d+)$/);
+    if (req.method === 'DELETE' && offlineDeleteMatch) {
+      const records = await readOfflineRecords(), [type, id] = offlineDeleteMatch.slice(1); let removed = 0;
+      for (const [key, record] of [...records]) if (record.media.type === type && Number(record.media.id) === Number(id)) { records.delete(key); removed++; if (record.directory) await rm(record.directory, { recursive: true, force: true }); }
+      await writeOfflineRecords(); return json(res, 200, { removed });
+    }
+    const offlineStreamMatch = url.pathname.match(/^\/api\/offline\/(.+)\/stream$/);
+    if (req.method === 'GET' && offlineStreamMatch) {
+      const record = (await readOfflineRecords()).get(decodeURIComponent(offlineStreamMatch[1]));
+      if (!record || record.status !== 'ready') return json(res, 404, { error: 'This title is not available offline.' });
+      const local = { ...record };
+      if (local.mode === 'cached-convert') return await streamCachedConversion(req, res, local);
+      return await serveLocalVideo(req, res, local);
+    }
     if (req.method === 'POST' && url.pathname === '/api/usenet/test') {
       const saved = await readSettings(), entered = await body(req);
       await testNntp(connectionTestSettings(saved, entered));
@@ -439,10 +546,15 @@ export async function handleRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/play') {
       const media = await body(req); if (!media.title || !['movie', 'tv'].includes(media.type)) return json(res, 400, { error: 'A valid movie or show is required.' });
       if (media.type === 'tv' && (!Number.isInteger(media.season) || media.season < 1 || !Number.isInteger(media.episode) || media.episode < 1)) return json(res, 400, { error: 'Select a season and episode first.' });
+      const offline = (await readOfflineRecords()).get(offlineMediaKey(media));
+      if (offline?.status === 'ready') {
+        const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: offline.mode, path: offline.path, sourcePath: offline.sourcePath, mime: offline.mime, strategy: offline.strategy, release: offline.release || '' };
+        playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
+      }
       const settings = await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
       const choice = media.releaseId ? manualReleases.get(media.releaseId) : undefined;
       if (media.releaseId && (!choice || choice.expires < Date.now())) return json(res, 404, { error: 'That release selection expired. Search again.' });
-      const job = { id: randomUUID(), media: { type: media.type, title: media.title, year: media.year || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '' }, ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now() }; playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, settings); return json(res, 202, publicJob(job));
+      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), events: [] }; jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, settings); return json(res, 202, publicJob(job));
     }
     const playMatch = url.pathname.match(/^\/api\/play\/([\w-]+)(?:\/(stream|fallback|retry))?$/);
     if (playMatch) {
@@ -452,6 +564,7 @@ export async function handleRequest(req, res) {
       if (req.method === 'POST' && playMatch[2] === 'retry') { if (job.status !== 'error') return json(res, 409, { error: 'This playback job cannot be retried yet.' }); const settings = await readSettings(); if (job.file) cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); else if (job.archives) prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); else return json(res, 409, { error: 'This release cannot be resumed.' }); return json(res, 202, publicJob(job)); }
       if (req.method === 'GET' && playMatch[2] === 'stream') {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get('start')) || 0));
+        jobEvent(job, 'stream-request', start ? `Browser requested playback from ${Math.round(start)}s.` : 'Browser requested the video stream.');
         if (job.status !== 'ready') return json(res, 409, { error: 'Video is not ready yet.' }); if (job.mode === 'cached-convert') return await streamCachedConversion(req, res, job); if (job.mode === 'cached') return await serveLocalVideo(req, res, job); if (job.strategy !== 'raw' || start) return await streamConverted(req, res, job, await readSettings(), start, start && job.strategy === 'raw' ? 'remux' : '');
         let closed = false; req.on('close', () => { closed = true; });
         res.writeHead(200, { 'content-type': videoType(job.file.subject), 'content-disposition': `inline; filename="${filename(job.file.subject, 'video')}"`, 'cache-control': 'no-store' });
