@@ -20,7 +20,7 @@
         <dt class="text-base-content/50">Media</dt><dd>{playback?.diagnostics?.media || '—'}</dd>
         <dt class="text-base-content/50">Release</dt><dd class="break-words">{playback?.diagnostics?.release || 'Not selected yet'}</dd>
         <dt class="text-base-content/50">Pipeline</dt><dd>{playback?.diagnostics?.mode || '—'} / {playback?.diagnostics?.strategy || '—'}</dd>
-        <dt class="text-base-content/50">Audio policy</dt><dd>English label, then track {playback?.untaggedAudioTrack || 2}, then track 1</dd>
+        <dt class="text-base-content/50">Audio policy</dt><dd>English language/title metadata, then track {playback?.untaggedAudioTrack || 2}, then track 1</dd>
         <dt class="text-base-content/50">Next episode</dt><dd>{nextJob ? `${nextJob.status} · ${nextJob.message || 'working'}` : 'Not preparing'}</dd>
       </dl>
     </section>

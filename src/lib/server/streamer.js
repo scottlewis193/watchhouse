@@ -206,7 +206,12 @@ export function conversionSucceeded(code, stderr = '', bytes = 1) { return code 
 async function extractedVideo(directory) { const names = await readdir(directory, { recursive: true }); return names.find(name => /\.(mkv|mp4|m4v|mov|webm)$/i.test(name)); }
 export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
-  const audioMaps = ['0:a:m:language:eng:?', '0:a:m:language:en:?', ...(fallbackIndex ? [`0:a:${fallbackIndex}?`] : []), '0:a:0?'];
+  const englishMetadataMaps = [
+    '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:m:language:en-US:?', '0:a:m:language:en-GB:?',
+    '0:a:m:title:English:?', '0:a:m:title:english:?', '0:a:m:title:ENG:?',
+    '0:a:m:handler_name:English:?', '0:a:m:handler_name:english:?', '0:a:m:handler_name:ENG:?'
+  ];
+  const audioMaps = [...englishMetadataMaps, ...(fallbackIndex ? [`0:a:${fallbackIndex}?`] : []), '0:a:0?'];
   return ['-y', '-loglevel', 'error', '-i', input, ...(start > 0 ? ['-ss', String(start)] : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
 }
 export function audioAwarePlaybackStrategy(suggested, streams = []) {

@@ -223,7 +223,13 @@ test('resumes unfinished playback and marks the final 30 seconds watched', () =>
   assert.ok(args.indexOf('-ss') > args.indexOf('-i'));
   assert.equal(args[args.indexOf('-ss') + 1], '120');
   const maps = args.flatMap((arg, index) => arg === '-map' ? [args[index + 1]] : []);
-  assert.deepEqual(maps, ['0:v:0', '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:1?', '0:a:0?']);
+  assert.deepEqual(maps, [
+    '0:v:0',
+    '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:m:language:en-US:?', '0:a:m:language:en-GB:?',
+    '0:a:m:title:English:?', '0:a:m:title:english:?', '0:a:m:title:ENG:?',
+    '0:a:m:handler_name:English:?', '0:a:m:handler_name:english:?', '0:a:m:handler_name:ENG:?',
+    '0:a:1?', '0:a:0?'
+  ]);
   assert.ok(args.includes('-disposition:a:0'));
   assert.equal(args[args.indexOf('-disposition:a:0') + 1], 'default');
   const thirdTrackArgs = ffmpegArgs('remux', 'pipe:0', 'pipe:1', true, 0, 3);
