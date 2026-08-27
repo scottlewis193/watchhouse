@@ -65,7 +65,7 @@
   }
 
   function watchHref(result) {
-    const query = new URLSearchParams({ title: result.title, ...(result.year ? { year: result.year } : {}), ...(result.poster ? { poster: result.poster } : {}), ...(result.season ? { season: result.season, episode: result.episode } : {}), ...(result.position ? { resume: '1' } : {}) });
+    const query = new URLSearchParams({ title: result.title, ...(result.year ? { year: result.year } : {}), ...(result.poster ? { poster: result.poster } : {}), ...(result.season ? { season: result.season, episode: result.episode } : {}) });
     return `/watch/${result.type}/${result.id}?${query}`;
   }
 
@@ -97,28 +97,29 @@
 <svelte:head><title>Discover · Watchhouse</title></svelte:head>
 
 {#if hasSearched}
-<section class="pt-2" aria-labelledby="discover-title">
-  <div class="mb-5 flex items-end justify-between border-b border-base-300 pb-3"><div class="flex items-center gap-4"><h1 id="discover-title" class="text-xl font-semibold">Search results for “{query}”</h1><a class="text-xs text-base-content/55 underline-offset-4 hover:text-primary hover:underline" href="/">Back to browse</a></div><span class="text-xs tracking-wide text-base-content/55">{searchMessage}</span></div>
+<section class="discover-page" aria-labelledby="discover-title">
+  <div class="page-heading"><div><p class="page-eyebrow">Catalogue search</p><h1 id="discover-title">Results for “{query}”</h1></div><div class="page-heading-meta"><span>{searchMessage}</span><a href="/">Back to browse</a></div></div>
   {#if error}<div class="alert alert-error mb-4"><span>{error}</span><a class="btn btn-sm" href="/settings">Open settings</a></div>{/if}
   {#if results.length}
-    <div class="grid grid-cols-2 gap-x-4 gap-y-7 sm:grid-cols-3 lg:grid-cols-4">
+    <div class="poster-grid mt-9">
       {#each results as result}
         <MediaCard item={result} href={watchHref(result)} inLibrary={inLibrary(result)} onLibraryChange={setLibrary} />
       {/each}
     </div>
-  {:else if !loading && !error}<div class="border-y border-base-300 py-12 text-center text-sm text-base-content/55">No matching films or series were found.</div>{/if}
+  {:else if !loading && !error}<div class="empty-state border-y border-base-300 py-16 text-center"><p class="empty-state-title">No matching titles</p><p class="mt-2 text-sm text-base-content/45">Try another film, series, or person.</p></div>{/if}
 </section>
 {:else}
-  <section aria-label="Browse films and series" class="space-y-11 pt-2">
+  <section aria-label="Browse films and series" class="discover-page space-y-12">
+    <div class="page-heading"><div><p class="page-eyebrow">Curated for your screen</p><h1>Discover</h1></div><p class="page-intro">Films and series, gathered in one quiet place.</p></div>
     {#if catalogueError}<div class="alert alert-error"><span>{catalogueError}</span><div class="flex gap-2"><button class="btn btn-sm" onclick={loadDiscovery}>Try again</button><a class="btn btn-sm" href="/settings">Open settings</a></div></div>{/if}
     {#if catalogueLoading}
       {#each Array(3) as _}
-        <div><div class="mb-4 h-6 w-40 animate-pulse rounded bg-base-300"></div><div class="grid auto-cols-[8.75rem] grid-flow-col gap-4 overflow-hidden sm:auto-cols-[10.5rem]">{#each Array(6) as _}<div><div class="aspect-[2/3] animate-pulse bg-base-300"></div><div class="mt-3 h-4 w-3/4 animate-pulse rounded bg-base-300"></div></div>{/each}</div></div>
+        <div class="catalogue-skeleton"><div class="mb-4 h-6 w-40 animate-pulse bg-base-300"></div><div class="grid auto-cols-[8.75rem] grid-flow-col gap-4 overflow-hidden sm:auto-cols-[10.5rem]">{#each Array(6) as _}<div><div class="aspect-[2/3] animate-pulse bg-base-300"></div><div class="mt-3 h-4 w-3/4 animate-pulse bg-base-300"></div></div>{/each}</div></div>
       {/each}
     {:else}
       {#each visibleShelves as shelf}
-        <section aria-labelledby={`shelf-${shelf.id}`}>
-          <div class="mb-4 border-b border-base-300 pb-3"><h2 id={`shelf-${shelf.id}`} class="text-xl font-semibold tracking-tight">{shelf.title}</h2></div>
+        <section class="media-shelf" aria-labelledby={`shelf-${shelf.id}`}>
+          <div class="shelf-heading"><h2 id={`shelf-${shelf.id}`}>{shelf.title}</h2><span>{shelf.items.length} titles</span></div>
           <div class="group/shelf relative">
             <button
               class="absolute inset-y-0 left-0 z-10 hidden w-11 place-items-center bg-gradient-to-r from-base-200 via-base-200/90 to-transparent text-base-content transition hover:text-primary disabled:pointer-events-none disabled:opacity-0 md:grid"

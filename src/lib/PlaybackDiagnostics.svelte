@@ -9,9 +9,9 @@
   const networkLabels = ['Empty', 'Idle', 'Loading', 'No source'];
 </script>
 
-<details class="mt-5 border border-base-300 bg-base-100" open>
-  <summary class="cursor-pointer px-4 py-3 text-sm font-semibold tracking-wide">Playback diagnostics</summary>
-  <div class="grid gap-5 border-t border-base-300 p-4 text-xs lg:grid-cols-2">
+<details class="playback-diagnostics mt-5 border-y border-base-300">
+  <summary class="cursor-pointer py-4 text-xs font-semibold uppercase tracking-[0.16em] text-base-content/60">Playback diagnostics</summary>
+  <div class="grid gap-8 border-t border-base-300 py-5 text-xs lg:grid-cols-2">
     <section>
       <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Active playback</h3>
       <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2">

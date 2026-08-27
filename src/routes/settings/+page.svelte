@@ -10,7 +10,7 @@
   let configured = $state(false);
   let theme = $state('watchhouse');
   const themes = [
-    { id: 'watchhouse', name: 'Watchhouse', description: 'Warm charcoal and gold', colours: ['#171716', '#30302c', '#c9a96e'] },
+    { id: 'watchhouse', name: 'Watchhouse', description: 'Gallery black and ivory', colours: ['#08090a', '#262729', '#ded8cd'] },
     { id: 'midnight', name: 'Midnight', description: 'Deep navy and cyan', colours: ['#0d1722', '#283b4d', '#73c9d8'] },
     { id: 'cinema', name: 'Cinema', description: 'Near-black and red', colours: ['#140f10', '#3e2d2f', '#dc6b61'] },
     { id: 'paper', name: 'Paper', description: 'Warm light and teal', colours: ['#f3efe6', '#d8d0c1', '#326b71'] }
@@ -35,11 +35,11 @@
 
 <svelte:head><title>Settings · Watchhouse</title></svelte:head>
 
-<div class="mx-auto max-w-4xl">
-  <div class="mb-8 flex flex-wrap items-start justify-between gap-4 border-b border-base-300 pb-6"><div><p class="mb-3 text-xs font-semibold tracking-[0.18em] text-base-content/50">PRIVATE CONFIGURATION</p><h1 class="text-4xl font-semibold tracking-tight">Settings</h1><p class="mt-3 max-w-2xl text-base-content/65">Personalise Watchhouse and configure catalogue search, indexer access, and playback.</p></div><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
+<div class="settings-page mx-auto max-w-5xl">
+  <div class="page-heading"><div><p class="page-eyebrow">Private configuration</p><h1>Settings</h1><p class="page-intro mt-4">Personalise Watchhouse and configure catalogue search, indexer access, and playback.</p></div><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
   {#if notice}<div class="alert alert-{noticeType} mb-6"><span>{notice}</span></div>{/if}
   {#if loading}
-    <div class="flex justify-center p-16"><span class="loading loading-spinner loading-lg"></span></div>
+    <div class="editorial-loading grid place-items-center p-20"><span class="loading loading-spinner loading-lg"></span><p>Loading private settings</p></div>
   {:else}
     <form class="settings-form space-y-8" onsubmit={(event) => { event.preventDefault(); save(); }}>
       <section class="card border border-base-300 bg-base-100 shadow-sm">
@@ -55,11 +55,11 @@
                 aria-checked={theme === option.id}
                 onclick={() => selectTheme(option.id)}
               >
-                <span class="flex overflow-hidden rounded-full border border-base-content/15" aria-hidden="true">
+                <span class="theme-palette flex overflow-hidden border border-base-content/15" aria-hidden="true">
                   {#each option.colours as colour}<span class="size-5" style={`background:${colour}`}></span>{/each}
                 </span>
                 <span class="min-w-0 flex-1"><span class="block text-sm font-semibold">{option.name}</span><span class="mt-0.5 block text-xs text-base-content/55">{option.description}</span></span>
-                <span class="size-3 rounded-full border border-base-content/40 {theme === option.id ? 'bg-primary ring-2 ring-primary/25 ring-offset-2 ring-offset-base-100' : ''}" aria-hidden="true"></span>
+                <span class="theme-selection size-3 border border-base-content/40 {theme === option.id ? 'bg-primary ring-2 ring-primary/25 ring-offset-2 ring-offset-base-100' : ''}" aria-hidden="true"></span>
               </button>
             {/each}
           </div>

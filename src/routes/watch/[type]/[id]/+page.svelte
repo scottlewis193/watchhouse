@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
   import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldShowUpNext } from '$lib/playback-controls.js';
@@ -8,7 +9,7 @@
   import { offlineAvailability, offlineEpisodes } from '$lib/offline.js';
 
   const media = { id: Number(page.params.id), type: page.params.type, title: page.url.searchParams.get('title') || '', year: page.url.searchParams.get('year') || '', poster: page.url.searchParams.get('poster') || '' };
-  const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1';
+  const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1', shouldStartImmediately = page.url.searchParams.get('play') === '1' || shouldResume;
   let seasons = $state([]), episodes = $state([]), episodesBySeason = $state({}), selectedSeason = $state(''), selectedEpisode = $state('');
   let playback = $state(null), player = $state(), playerShell = $state(), manualReleaseSelection = $state(false), detailedPlaybackProgress = $state(false), playbackDiagnostics = $state(false), releaseChoices = $state([]), pendingMedia = $state(null), pendingResume = $state(false);
   let currentMedia = $state(null), nextMedia = $state(null), nextJob = $state(null), showUpNext = $state(false), autoPlayNext = $state(true);
@@ -39,6 +40,8 @@
       const savedDuration = progressFor(media)?.duration;
       if (savedDuration) media.durationHint = savedDuration;
       else try { media.durationHint = (await api.get(`/api/catalog/movies/${media.id}/runtime`)).duration; } catch {}
+      currentMedia = media;
+      if (!shouldStartImmediately) { playback = null; return; }
       return startPlayback(media, null, shouldResume && Boolean(progressFor(media)?.position));
     }
     playback = { status: 'selecting', message: 'Loading seasons…', progress: 3 };
@@ -51,12 +54,14 @@
         episodesBySeason = Object.fromEntries(numbers.map(number => [String(number), local.filter(item => item.season === number).map(item => ({ number: item.episode, name: item.episodeTitle || `Episode ${item.episode}`, runtime: Math.round((item.durationHint || 0) / 60) }))]));
         selectedSeason = numbers.includes(Number(requestedSeason)) ? requestedSeason : String(numbers[0]);
         await loadEpisodes(requestedEpisode);
+        if (!shouldStartImmediately) { currentMedia = selectedMediaItem(); playback = null; return; }
         if (requestedEpisode) playEpisode(shouldResume); else await playNextUnwatchedEpisode(); return;
       }
       seasons = (await api.get(`/api/catalog/shows/${media.id}/seasons`)).seasons;
       if (!seasons.length) throw new Error('No selectable seasons were found for this show.');
       selectedSeason = seasons.some(season => String(season.number) === requestedSeason) ? requestedSeason : String(seasons[0].number);
       await loadEpisodes(requestedEpisode);
+      if (!shouldStartImmediately) { currentMedia = selectedMediaItem(); playback = null; return; }
       if (requestedEpisode) playEpisode(shouldResume);
       else await playNextUnwatchedEpisode();
     } catch (e) { playback = { status: 'error', message: e.message, progress: 0 }; }
@@ -168,6 +173,11 @@
     const selectedMedia = episodePlaybackMedia(media, selectedSeason, selectedEpisode, episodes);
     if (!selectedMedia) { playback = { status: 'error', message: 'Choose a valid season and episode before starting playback.', progress: 0 }; return; }
     void startPlayback(selectedMedia, null, resume && Boolean(progressFor(selectedMedia)?.position));
+  }
+
+  function playSelectedMedia() {
+    if (media.type === 'movie') void startPlayback(media, null, Boolean(progressFor(media)?.position));
+    else playEpisode(true);
   }
 
   function playEpisodeNumber(episodeNumber) {
@@ -433,64 +443,79 @@
   function toggleMute() { if (player) player.muted = !player.muted; }
   async function toggleFullscreen() { if (!playerShell) return; if (document.fullscreenElement) await document.exitFullscreen(); else await playerShell.requestFullscreen(); }
   function handleFullscreenChange() { fullscreen = Boolean(document.fullscreenElement); showPlayerControls(); }
-  function handlePlayerKeydown(event) {
-    if (event.target.matches('button, input')) return;
-    if (event.key === ' ' || event.key.toLowerCase() === 'k') { event.preventDefault(); togglePlayback(); }
-    else if (event.key === 'ArrowLeft') { event.preventDefault(); seekBy(-10); }
-    else if (event.key === 'ArrowRight') { event.preventDefault(); seekBy(10); }
-    else if (event.key.toLowerCase() === 'm') { event.preventDefault(); toggleMute(); }
-    else if (event.key.toLowerCase() === 'f') { event.preventDefault(); void toggleFullscreen(); }
+  function handleWatchShortcut(event) {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    const editing = target instanceof HTMLElement && (target.matches('input, textarea, select') || target.isContentEditable);
+    const interactive = target instanceof HTMLElement && target.matches('button, a');
+    if (editing) return;
+    const key = event.key.toLowerCase();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      if (document.fullscreenElement) void document.exitFullscreen();
+      else if (history.length > 1) history.back();
+      else void goto('/');
+    }
+    else if ((event.key === ' ' || key === 'k') && !interactive) { event.preventDefault(); if (player) togglePlayback(); else if (!playback) playSelectedMedia(); }
+    else if (event.key === 'ArrowLeft' && player) { event.preventDefault(); seekBy(-10); }
+    else if (event.key === 'ArrowRight' && player) { event.preventDefault(); seekBy(10); }
+    else if (key === 'm' && player) { event.preventDefault(); toggleMute(); }
+    else if (key === 'f' && playerShell) { event.preventDefault(); void toggleFullscreen(); }
   }
 </script>
 
-<svelte:window onfullscreenchange={handleFullscreenChange} />
+<svelte:window onfullscreenchange={handleFullscreenChange} onkeydowncapture={handleWatchShortcut} />
 
 <svelte:head><title>{media.title ? `${media.title} · Watchhouse` : 'Watch · Watchhouse'}</title></svelte:head>
 
-<section class="py-2 sm:py-6">
+<section class="watch-page py-2 sm:py-6">
   <a class="link link-hover text-sm text-base-content/60" href="/">← Back to discover</a>
-  <div class="mt-6 border-b border-base-300 pb-6 sm:flex sm:items-end sm:justify-between sm:gap-6"><div><p class="text-xs font-semibold tracking-[0.18em] text-base-content/50">{media.type === 'tv' ? 'SERIES' : 'FILM'}{media.year ? ` · ${media.year}` : ''}</p><h1 class="mt-2 text-3xl font-semibold tracking-tight sm:text-5xl">{media.title || 'Watch'}</h1>{#if media.type === 'tv' && selectedSeason && selectedEpisode}<p class="mt-2 text-base-content/65">Season {selectedSeason}, episode {selectedEpisode}</p>{/if}</div><div class="mt-4 flex flex-wrap gap-2 sm:mt-0"><button class="btn btn-sm btn-outline" onclick={toggleLibrary}>{isInLibrary() ? 'Remove from library' : '+ Add to library'}</button>{#if !offlineMode}{#if activeDownload(media)}<button class="btn btn-sm" disabled><span class="loading loading-spinner loading-xs"></span>{Math.round(activeDownload(media).progress || 0)}%</button>{:else if media.type === 'tv'}<button class="btn btn-sm btn-outline" onclick={() => void downloadForOffline(media)}>Download series{downloaded(media).count ? ` (${downloaded(media).count} saved)` : ''}</button>{:else if downloaded(media).available}<span class="badge badge-success self-center">Available offline</span>{:else}<button class="btn btn-sm btn-outline" onclick={() => void downloadForOffline(media)}>Download movie</button>{/if}{/if}<button class="btn btn-sm btn-ghost" onclick={toggleWatched} disabled={media.type === 'tv' && !selectedEpisode}>{isWatched() ? `Mark ${media.type === 'tv' ? 'episode ' : ''}unwatched` : `Mark ${media.type === 'tv' ? 'episode ' : ''}watched`}</button></div></div>
+  <div class="watch-heading mt-6 border-b border-base-300 pb-8 sm:flex sm:items-end sm:justify-between sm:gap-6"><div><p class="page-eyebrow">{media.type === 'tv' ? 'Series' : 'Film'}{media.year ? ` · ${media.year}` : ''}</p><h1 class="mt-3 text-4xl sm:text-6xl">{media.title || 'Watch'}</h1>{#if media.type === 'tv' && selectedSeason && selectedEpisode}<p class="mt-3 text-sm text-base-content/50">Season {selectedSeason}, episode {selectedEpisode}</p>{/if}</div><div class="watch-actions mt-5 flex flex-wrap gap-x-5 gap-y-2 sm:mt-0"><button class="btn btn-sm btn-ghost" onclick={toggleLibrary}>{isInLibrary() ? 'Remove from library' : '+ Add to library'}</button>{#if !offlineMode}{#if activeDownload(media)}<button class="btn btn-sm btn-ghost" disabled><span class="loading loading-spinner loading-xs"></span>{Math.round(activeDownload(media).progress || 0)}%</button>{:else if media.type === 'tv'}<button class="btn btn-sm btn-ghost" onclick={() => void downloadForOffline(media)}>Download series{downloaded(media).count ? ` (${downloaded(media).count} saved)` : ''}</button>{:else if downloaded(media).available}<span class="badge badge-success self-center">Available offline</span>{:else}<button class="btn btn-sm btn-ghost" onclick={() => void downloadForOffline(media)}>Download movie</button>{/if}{/if}<button class="btn btn-sm btn-ghost" onclick={toggleWatched} disabled={media.type === 'tv' && !selectedEpisode}>{isWatched() ? `Mark ${media.type === 'tv' ? 'episode ' : ''}unwatched` : `Mark ${media.type === 'tv' ? 'episode ' : ''}watched`}</button></div></div>
   {#if downloadError}<div class="alert alert-error mt-4"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}
   {#if bulkError}<div class="alert alert-error mt-4"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}
   <div class="mt-8 grid gap-8 {media.type === 'tv' || releaseChoices.length ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''}">
     <div>
-      {#if currentMedia}
-        <div class="player-shell group/player relative aspect-video overflow-hidden bg-black shadow-2xl" bind:this={playerShell} role="group" aria-label="Video player" onpointermove={showPlayerControls} onpointerleave={schedulePlayerControlsHide} onfocusin={showPlayerControls} onfocusout={schedulePlayerControlsHide}>
+      {#if !playback}
+        <div class="player-shell detail-player relative grid aspect-video place-items-center overflow-hidden bg-black text-center" style={media.poster ? `background-image: linear-gradient(rgb(0 0 0 / 52%), rgb(0 0 0 / 82%)), url(${media.poster})` : undefined}>
+          <div class="player-modal-panel relative z-10"><p class="player-eyebrow">{media.type === 'tv' ? `Season ${selectedSeason} · Episode ${selectedEpisode}` : 'Feature presentation'}</p><h2>{media.type === 'tv' ? episodes.find(episode => String(episode.number) === selectedEpisode)?.name || media.title : media.title}</h2><button class="btn btn-lg btn-primary mt-7 min-w-44" onclick={playSelectedMedia}><span class="text-base" aria-hidden="true">▶</span> Play now</button></div>
+        </div>
+      {:else if currentMedia}
+        <div class="player-shell cinema-player group/player relative aspect-video overflow-hidden bg-black" bind:this={playerShell} role="group" aria-label="Video player" onpointermove={showPlayerControls} onpointerleave={schedulePlayerControlsHide} onfocusin={showPlayerControls} onfocusout={schedulePlayerControlsHide}>
           {#if playback?.status === 'ready'}
             {@const timeline = controlTimeline()}
             {#key `${playback.id}:${resumeStreamOffset}:${streamAttempt}`}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="h-full w-full bg-black object-contain transition-opacity focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" class:opacity-0={resumeStarting} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={resumeStarting ? -1 : 0} aria-hidden={resumeStarting} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onkeydown={handlePlayerKeydown} onerror={() => { captureVideoDiagnostics('error'); offerPlaybackRecovery('The direct stream encountered a playback error.'); }} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
+              <video class="h-full w-full bg-black object-contain transition-opacity focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" class:opacity-0={resumeStarting} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={resumeStarting ? -1 : 0} aria-hidden={resumeStarting} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); offerPlaybackRecovery('The direct stream encountered a playback error.'); }} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
             {/key}
             {#if playbackRecovery}
-              <div class="absolute inset-0 z-30 grid place-items-center bg-black/85 p-6 text-center text-white">
-                <div class="max-w-md"><p class="text-xs font-semibold tracking-[0.18em] text-primary">PLAYBACK INTERRUPTED</p><h2 class="mt-3 text-2xl font-semibold">Choose how to continue</h2><p class="mt-3 text-sm text-white/70">{playbackRecovery.message}</p><div class="mt-6 flex flex-col justify-center gap-3 sm:flex-row"><button class="btn btn-lg btn-primary" onclick={retryDirectStream}>Retry stream</button><button class="btn btn-lg btn-outline border-white/40 text-white hover:border-white hover:bg-white hover:text-black" onclick={() => void fallback()}>Download &amp; resume</button></div></div>
+              <div class="player-modal absolute inset-0 z-30 grid place-items-center p-6 text-center text-white">
+                <div class="player-modal-panel max-w-md"><p class="player-eyebrow">Playback interrupted</p><h2>Choose how to continue</h2><p>{playbackRecovery.message}</p><div class="mt-7 flex flex-col justify-center gap-3 sm:flex-row"><button class="btn btn-lg btn-primary" onclick={retryDirectStream}>Retry stream</button><button class="btn btn-lg btn-outline border-white/30 text-white hover:border-white hover:bg-white hover:text-black" onclick={() => void fallback()}>Download &amp; resume</button></div></div>
               </div>
             {:else if playbackNeedsAction}
-              <div class="absolute inset-0 z-30 grid place-items-center bg-black/80 p-6 text-center text-white">
-                <div><p class="text-xs font-semibold tracking-[0.18em] text-primary">READY TO WATCH</p><h2 class="mt-3 text-2xl font-semibold">{currentMedia?.episodeTitle || media.title}</h2><button class="btn btn-lg btn-primary mt-6 min-w-44" onclick={() => void playPreparedVideo()}><span class="text-xl" aria-hidden="true">▶</span> Play</button></div>
+              <div class="player-modal absolute inset-0 z-30 grid place-items-center p-6 text-center text-white">
+                <div class="player-modal-panel"><p class="player-eyebrow">Ready to watch</p><h2>{currentMedia?.episodeTitle || media.title}</h2><button class="btn btn-lg btn-primary mt-7 min-w-44" onclick={() => void playPreparedVideo()}><span class="text-base" aria-hidden="true">▶</span> Play</button></div>
               </div>
             {:else if resumeStarting}
               <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={resumeStreamOffset > 0 ? `Opening the stream and restoring your position at ${formatPosition(resumeStreamOffset)}…` : 'Opening the video stream and preparing the first frames…'} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} indeterminate /></div>
-            {:else}<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/85 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-4 sm:pb-4" class:pointer-events-none={!controlsVisible} class:opacity-0={!controlsVisible}>
+            {:else}<div class="player-controls absolute inset-x-0 bottom-0 px-3 pb-3 pt-12 text-white transition-opacity duration-200 sm:px-5 sm:pb-5" class:pointer-events-none={!controlsVisible} class:opacity-0={!controlsVisible}>
             <label class="sr-only" for="playback-position">Playback position</label>
             <input id="playback-position" class="range range-primary range-xs block w-full" type="range" min="0" max={timeline.duration || 0} step="0.1" value={timeline.position} disabled={!timeline.duration} oninput={previewSeek} onchange={commitSeek} aria-valuetext={`${formatPosition(timeline.position)} of ${formatPosition(timeline.duration)}`} />
             <div class="mt-3 flex items-center gap-2 sm:gap-3">
-              {#if media.type === 'tv'}<button class="grid size-9 place-items-center rounded-full transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white disabled:opacity-35" onclick={() => void playAdjacentEpisode(-1)} disabled={!canNavigateEpisode(-1)} aria-label="Previous episode"><svg class="size-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M4 4h2v12H4zm12.2.3a1 1 0 0 1 1.55.83v9.74a1 1 0 0 1-1.55.83L9.4 10.83a1 1 0 0 1 0-1.66z" /></svg></button>{/if}
-              <button class="grid size-9 place-items-center rounded-full transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white" onclick={togglePlayback} aria-label={playing ? 'Pause' : 'Play'}>
+              {#if media.type === 'tv'}<button class="player-control grid size-9 place-items-center transition focus-visible:outline-2 focus-visible:outline-white disabled:opacity-35" onclick={() => void playAdjacentEpisode(-1)} disabled={!canNavigateEpisode(-1)} aria-label="Previous episode"><svg class="size-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M4 4h2v12H4zm12.2.3a1 1 0 0 1 1.55.83v9.74a1 1 0 0 1-1.55.83L9.4 10.83a1 1 0 0 1 0-1.66z" /></svg></button>{/if}
+              <button class="player-control player-control-primary grid size-9 place-items-center transition focus-visible:outline-2 focus-visible:outline-white" onclick={togglePlayback} aria-label={playing ? 'Pause' : 'Play'}>
                 {#if playing}<svg class="size-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5h4v13h-4zm7 0h4v13h-4z" /></svg>{:else}<svg class="size-5 translate-x-px" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M5 3.7a1 1 0 0 1 1.54-.84l9 6.3a1 1 0 0 1 0 1.68l-9 6.3A1 1 0 0 1 5 16.3z" /></svg>{/if}
               </button>
-              {#if media.type === 'tv'}<button class="grid size-9 place-items-center rounded-full transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white disabled:opacity-35" onclick={() => void playAdjacentEpisode(1)} disabled={!canNavigateEpisode(1)} aria-label="Next episode"><svg class="size-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M16 4h-2v12h2zM3.8 4.3a1 1 0 0 0-1.55.83v9.74a1 1 0 0 0 1.55.83l6.8-4.87a1 1 0 0 0 0-1.66z" /></svg></button>{/if}
-              <button class="grid size-9 place-items-center rounded-full text-xs font-semibold transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white" onclick={() => seekBy(-10)} aria-label="Rewind 10 seconds">−10</button>
-              <button class="grid size-9 place-items-center rounded-full text-xs font-semibold transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white" onclick={() => seekBy(10)} aria-label="Forward 10 seconds">+10</button>
+              {#if media.type === 'tv'}<button class="player-control grid size-9 place-items-center transition focus-visible:outline-2 focus-visible:outline-white disabled:opacity-35" onclick={() => void playAdjacentEpisode(1)} disabled={!canNavigateEpisode(1)} aria-label="Next episode"><svg class="size-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M16 4h-2v12h2zM3.8 4.3a1 1 0 0 0-1.55.83v9.74a1 1 0 0 0 1.55.83l6.8-4.87a1 1 0 0 0 0-1.66z" /></svg></button>{/if}
+              <button class="player-control grid size-9 place-items-center text-[10px] font-semibold transition focus-visible:outline-2 focus-visible:outline-white" onclick={() => seekBy(-10)} aria-label="Rewind 10 seconds">−10</button>
+              <button class="player-control grid size-9 place-items-center text-[10px] font-semibold transition focus-visible:outline-2 focus-visible:outline-white" onclick={() => seekBy(10)} aria-label="Forward 10 seconds">+10</button>
               <span class="min-w-24 text-xs tabular-nums text-white/80">{formatPosition(timeline.position)} / {formatPosition(timeline.duration)}</span>
               <div class="ml-auto hidden items-center gap-2 sm:flex">
-                <button class="grid size-9 place-items-center rounded-full transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white" onclick={toggleMute} aria-label={playerMuted ? 'Unmute' : 'Mute'}>
+                <button class="player-control grid size-9 place-items-center transition focus-visible:outline-2 focus-visible:outline-white" onclick={toggleMute} aria-label={playerMuted ? 'Unmute' : 'Mute'}>
                   {#if playerMuted || playerVolume === 0}<svg class="size-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 8h3l4-3v10l-4-3H3zM13 8l4 4m0-4-4 4" /></svg>{:else}<svg class="size-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 8h3l4-3v10l-4-3H3zM13 7a4 4 0 0 1 0 6m2-8a7 7 0 0 1 0 10" /></svg>{/if}
                 </button>
                 <label class="sr-only" for="playback-volume">Volume</label><input id="playback-volume" class="range range-xs w-24" type="range" min="0" max="1" step="0.05" value={playerMuted ? 0 : playerVolume} oninput={setVolume} />
               </div>
-              <button class="grid size-9 place-items-center rounded-full transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-white" onclick={toggleFullscreen} aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}>
+              <button class="player-control grid size-9 place-items-center transition focus-visible:outline-2 focus-visible:outline-white" onclick={toggleFullscreen} aria-label={fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}>
                 {#if fullscreen}<svg class="size-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 3v5H3m9-5v5h5M8 17v-5H3m9 5v-5h5" /></svg>{:else}<svg class="size-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 8V3h5m4 0h5v5M3 12v5h5m4 0h5v-5" /></svg>{/if}
               </button>
             </div>
@@ -498,7 +523,7 @@
           {:else}
             <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
           {/if}
-          {#if showUpNext && nextMedia}<div class="absolute inset-x-3 bottom-24 z-30 flex flex-wrap items-center justify-between gap-3 border border-primary/50 bg-base-200/95 p-4 text-base-content shadow-xl backdrop-blur-sm sm:left-auto sm:right-4 sm:w-96"><div><p class="text-xs font-semibold tracking-[0.14em] text-primary">UP NEXT</p><p class="mt-1">{nextMedia.episode}. {nextMedia.episodeTitle}{nextJob?.status === 'ready' ? ' · ready to play' : ' · preparing in background'}</p></div><div class="flex gap-2"><button class="btn btn-sm btn-primary" onclick={playNextEpisode}>Play next</button><button class="btn btn-sm btn-ghost" onclick={() => { autoPlayNext = false; showUpNext = false; }}>Cancel autoplay</button></div></div>{/if}
+          {#if showUpNext && nextMedia}<div class="up-next-panel absolute inset-x-3 bottom-24 z-30 flex flex-wrap items-center justify-between gap-4 p-5 text-base-content backdrop-blur-md sm:left-auto sm:right-5 sm:w-[26rem]"><div><p class="player-eyebrow">Up next</p><p class="mt-2 text-sm">{nextMedia.episode}. {nextMedia.episodeTitle}</p><p class="mt-1 text-[11px] text-base-content/45">{nextJob?.status === 'ready' ? 'Ready to play' : 'Preparing in the background'}</p></div><div class="flex gap-2"><button class="btn btn-sm btn-primary" onclick={playNextEpisode}>Play next</button><button class="btn btn-sm btn-ghost" onclick={() => { autoPlayNext = false; showUpNext = false; }}>Cancel</button></div></div>{/if}
         </div>
       {:else}
         <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
@@ -506,15 +531,15 @@
       {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}</div>{/if}
       {#if playbackDiagnostics}<PlaybackDiagnostics {playback} {nextJob} video={videoDiagnostics} />{/if}
     </div>
-    {#if media.type === 'tv' || releaseChoices.length}<aside class="border-t border-base-300 pt-6 xl:border-l xl:border-t-0 xl:pl-6 xl:pt-0">
+    {#if media.type === 'tv' || releaseChoices.length}<aside class="episode-panel border-t border-base-300 pt-7 xl:border-l xl:border-t-0 xl:pl-8 xl:pt-0">
       {#if media.type === 'tv'}
         <div class="flex flex-wrap items-end justify-between gap-4">
-          <div><h2 class="text-lg font-semibold">Episodes</h2><p class="mt-1 text-xs text-base-content/55">Select an episode to start watching</p></div>
+          <div><p class="page-eyebrow">Series guide</p><h2 class="episode-title mt-2">Episodes</h2><p class="mt-1 text-xs text-base-content/45">Select an episode to start watching</p></div>
           <div class="flex flex-wrap items-center justify-end gap-2">
             <label class="form-control w-40"><span class="sr-only">Season</span><select class="select select-bordered select-sm w-full" aria-label="Season" aria-busy={!seasons.length && playback?.status !== 'error'} bind:value={selectedSeason} disabled={!seasons.length} onchange={() => loadEpisodes()}>{#if seasons.length}{#each seasons as season}<option value={String(season.number)}>{season.name}</option>{/each}{:else}<option value="">{playback?.status === 'error' ? 'Seasons unavailable' : 'Loading seasons…'}</option>{/if}</select></label>
             <details class="dropdown dropdown-end" class:pointer-events-none={!episodes.length || bulkUpdating}>
               <summary class="btn btn-sm btn-ghost" class:opacity-50={!episodes.length || bulkUpdating} aria-disabled={!episodes.length || bulkUpdating}>Bulk actions <span aria-hidden="true">⌄</span></summary>
-              <ul class="menu dropdown-content z-30 mt-2 w-56 border border-base-300 bg-base-100 p-1 shadow-xl" aria-label="Bulk episode actions">
+              <ul class="editorial-menu menu dropdown-content z-30 mt-2 w-56 border border-base-300 bg-base-100 p-1" aria-label="Bulk episode actions">
                 <li><button onclick={(event) => runBulkAction(event, toggleSeasonWatched)}>{isSeasonWatched() ? 'Mark season unwatched' : 'Mark season watched'}</button></li>
                 <li><button onclick={(event) => runBulkAction(event, () => void toggleSeriesWatched())}>{isSeriesWatched() ? 'Mark series unwatched' : 'Mark series watched'}</button></li>
               </ul>
@@ -522,31 +547,31 @@
           </div>
         </div>
         {#if episodes.length}
-          <div class="mt-4 max-h-[34rem] divide-y divide-base-300 overflow-y-auto border-y border-base-300">
+          <div class="episode-list mt-5 max-h-[34rem] divide-y divide-base-300 overflow-y-auto border-y border-base-300">
             {#each episodes as episode}
               {@const episodeMedia = { ...media, season: Number(selectedSeason), episode: episode.number, episodeTitle: episode.name }}
               {@const episodeWatched = isWatched(episodeMedia)}
               <div
-                class="group flex w-full items-center text-left transition-colors hover:bg-base-200"
+                class="episode-row group flex w-full items-center text-left transition-colors hover:bg-base-200"
                 class:bg-base-200={String(episode.number) === selectedEpisode}
               >
                 <button class="flex min-w-0 flex-1 items-center gap-4 px-2 py-4 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" aria-current={String(episode.number) === selectedEpisode ? 'true' : undefined} aria-label={`Play episode ${episode.number}, ${episode.name}`} onclick={() => playEpisodeNumber(episode.number)}>
-                  <span class="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-base-300 text-sm font-semibold text-base-content/65 transition-colors group-hover:border-primary group-hover:bg-primary group-hover:text-primary-content">
+                  <span class="episode-marker grid h-10 w-10 shrink-0 place-items-center border border-base-300 text-sm font-semibold text-base-content/55 transition-colors group-hover:border-primary group-hover:bg-primary group-hover:text-primary-content">
                     {#if currentMedia?.type === 'tv' && currentMedia.season === Number(selectedSeason) && currentMedia.episode === episode.number && playback?.status === 'ready'}<span class="text-xs tracking-wide">NOW</span>{:else}<svg class="h-4 w-4 translate-x-px" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M5.5 3.9a1 1 0 0 1 1.52-.85l9.1 6.1a1 1 0 0 1 0 1.7l-9.1 6.1a1 1 0 0 1-1.52-.85V3.9Z" /></svg>{/if}
                   </span>
                   <span class="min-w-0 flex-1"><span class="flex items-baseline gap-2"><span class="text-xs font-semibold text-base-content/50">{episode.number}</span><span class="truncate text-sm font-medium group-hover:text-primary">{episode.name}</span></span>{#if episode.airDate}<span class="mt-1 block text-xs text-base-content/50">{formatAirDate(episode.airDate)}</span>{/if}</span>
                 </button>
-                <button class="mr-2 grid size-9 shrink-0 place-items-center rounded-full text-sm hover:bg-base-300 hover:text-primary focus-visible:outline-2 focus-visible:outline-primary" class:text-primary={episodeWatched} aria-label={episodeWatched ? `Mark episode ${episode.number} unwatched` : `Mark episode ${episode.number} watched`} aria-pressed={episodeWatched} onclick={() => void setWatched(episodeMedia, !episodeWatched)}>{episodeWatched ? '✓' : '○'}</button>
+                <button class="episode-watched mr-2 grid size-9 shrink-0 place-items-center text-sm hover:bg-base-300 hover:text-primary focus-visible:outline-2 focus-visible:outline-primary" class:text-primary={episodeWatched} aria-label={episodeWatched ? `Mark episode ${episode.number} unwatched` : `Mark episode ${episode.number} watched`} aria-pressed={episodeWatched} onclick={() => void setWatched(episodeMedia, !episodeWatched)}>{episodeWatched ? '✓' : '○'}</button>
               </div>
             {/each}
           </div>
         {:else if playback?.status === 'selecting'}
           <div class="mt-4 space-y-1 border-y border-base-300 py-2" aria-label="Loading episodes">
-            {#each Array(4) as _}<div class="flex animate-pulse items-center gap-4 px-2 py-3"><span class="h-11 w-11 rounded-full bg-base-300"></span><span class="h-4 w-2/3 rounded bg-base-300"></span></div>{/each}
+            {#each Array(4) as _}<div class="flex animate-pulse items-center gap-4 px-2 py-3"><span class="h-10 w-10 bg-base-300"></span><span class="h-4 w-2/3 bg-base-300"></span></div>{/each}
           </div>
         {/if}
       {/if}
-      {#if releaseChoices.length}<div class="mt-8 border-t border-base-300 pt-5"><p class="text-xs font-semibold tracking-[0.14em] text-base-content/55">CHOOSE A RELEASE</p><div class="mt-3 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="flex w-full items-start justify-between gap-3 py-3 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/55">{release.readiness.label} · {release.category}</span></span>{#if release.size}<span class="shrink-0 text-xs text-base-content/55">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
+      {#if releaseChoices.length}<div class="release-picker mt-8 border-t border-base-300 pt-6"><p class="page-eyebrow">Choose a release</p><div class="mt-4 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="release-option flex w-full items-start justify-between gap-3 py-4 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/45">{release.readiness.label} · {release.category}</span></span>{#if release.size}<span class="shrink-0 text-xs text-base-content/45">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
     </aside>{/if}
   </div>
 </section>
