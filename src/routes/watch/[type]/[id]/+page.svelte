@@ -156,7 +156,7 @@
     const candidate = await adjacentEpisodeMedia(selectedMedia, 1);
     if (!candidate || !playbackRequests.isCurrent(requestToken) || itemKey(currentMedia) !== itemKey(selectedMedia)) return;
     nextMedia = candidate;
-    try { const job = await api.post('/api/play', nextMedia); if (!playbackRequests.isCurrent(requestToken) || itemKey(currentMedia) !== itemKey(selectedMedia)) return; nextJob = job; void pollNextEpisode(job.id, requestToken); } catch { if (playbackRequests.isCurrent(requestToken)) nextJob = { status: 'error' }; }
+    try { const job = await api.post('/api/play', { ...nextMedia, prepareAhead: true }); if (!playbackRequests.isCurrent(requestToken) || itemKey(currentMedia) !== itemKey(selectedMedia)) return; nextJob = job; void pollNextEpisode(job.id, requestToken); } catch { if (playbackRequests.isCurrent(requestToken)) nextJob = { status: 'error' }; }
   }
 
   async function pollNextEpisode(id, requestToken) {
@@ -471,7 +471,7 @@
                 <div><p class="text-xs font-semibold tracking-[0.18em] text-primary">READY TO WATCH</p><h2 class="mt-3 text-2xl font-semibold">{currentMedia?.episodeTitle || media.title}</h2><button class="btn btn-lg btn-primary mt-6 min-w-44" onclick={() => void playPreparedVideo()}><span class="text-xl" aria-hidden="true">▶</span> Play</button></div>
               </div>
             {:else if resumeStarting}
-              <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} /></div>
+              <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={resumeStreamOffset > 0 ? `Opening the stream and restoring your position at ${formatPosition(resumeStreamOffset)}…` : 'Opening the video stream and preparing the first frames…'} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} indeterminate /></div>
             {:else}<div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/85 to-transparent px-3 pb-3 pt-10 text-white transition-opacity duration-200 sm:px-4 sm:pb-4" class:pointer-events-none={!controlsVisible} class:opacity-0={!controlsVisible}>
             <label class="sr-only" for="playback-position">Playback position</label>
             <input id="playback-position" class="range range-primary range-xs block w-full" type="range" min="0" max={timeline.duration || 0} step="0.1" value={timeline.position} disabled={!timeline.duration} oninput={previewSeek} onchange={commitSeek} aria-valuetext={`${formatPosition(timeline.position)} of ${formatPosition(timeline.duration)}`} />
@@ -496,12 +496,12 @@
             </div>
             </div>{/if}
           {:else}
-            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} /></div>
+            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
           {/if}
           {#if showUpNext && nextMedia}<div class="absolute inset-x-3 bottom-24 z-30 flex flex-wrap items-center justify-between gap-3 border border-primary/50 bg-base-200/95 p-4 text-base-content shadow-xl backdrop-blur-sm sm:left-auto sm:right-4 sm:w-96"><div><p class="text-xs font-semibold tracking-[0.14em] text-primary">UP NEXT</p><p class="mt-1">{nextMedia.episode}. {nextMedia.episodeTitle}{nextJob?.status === 'ready' ? ' · ready to play' : ' · preparing in background'}</p></div><div class="flex gap-2"><button class="btn btn-sm btn-primary" onclick={playNextEpisode}>Play next</button><button class="btn btn-sm btn-ghost" onclick={() => { autoPlayNext = false; showUpNext = false; }}>Cancel autoplay</button></div></div>{/if}
         </div>
       {:else}
-        <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} /></div>
+        <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
       {/if}
       {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}</div>{/if}
       {#if playbackDiagnostics}<PlaybackDiagnostics {playback} {nextJob} video={videoDiagnostics} />{/if}

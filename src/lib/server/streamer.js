@@ -136,7 +136,21 @@ async function connectNntp(settings) {
   const pass = await client.command(`AUTHINFO PASS ${settings.usenetPass}`); if (!/^281/.test(pass)) throw new Error('Provider server rejected the password.');
   return client;
 }
-async function postedFileAvailable(file, settings) { const client = await connectNntp(settings); try { const indexes = [...new Set([0, Math.floor(file.segments.length / 2), file.segments.length - 1])]; for (const index of indexes) if (!await client.has(file.segments[index].id)) return false; return true; } finally { client.close(); } }
+async function postedFileAvailable(file, settings) {
+  const client = await connectNntp(settings);
+  try {
+    let header = Buffer.alloc(0); const chunks = [];
+    await client.body(file.segments[0].id, line => {
+      if (line.startsWith('=y')) return;
+      const chunk = decodeYenc(line); chunks.push(chunk);
+      if (header.length < 64) header = Buffer.concat([header, chunk]).subarray(0, 64);
+    });
+    if (!playableMediaHeader(file.subject, header)) return null;
+    const indexes = [...new Set([Math.floor(file.segments.length / 2), file.segments.length - 1])];
+    for (const index of indexes) if (!await client.has(file.segments[index].id)) return null;
+    return Buffer.concat(chunks);
+  } finally { client.close(); }
+}
 function nzbFiles(xml) {
   return [...xml.matchAll(/<file\s+([^>]*)>([\s\S]*?)<\/file>/gi)].map(([, attrs, file]) => ({
     subject: entityDecode((attrs.match(/\bsubject="([^"]*)"/i) || [, ''])[1]),
@@ -150,6 +164,12 @@ export function archiveFiles(xml) { return archivesFrom(nzbFiles(xml)); }
 export function decodeYenc(line) { const bytes = []; for (let i = 0; i < line.length; i++) { let code = line.charCodeAt(i); if (code === 61 && i + 1 < line.length) code = line.charCodeAt(++i) - 64; bytes.push((code - 42 + 256) & 255); } return Buffer.from(bytes); }
 export function yencName(line) { return (line.match(/^=ybegin\s+.*\bname=(.+)$/i) || [])[1]; }
 export function videoType(subject) { const ext = (subject.match(/\.(mkv|mp4|m4v|mov|webm)(?:\"|\s|$)/i) || [])[1]?.toLowerCase(); return ({ mp4: 'video/mp4', m4v: 'video/x-m4v', mov: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska' })[ext] || 'application/octet-stream'; }
+export function playableMediaHeader(subject, header) {
+  const extension = (String(subject).match(/\.(mkv|mp4|m4v|mov|webm)(?:\"|\s|$)/i) || [])[1]?.toLowerCase();
+  if (extension === 'mkv' || extension === 'webm') return header?.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3])) || false;
+  if (['mp4', 'm4v', 'mov'].includes(extension)) { const marker = header?.indexOf(Buffer.from('ftyp')) ?? -1; return marker >= 4 && marker <= 32; }
+  return false;
+}
 export async function orderedPrefetch(items, concurrency, load, consume) {
   const width = Math.max(1, Math.min(items.length || 1, Number(concurrency) || 1));
   const loadOnLane = (index, lane) => {
@@ -166,7 +186,7 @@ export async function orderedPrefetch(items, concurrency, load, consume) {
     await consume(value);
   }
 }
-export async function streamPostedFile(posted, settings, consume, connect = connectNntp) {
+export async function streamPostedFile(posted, settings, consume, connect = connectNntp, prefetchedSegments = new Map()) {
   const count = Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, posted.segments.length);
   const clients = [];
   try {
@@ -174,7 +194,8 @@ export async function streamPostedFile(posted, settings, consume, connect = conn
     for (const connection of connections) if (connection.status === 'fulfilled') clients.push(connection.value);
     const failed = connections.find(connection => connection.status === 'rejected');
     if (failed) throw failed.reason;
-    await orderedPrefetch(posted.segments, count, async (segment, _index, lane) => {
+    await orderedPrefetch(posted.segments, count, async (segment, index, lane) => {
+      if (prefetchedSegments.has(index)) return prefetchedSegments.get(index);
       for (let attempt = 0; attempt < 2; attempt++) {
         const chunks = [];
         try {
@@ -190,6 +211,23 @@ export async function streamPostedFile(posted, settings, consume, connect = conn
   } finally { for (const client of clients) client.close(); }
 }
 function filename(subject, fallback) { return (subject.match(/([^/\\\"]+\.(?:part\d+\.rar|rar|r\d\d|7z(?:\.\d{3})?|zip(?:\.\d{3})?|z\d\d|mkv|mp4|m4v|mov|webm))/i) || [, fallback])[1].replace(/[^a-z0-9._ -]/gi, '_'); }
+export function archiveFilenames(archives) {
+  const names = archives.map(archive => filename(archive.subject, 'archive.rar'));
+  const first = names.find(name => /\.part0*1\.rar$/i.test(name)) || names.find(name => /\.rar$/i.test(name));
+  if (!first) return names;
+  if (names.some(name => /\.r\d\d$/i.test(name))) {
+    const base = first.replace(/(?:\.part0*1)?\.rar$/i, '');
+    return names.map(name => {
+      const continuation = name.match(/\.r(\d\d)$/i);
+      return continuation ? `${base}.r${continuation[1]}` : /\.rar$/i.test(name) ? `${base}.rar` : name;
+    });
+  }
+  const base = first.replace(/\.part0*1\.rar$/i, '');
+  return names.map(name => {
+    const part = name.match(/\.part0*(\d+)\.rar$/i);
+    return part ? `${base}.part${String(Number(part[1])).padStart(2, '0')}.rar` : name;
+  });
+}
 function run(command, args, cwd) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd }); let stderr = ''; child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve() : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
 function runOutput(command, args, cwd) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd }); let stdout = '', stderr = ''; child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
 export async function writeStreamToResponse(stream, res, { end = true } = {}) {
@@ -216,6 +254,16 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
 }
+export function shouldCacheDirectPlayback(job) {
+  return Boolean(job.offlineDownload);
+}
+export function shouldFinalizeCachedPlayback(job, strategy) {
+  return Boolean(job.prepareAhead && strategy !== 'raw');
+}
+export function preparationDownloadSettings(job, settings) {
+  if (!job.prepareAhead) return settings;
+  return { ...settings, maxConnections: Math.min(2, Math.max(1, Number(settings.maxConnections) || 1)) };
+}
 async function cachedPlaybackStrategy(path, release) {
   const suggested = playbackStrategy(path, release);
   try {
@@ -226,7 +274,13 @@ async function cachedPlaybackStrategy(path, release) {
   } catch { return suggested; }
 }
 async function optimizeCachedVideo(job, path) {
-  const strategy = await cachedPlaybackStrategy(path, job.release); if (strategy === 'raw') return { path, mime: videoType(path) };
+  const strategy = await cachedPlaybackStrategy(path, job.release);
+  if (strategy === 'raw') return { path, mime: videoType(path) };
+  if (shouldFinalizeCachedPlayback(job, strategy)) {
+    const browserPath = `${path}.browser.mp4`;
+    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack), job.directory || ROOT);
+    return { path: browserPath, mime: 'video/mp4', strategy: 'raw' };
+  }
   return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy };
 }
 async function audioSafeOfflineRecord(record) {
@@ -238,7 +292,7 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
   const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack)); let stderr = '';
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
-  try { await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }); child.stdin.end(); const [code] = await once(child, 'close'); const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end(); }
+  try { await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }, connectNntp, job.prefetchedSegments); child.stdin.end(); const [code] = await once(child, 'close'); const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end(); }
   catch (error) { child.kill(); await output.catch(() => {}); if (!closed) throw error; }
 }
 async function streamCachedConversion(req, res, job, settings) {
@@ -253,7 +307,7 @@ async function streamCachedConversion(req, res, job, settings) {
   res.end();
 }
 function firstArchive(archives) { return archives.find(item => /\.part0*1\.rar/i.test(item.subject)) || archives.find(item => /\.rar/i.test(item.subject)) || archives.find(item => /\.(?:7z|zip)\.0*1/i.test(item.subject)) || archives.find(item => /\.(?:7z|zip)/i.test(item.subject)); }
-async function extractPostedArchive(directory, archives) { const first = firstArchive(archives); if (!first) throw new Error('No supported archive entry point was found.'); const name = filename(first.subject, 'archive'); if (/\.(?:rar|r\d\d)$/i.test(name)) await run('unrar', ['x', '-o+', '-idq', name], directory); else await run('7z', ['x', '-y', name, `-o${directory}`], directory); }
+async function extractPostedArchive(directory, archives, names = archiveFilenames(archives)) { const first = firstArchive(archives); if (!first) throw new Error('No supported archive entry point was found.'); const name = names[archives.indexOf(first)]; if (/\.(?:rar|r\d\d)$/i.test(name)) await run('unrar', ['x', '-o+', '-idq', name], directory); else await run('7z', ['x', '-y', name, `-o${directory}`], directory); }
 
 async function tmdbRequest(settings, path, params = {}) {
   if (!settings.tmdbToken) throw new Error('Add a TMDB read access token in settings before browsing.');
@@ -428,22 +482,55 @@ async function writePostedFile(posted, path, settings, job, state, maximum) {
   await Promise.all(workers); await mergeParts(parts, path, posted.segments.length); await rm(parts, { recursive: true, force: true });
 }
 async function cacheDirect(job, settings) {
-  setJob(job, 'downloading', 'Direct playback was unavailable. Downloading the video first…', 0); await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true }); const directory = job.directory || await mkdtemp(join(PLAYBACK_CACHE_ROOT, 'playback-')); job.directory = directory;
-  try { const path = join(directory, filename(job.file.subject, 'video')), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() }; await writePostedFile(job.file, path, settings, job, state, 90); const optimized = await optimizeCachedVideo(job, path); Object.assign(job, { status: 'ready', message: optimized.mode === 'cached-convert' ? 'Download complete. Starting the browser stream…' : 'Download complete. Starting playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode }); }
+  setJob(job, 'downloading', job.prepareAhead ? 'Downloading the next episode in the background…' : 'Direct playback was unavailable. Downloading the video first…', 0); await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true }); const directory = job.directory || await mkdtemp(join(PLAYBACK_CACHE_ROOT, 'playback-')); job.directory = directory;
+  try { const path = join(directory, filename(job.file.subject, 'video')), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() }; await writePostedFile(job.file, path, preparationDownloadSettings(job, settings), job, state, 90); setJob(job, 'optimizing', job.prepareAhead ? 'Download complete. Preparing a browser-ready copy…' : 'Download complete. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, path); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode }); }
   catch (error) { throw error; }
 }
 async function prepareArchive(job, settings, archives) {
-  setJob(job, 'downloading', 'This release cannot stream directly. Downloading the archive first…', 0); await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true }); const directory = job.directory || await mkdtemp(join(PLAYBACK_CACHE_ROOT, 'playback-')); job.directory = directory; const total = archives.reduce((sum, file) => sum + file.segments.length, 0), state = { completed: 0, total, bytes: 0, started: Date.now() };
+  setJob(job, 'downloading', 'This release cannot stream directly. Downloading the archive first…', 0); const previousDirectory = job.directory; const root = job.offlineDownload && previousDirectory ? previousDirectory : PLAYBACK_CACHE_ROOT; await mkdir(root, { recursive: true }); const directory = await mkdtemp(join(root, job.offlineDownload ? 'candidate-' : 'playback-')); job.directory = directory; const names = archiveFilenames(archives); const total = archives.reduce((sum, file) => sum + file.segments.length, 0), state = { completed: 0, total, bytes: 0, started: Date.now() };
   try {
-    for (const archive of archives) await writePostedFile(archive, join(directory, filename(archive.subject, 'archive.rar')), settings, job, state, 85);
-    setJob(job, 'extracting', 'Download complete. Extracting the video…', 90); await extractPostedArchive(directory, archives); const extracted = await extractedVideo(directory); if (!extracted) throw new Error('The archive did not contain a supported video file.'); const optimized = await optimizeCachedVideo(job, join(directory, extracted)); Object.assign(job, { status: 'ready', message: optimized.mode === 'cached-convert' ? 'Extraction complete. Starting the browser stream…' : 'Ready to play.', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
-  } catch (error) { throw error; }
+    const downloadSettings = preparationDownloadSettings(job, settings);
+    for (let index = 0; index < archives.length; index++) await writePostedFile(archives[index], join(directory, names[index]), downloadSettings, job, state, 85);
+    setJob(job, 'extracting', 'Download complete. Extracting the video…', 90); await extractPostedArchive(directory, archives, names); const extracted = await extractedVideo(directory); if (!extracted) throw new Error('The archive did not contain a supported video file.'); setJob(job, 'optimizing', job.prepareAhead ? 'Video extracted. Preparing a browser-ready copy…' : 'Video extracted. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, join(directory, extracted)); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
+  } catch (error) { await rm(directory, { recursive: true, force: true }); job.directory = previousDirectory; throw error; }
 }
 async function preparePlayback(job, settings) {
   try {
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await findReleases(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await findReleases(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
-    let obfuscatedProbes = 0; for (let i = 0; i < Math.min(releases.length, 10); i++) { const release = releases[i]; setJob(job, 'selecting', `Checking release ${i + 1} of ${Math.min(releases.length, 10)}…`, 5 + i * 4); jobEvent(job, 'release-check', release.title, { candidate: i + 1 }); try { const nzb = await loadNzb(release, settings); let direct = videoFile(nzb), archives = archiveFiles(nzb); if (!direct && !archives.length && obfuscatedProbes < 2) { obfuscatedProbes++; setJob(job, 'selecting', 'Inspecting an obfuscated release…', 12 + i * 4); ({ direct, archives } = await probeObfuscatedNzb(nzb, settings)); } if (direct) { setJob(job, 'selecting', 'Checking article availability…', 45); if (!await postedFileAvailable(direct, settings)) { jobEvent(job, 'release-rejected', 'Required articles are unavailable.', { release: release.title }); continue; } const strategy = playbackStrategy(direct.subject, release.title); Object.assign(job, { file: direct, release: release.title, strategy }); if (job.offlineDownload) { await cacheDirect(job, settings); return; } Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' }); jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' }); return; } if (archives.length) { archiveChoices.push({ archives, release: release.title }); jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title }); } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title }); } catch (error) { jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); } }
-    if (!archiveChoices.length) throw new Error('No compatible video release was found.'); let lastError; for (const choice of archiveChoices) { try { job.release = choice.release; job.archives = choice.archives; await prepareArchive(job, settings, choice.archives); return; } catch (error) { lastError = error; setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
+    let obfuscatedProbes = 0;
+    for (let i = 0; i < Math.min(releases.length, 10); i++) {
+      const release = releases[i];
+      setJob(job, 'selecting', `Checking release ${i + 1} of ${Math.min(releases.length, 10)}…`, 5 + i * 4);
+      jobEvent(job, 'release-check', release.title, { candidate: i + 1 });
+      try {
+        const nzb = await loadNzb(release, settings);
+        let direct = videoFile(nzb), archives = archiveFiles(nzb);
+        if (!direct && !archives.length && obfuscatedProbes < 2) {
+          obfuscatedProbes++;
+          setJob(job, 'selecting', 'Inspecting an obfuscated release…', 12 + i * 4);
+          ({ direct, archives } = await probeObfuscatedNzb(nzb, settings));
+        }
+        if (direct) {
+          setJob(job, 'selecting', 'Checking media availability…', 45);
+          const firstSegment = await postedFileAvailable(direct, settings);
+          if (!firstSegment) {
+            jobEvent(job, 'release-rejected', 'Required articles are unavailable or the video data is invalid.', { release: release.title });
+            continue;
+          }
+          const strategy = playbackStrategy(direct.subject, release.title);
+          Object.assign(job, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
+          if (shouldCacheDirectPlayback(job)) { await cacheDirect(job, settings); return; }
+          Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
+          jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
+          return;
+        }
+        if (archives.length) {
+          archiveChoices.push({ archives, release: release.title });
+          jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
+        } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
+      } catch (error) { jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
+    }
+    if (!archiveChoices.length) throw new Error('No compatible video release was found.'); let lastError; for (const choice of archiveChoices) { try { job.release = choice.release; job.archives = choice.archives; await prepareArchive(job, settings, choice.archives); return; } catch (error) { lastError = error; jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
 }
 async function startOfflineMediaDownload(media, settings) {
@@ -491,7 +578,7 @@ async function startSeriesDownload(media, settings) {
   })();
   return job;
 }
-function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, created: job.created, events: events || [] } } : {}) }; }
 async function serveLocalVideo(req, res, job) {
   const info = await stat(job.path), range = req.headers.range; let start = 0, end = info.size - 1, status = 200;
   if (range) { const match = range.match(/bytes=(\d*)-(\d*)/); if (match) { start = Number(match[1] || 0); end = Math.min(Number(match[2] || end), end); status = 206; } }
@@ -581,7 +668,7 @@ export async function handleRequest(req, res) {
       const settings = await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
       const choice = media.releaseId ? manualReleases.get(media.releaseId) : undefined;
       if (media.releaseId && (!choice || choice.expires < Date.now())) return json(res, 404, { error: 'That release selection expired. Search again.' });
-      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] }; jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, settings); return json(res, 202, publicJob(job));
+      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, prepareAhead: Boolean(media.prepareAhead), ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] }; jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, settings); return json(res, 202, publicJob(job));
     }
     const playMatch = url.pathname.match(/^\/api\/play\/([\w-]+)(?:\/(stream|fallback|retry))?$/);
     if (playMatch) {
@@ -595,7 +682,7 @@ export async function handleRequest(req, res) {
         if (job.status !== 'ready') return json(res, 409, { error: 'Video is not ready yet.' }); if (job.mode === 'cached-convert') return await streamCachedConversion(req, res, job, await readSettings()); if (job.mode === 'cached') return await serveLocalVideo(req, res, job); if (job.strategy !== 'raw' || start) return await streamConverted(req, res, job, await readSettings(), start, start && job.strategy === 'raw' ? 'remux' : '');
         let closed = false; req.on('close', () => { closed = true; });
         res.writeHead(200, { 'content-type': videoType(job.file.subject), 'content-disposition': `inline; filename="${filename(job.file.subject, 'video')}"`, 'cache-control': 'no-store' });
-        try { await streamPostedFile(job.file, await readSettings(), async chunk => { if (closed) throw new Error('Playback connection closed.'); if (res.write(chunk) === false && res.waitForDrain) await res.waitForDrain(); }); }
+        try { await streamPostedFile(job.file, await readSettings(), async chunk => { if (closed) throw new Error('Playback connection closed.'); if (res.write(chunk) === false && res.waitForDrain) await res.waitForDrain(); }, connectNntp, job.prefetchedSegments); }
         catch (error) { if (!closed) throw error; }
         if (!closed) return res.end();
         return;

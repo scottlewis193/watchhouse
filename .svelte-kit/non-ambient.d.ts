@@ -47,6 +47,6 @@ declare module "$app/types" {
 		};
 		Pathname(): "/" | `/api/${string}` & {} | "/library" | "/settings" | `/watch/${string}/${string}` & {};
 		ResolvedPathname(): `${"" | `/${string}`}${ReturnType<AppTypes['Pathname']>}`;
-		Asset(): string & {};
+		Asset(): "/apple-touch-icon.png" | "/icon-192.png" | "/icon-512.png" | "/icon-maskable-512.png" | "/icon-maskable.svg" | "/icon.svg" | "/manifest.webmanifest" | "/offline.html" | string & {};
 	}
 }

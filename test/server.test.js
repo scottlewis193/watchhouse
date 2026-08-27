@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { archiveFiles, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, searchResults, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, playableMediaHeader, preparationDownloadSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldShowUpNext } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodes, offlineMediaKey } from '../src/lib/offline.js';
@@ -89,6 +89,14 @@ test('detects video MIME type inside a Usenet subject', () => {
   assert.equal(videoType('release - "video.mov" yEnc (1/173)'), 'video/mp4');
 });
 
+test('rejects posted video data whose header does not match its container', () => {
+  assert.equal(playableMediaHeader('episode.mkv', Buffer.from('1a45dfa3', 'hex')), true);
+  assert.equal(playableMediaHeader('episode.webm', Buffer.from('1a45dfa3', 'hex')), true);
+  assert.equal(playableMediaHeader('episode.mp4', Buffer.from('0000001c6674797069736f6d', 'hex')), true);
+  assert.equal(playableMediaHeader('episode.mkv', Buffer.from('721fa401d263e854', 'hex')), false);
+  assert.equal(playableMediaHeader('episode.mp4', Buffer.from('721fa401d263e854', 'hex')), false);
+});
+
 test('decodes yEnc line data', () => {
   assert.deepEqual(decodeYenc('klm'), Buffer.from([65, 66, 67]));
 });
@@ -100,6 +108,15 @@ test('discovers the real filename from an obfuscated yEnc post', () => {
 test('recognises multi-part RAR releases for extraction', () => {
   const nzb = '<nzb><file subject="The.Matrix.part01.rar yEnc"><segments><segment number="1">one</segment></segments></file><file subject="The.Matrix.part02.rar yEnc"><segments><segment number="1">two</segment></segments></file></nzb>';
   assert.equal(archiveFiles(nzb).length, 2);
+});
+
+test('normalizes RAR volume names into one extractable set', () => {
+  assert.deepEqual(archiveFilenames([
+    { subject: 'Show.part01.rar' }, { subject: 'Show.part09.rar' }, { subject: 'Show.part010.rar' }
+  ]), ['Show.part01.rar', 'Show.part09.rar', 'Show.part10.rar']);
+  assert.deepEqual(archiveFilenames([
+    { subject: 'Show.part01.rar' }, { subject: 'show.r00' }, { subject: 'show.r01' }
+  ]), ['Show.rar', 'Show.r00', 'Show.r01']);
 });
 
 test('recognises split 7z and ZIP releases for extraction', () => {
@@ -197,6 +214,32 @@ test('builds a valid playback payload for the selected episode', () => {
   const media = episodePlaybackMedia(show, '2', '3', [{ number: 2, name: 'Second' }, { number: 3, name: 'Third', runtime: 52 }]);
   assert.deepEqual(media, { ...show, season: 2, episode: 3, episodeTitle: 'Third', durationHint: 3120 });
   assert.equal(episodePlaybackMedia(show, '2', '', [{ number: 3, name: 'Third' }]), null);
+});
+
+test('makes a prepare-ahead result fully browser-ready before the episode handoff', () => {
+  assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'remux'), true);
+  assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'raw'), false);
+  assert.equal(shouldCacheDirectPlayback({ prepareAhead: true }), false);
+  assert.equal(shouldCacheDirectPlayback({}), false);
+  assert.equal(preparationDownloadSettings({ prepareAhead: true }, { maxConnections: 12 }).maxConnections, 2);
+  assert.equal(preparationDownloadSettings({}, { maxConnections: 12 }).maxConnections, 12);
+});
+
+test('reuses the validated first article when a prepared direct stream starts', async () => {
+  const requested = [], chunks = [];
+  const connect = async () => ({
+    async body(id, onLine) { requested.push(id); await onLine(id === 'one' ? 'k' : 'l'); },
+    close() {}
+  });
+  await streamPostedFile(
+    { segments: [{ id: 'one' }, { id: 'two' }] },
+    { maxConnections: 1 },
+    chunk => chunks.push(chunk),
+    connect,
+    new Map([[0, Buffer.from('A')]])
+  );
+  assert.deepEqual(requested, ['two']);
+  assert.equal(Buffer.concat(chunks).toString(), 'AB');
 });
 
 test('selects the first episode that has not been watched', () => {
