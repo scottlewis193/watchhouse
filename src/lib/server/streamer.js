@@ -152,19 +152,18 @@ export function yencName(line) { return (line.match(/^=ybegin\s+.*\bname=(.+)$/i
 export function videoType(subject) { const ext = (subject.match(/\.(mkv|mp4|m4v|mov|webm)(?:\"|\s|$)/i) || [])[1]?.toLowerCase(); return ({ mp4: 'video/mp4', m4v: 'video/x-m4v', mov: 'video/mp4', webm: 'video/webm', mkv: 'video/x-matroska' })[ext] || 'application/octet-stream'; }
 export async function orderedPrefetch(items, concurrency, load, consume) {
   const width = Math.max(1, Math.min(items.length || 1, Number(concurrency) || 1));
-  let next = 0;
-  const loadBatch = () => {
-    const start = next, batch = items.slice(start, start + width); next += batch.length;
-    if (!batch.length) return null;
-    const loading = Promise.all(batch.map((item, lane) => load(item, start + lane, lane)));
+  const loadOnLane = (index, lane) => {
+    const loading = Promise.resolve().then(() => load(items[index], index, lane));
     void loading.catch(() => {});
     return loading;
   };
-  let pending = loadBatch();
-  while (pending) {
-    const values = await pending;
-    pending = loadBatch();
-    for (const value of values) await consume(value);
+  const pending = Array.from({ length: width }, (_, lane) => loadOnLane(lane, lane));
+  for (let index = 0; index < items.length; index++) {
+    const lane = index % width;
+    const value = await pending[lane];
+    const next = index + width;
+    pending[lane] = next < items.length ? loadOnLane(next, lane) : null;
+    await consume(value);
   }
 }
 export async function streamPostedFile(posted, settings, consume, connect = connectNntp) {

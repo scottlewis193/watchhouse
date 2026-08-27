@@ -295,6 +295,21 @@ test('prefetches stream segments concurrently while preserving article order', a
   assert.ok(maximumActive > 1);
 });
 
+test('delivers completed articles without waiting for the slowest prefetch lane', async () => {
+  let releaseSlowArticle;
+  const slowArticle = new Promise(resolve => { releaseSlowArticle = resolve; });
+  const consumed = [];
+  const streaming = orderedPrefetch([0, 1, 2], 2,
+    async value => value === 1 ? slowArticle : value,
+    async value => { consumed.push(value); }
+  );
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(consumed, [0]);
+  releaseSlowArticle(1);
+  await streaming;
+  assert.deepEqual(consumed, [0, 1, 2]);
+});
+
 test('contains rejection from a prefetched batch after its consumer stops', async () => {
   await assert.rejects(() => orderedPrefetch([0, 1, 2, 3], 2,
     async value => { if (value === 2) throw new Error('future batch failed'); return value; },
