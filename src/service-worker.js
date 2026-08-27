@@ -3,7 +3,7 @@ import { build, files, version } from '$service-worker';
 const worker = /** @type {ServiceWorkerGlobalScope} */ (self);
 const cacheName = `watchhouse-${version}`;
 const appFiles = [...build, ...files];
-const shellFiles = [...appFiles, '/library'];
+const shellFiles = [...appFiles, '/library', '/downloads'];
 
 worker.addEventListener('install', (event) => {
   event.waitUntil(

@@ -50,7 +50,7 @@
 <svelte:head><title>Library · Watchhouse</title></svelte:head>
 
 <section class="library-page">
-  <div class="page-heading"><div><p class="page-eyebrow">Your collection</p><h1>Library</h1></div><p class="page-count">{library.length} {library.length === 1 ? 'title' : 'titles'}</p></div>
+  <div class="page-heading"><div><p class="page-eyebrow">Your collection</p><h1>Library</h1></div><div class="page-heading-meta"><span>{library.length} {library.length === 1 ? 'title' : 'titles'}</span><a href="/downloads">Manage downloads</a></div></div>
   {#if offline}<div class="alert alert-warning mt-6"><span>You’re offline. Titles without a completed download are unavailable.</span></div>{/if}
   {#if error}<div class="alert alert-error mt-6"><span>{error}</span></div>{/if}
   {#if actionError}<div class="alert alert-error mt-6"><span>{actionError}</span><button class="btn btn-sm btn-ghost" onclick={() => { actionError = ''; }}>Dismiss</button></div>{/if}

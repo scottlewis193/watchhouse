@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, orderedPrefetch, playableMediaHeader, preparationDownloadSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldShowUpNext } from '../src/lib/playback-controls.js';
-import { offlineAvailability, offlineEpisodes, offlineMediaKey } from '../src/lib/offline.js';
+import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext } from '../src/lib/playback-controls.js';
+import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
   assert.equal(indexerEndpoint('https://api.nzbgeek.info').href, 'https://api.nzbgeek.info/api');
@@ -242,6 +242,81 @@ test('reuses the validated first article when a prepared direct stream starts', 
   assert.equal(Buffer.concat(chunks).toString(), 'AB');
 });
 
+test('maps byte ranges onto only the Usenet segments needed by a seek', async () => {
+  const posted = { segments: [
+    { id: 'one', decodedBytes: 4 },
+    { id: 'two', decodedBytes: 3 },
+    { id: 'three', decodedBytes: 5 }
+  ] };
+  assert.deepEqual(postedFileByteLayout(posted), { total: 12, offsets: [0, 4, 7, 12] });
+  const loaded = [], chunks = [];
+  await writePostedFileRange(posted, 5, 9, async (segment, index) => {
+    loaded.push(index);
+    return Buffer.from(index === 1 ? 'EFG' : 'HIJKL');
+  }, chunk => chunks.push(chunk));
+  assert.deepEqual(loaded, [1, 2]);
+  assert.equal(Buffer.concat(chunks).toString(), 'FGHIJ');
+  assert.equal(postedFileByteLayout({ segments: [{ id: 'unknown', bytes: 100 }] }), null);
+});
+
+test('prefetches resumed byte ranges concurrently while preserving output order', async () => {
+  const posted = { segments: Array.from({ length: 6 }, (_, index) => ({ id: String(index), decodedBytes: 1 })) };
+  let active = 0, maximumActive = 0;
+  const chunks = [];
+  await writePostedFileRange(posted, 0, 5, async (_segment, index) => {
+    active++; maximumActive = Math.max(maximumActive, active);
+    await new Promise(resolve => setTimeout(resolve, index % 2 ? 2 : 5));
+    active--;
+    return Buffer.from(String(index));
+  }, chunk => chunks.push(chunk), { concurrency: 3 });
+  assert.equal(maximumActive, 3);
+  assert.equal(Buffer.concat(chunks).toString(), '012345');
+});
+
+test('derives exact decoded segment offsets from the first yEnc part', () => {
+  const posted = { segments: [{ id: 'one' }, { id: 'two' }, { id: 'three' }] };
+  assert.equal(applyYencByteLayout(posted, { decodedSize: 10, partBegin: 1, partEnd: 4, firstBytes: 4 }), true);
+  assert.deepEqual(posted.segments.map(segment => segment.decodedBytes), [4, 4, 2]);
+  assert.deepEqual(postedFileByteLayout(posted), { total: 10, offsets: [0, 4, 8, 10] });
+});
+
+test('serves a seekable posted file without loading earlier segments', async () => {
+  const parts = [Buffer.from('ABCD'), Buffer.from('EFG'), Buffer.from('HIJKL')];
+  const requested = [];
+  const connect = async () => ({
+    async body(id, onLine) {
+      const index = Number(id); requested.push(index);
+      const encoded = Buffer.from(parts[index].map(byte => (byte + 42) & 255)).toString('latin1');
+      await onLine(encoded);
+    },
+    close() {}
+  });
+  const source = await openPostedRangeServer({
+    file: { subject: 'movie.mp4', segments: parts.map((part, index) => ({ id: String(index), decodedBytes: part.length })) },
+    prefetchedSegments: new Map()
+  }, { maxConnections: 2 }, connect);
+  try {
+    const reply = await fetch(source.url, { headers: { range: 'bytes=5-9' } });
+    assert.equal(reply.status, 206);
+    assert.equal(await reply.text(), 'FGHIJ');
+    assert.deepEqual(requested.sort(), [1, 2]);
+  } finally { await source.close(); }
+});
+
+test('reuses an unexpired playback plan for the same title or episode', () => {
+  let now = 1_000;
+  const plans = createPlaybackPlanCache({ ttl: 500, now: () => now });
+  const movie = { id: 7, type: 'movie' };
+  const episode = { id: 8, type: 'tv', season: 2, episode: 3 };
+  plans.set(movie, { release: 'Movie.Release' });
+  plans.set(episode, { release: 'Show.Release' });
+  assert.equal(plans.get({ ...movie })?.release, 'Movie.Release');
+  assert.equal(plans.get({ ...episode })?.release, 'Show.Release');
+  assert.equal(plans.get({ ...episode, episode: 4 }), null);
+  now = 1_501;
+  assert.equal(plans.get(movie), null);
+});
+
 test('selects the first episode that has not been watched', () => {
   const episodes = [{ number: 1 }, { number: 2 }, { number: 3 }];
   assert.equal(firstUnwatchedEpisode(episodes, new Set([1]))?.number, 2);
@@ -277,6 +352,20 @@ test('resumes unfinished playback and marks the final 30 seconds watched', () =>
   assert.equal(args[args.indexOf('-disposition:a:0') + 1], 'default');
   const thirdTrackArgs = ffmpegArgs('remux', 'pipe:0', 'pipe:1', true, 0, 3);
   assert.ok(thirdTrackArgs.includes('0:a:2?'));
+  const seekableArgs = ffmpegArgs('remux', 'http://127.0.0.1/source', 'pipe:1', true, 120, 2, true);
+  assert.ok(seekableArgs.indexOf('-ss') < seekableArgs.indexOf('-i'));
+});
+
+test('polls preparation responsively and starts prepare-ahead only after playback begins', () => {
+  assert.equal(playbackPollDelay(0), 200);
+  assert.equal(playbackPollDelay(8), 500);
+  assert.equal(playbackPollDelay(30), 900);
+  assert.equal(shouldPrepareNextEpisode({ playing: false, mediaType: 'tv', manualReleaseSelection: false }), false);
+  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false }), true);
+  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'movie', manualReleaseSelection: false }), false);
+  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: true }), false);
+  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 12 }), false);
+  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 30 }), true);
 });
 
 test('completed media cannot be overwritten by a trailing playback progress save', () => {
@@ -431,10 +520,15 @@ test('identifies persistent offline copies for movies and individual episodes', 
   const movie = { id: 10, type: 'movie', title: 'Film' };
   const episode = { id: 20, type: 'tv', title: 'Show', season: 2, episode: 3 };
   assert.equal(offlineMediaKey(movie), 'movie:10');
+  assert.equal(offlineMediaKey({ ...episode, episode: undefined }), 'tv:20:s2');
   assert.equal(offlineMediaKey(episode), 'tv:20:s2:e3');
+  assert.equal(offlineMediaMatches(episode, { ...episode }), true);
+  assert.equal(offlineMediaMatches(episode, { ...episode, episode: 4 }), false);
   const downloads = [{ status: 'ready', media: episode }, { status: 'error', media: { ...episode, episode: 4 } }];
   assert.deepEqual(offlineAvailability({ id: 20, type: 'tv' }, downloads), { available: true, count: 1 });
   assert.deepEqual(offlineEpisodes(downloads, 20), [episode]);
+  assert.equal(offlineEpisodeState(episode, downloads, []).status, 'ready');
+  assert.equal(offlineEpisodeState({ ...episode, episode: 4 }, [], [{ status: 'error', media: { ...episode, episode: 4 } }]).status, 'error');
 });
 
 test('keeps title-only fallback ranking anchored to the selected year', () => {

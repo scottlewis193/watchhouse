@@ -1,5 +1,5 @@
 <script>
-  let { item, href, inLibrary = false, onLibraryChange, onWatched, downloaded = false, disabled = false } = $props();
+  let { item, href, inLibrary = false, onLibraryChange, onWatched, onClearProgress, downloaded = false, disabled = false } = $props();
   const label = $derived(item.episodeTitle ? `${item.title}, season ${item.season}, episode ${item.episode}: ${item.episodeTitle}` : `${item.title}${item.year ? `, ${item.year}` : ''}`);
   const playHref = $derived(`${href}${href.includes('?') ? '&' : '?'}play=1${item.position ? '&resume=1' : ''}`);
 </script>
@@ -19,6 +19,19 @@
     <a class="media-card-play absolute left-1/2 top-1/2 z-10 grid size-11 -translate-x-1/2 -translate-y-1/2 scale-90 place-items-center border border-white/45 bg-black/55 text-white opacity-0 backdrop-blur-md transition duration-300 hover:bg-white hover:text-black focus:scale-100 focus:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary group-hover:scale-100 group-hover:opacity-100 group-focus-within:scale-100 group-focus-within:opacity-100" href={disabled ? undefined : playHref} aria-label={`Play ${label}`} aria-disabled={disabled} onclick={(event) => { if (disabled) event.preventDefault(); }}>
       <svg class="size-5 translate-x-px" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M5 3.7a1 1 0 0 1 1.54-.84l9 6.3a1 1 0 0 1 0 1.68l-9 6.3A1 1 0 0 1 5 16.3z" /></svg>
     </a>
+    {#if onClearProgress}
+      <button
+        class="media-card-action absolute bottom-4 left-2 z-10 grid size-8 place-items-center border border-white/25 bg-black/70 text-white opacity-0 backdrop-blur-md transition-colors hover:border-white/70 hover:bg-white hover:text-black focus:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary group-hover:opacity-100 group-focus-within:opacity-100"
+        data-spatial-ignore
+        aria-label={`Clear watching progress for ${label}`}
+        title="Clear progress"
+        onclick={() => onClearProgress(item)}
+      >
+        <svg class="size-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4.25 7.25V3.8m0 3.45H7.7M4.55 7.1a6 6 0 1 1-.3 5.25" />
+        </svg>
+      </button>
+    {/if}
   </div>
   <a class="media-card-link block focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary" href={disabled ? undefined : href} aria-label={`View details for ${label}`} aria-disabled={disabled} onclick={(event) => { if (disabled) event.preventDefault(); }}>
     <span class="media-card-meta block">
@@ -34,8 +47,13 @@
       data-spatial-ignore
       aria-label={inLibrary ? `Remove ${item.title} from library` : `Add ${item.title} to library`}
       aria-pressed={inLibrary}
+      title={inLibrary ? 'In library' : 'Add to library'}
       onclick={() => onLibraryChange(item, !inLibrary)}
-    >{inLibrary ? '✓' : '+'}</button>
+    >
+      <svg class="size-4" viewBox="0 0 20 20" fill={inLibrary ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+        <path stroke-linejoin="round" d="M5.25 3.25h9.5v13.5L10 13.8l-4.75 2.95V3.25Z" />
+      </svg>
+    </button>
   {/if}
   {#if onWatched}
     <button

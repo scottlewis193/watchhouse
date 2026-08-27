@@ -66,6 +66,7 @@
       <nav class="main-nav" aria-label="Main navigation">
         <a class="nav-link" class:nav-link-active={page.url.pathname === '/'} href="/">Home</a>
         <a class="nav-link" class:nav-link-active={page.url.pathname.startsWith('/library')} href="/library">Library</a>
+        <a class="nav-link" class:nav-link-active={page.url.pathname.startsWith('/downloads')} href="/downloads">Downloads</a>
         <a class="nav-link" class:nav-link-active={page.url.pathname.startsWith('/settings')} href="/settings">Settings</a>
       </nav>
       <form class="nav-search" class:opacity-40={offline} action="/" method="get" role="search">

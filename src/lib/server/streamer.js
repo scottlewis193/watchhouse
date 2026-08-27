@@ -3,6 +3,7 @@ import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createServer } from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
@@ -23,6 +24,7 @@ const playbackJobs = new Map();
 const manualReleases = new Map();
 const offlineJobs = new Map();
 const offlineSeriesJobs = new Map();
+const playbackPlans = createPlaybackPlanCache();
 const mediaState = createMediaStateStore(MEDIA_STATE_PATH);
 let discoveryCache = null;
 let runtimeCache = null;
@@ -62,7 +64,7 @@ function publicOfflineRecord(record) {
   return { ...safe, streamUrl: `/api/offline/${encodeURIComponent(record.key)}/stream` };
 }
 function publicOfflineJob(job) {
-  return { id: job.id, key: job.offlineKey || offlineMediaKey(job.media), media: job.media, status: job.status, message: job.message, progress: job.progress, download: job.download || null, created: job.created };
+  return { id: job.id, key: job.offlineKey || offlineMediaKey(job.media), media: job.media, status: job.status, message: job.message, progress: job.progress, download: job.download || null, created: job.created, ...(job.total ? { completed: job.completed || 0, total: job.total } : {}), ...(job.currentMedia ? { currentMedia: job.currentMedia } : {}) };
 }
 async function clearExpiredPlaybackCache() {
   const settings = await readSettings(), retentionHours = Math.min(168, Math.max(1, Number(settings.cacheRetentionHours) || 24));
@@ -139,22 +141,36 @@ async function connectNntp(settings) {
 async function postedFileAvailable(file, settings) {
   const client = await connectNntp(settings);
   try {
-    let header = Buffer.alloc(0); const chunks = [];
+    let header = Buffer.alloc(0), decodedSize = 0, partBegin = 0, partEnd = 0; const chunks = [];
     await client.body(file.segments[0].id, line => {
+      if (line.startsWith('=ybegin')) decodedSize = Number((line.match(/\bsize=(\d+)/i) || [])[1]) || 0;
+      if (line.startsWith('=ypart')) { partBegin = Number((line.match(/\bbegin=(\d+)/i) || [])[1]) || 0; partEnd = Number((line.match(/\bend=(\d+)/i) || [])[1]) || 0; }
       if (line.startsWith('=y')) return;
       const chunk = decodeYenc(line); chunks.push(chunk);
       if (header.length < 64) header = Buffer.concat([header, chunk]).subarray(0, 64);
     });
     if (!playableMediaHeader(file.subject, header)) return null;
+    const first = Buffer.concat(chunks);
+    applyYencByteLayout(file, { decodedSize, partBegin, partEnd, firstBytes: first.length });
     const indexes = [...new Set([Math.floor(file.segments.length / 2), file.segments.length - 1])];
     for (const index of indexes) if (!await client.has(file.segments[index].id)) return null;
-    return Buffer.concat(chunks);
+    return first;
   } finally { client.close(); }
+}
+
+export function applyYencByteLayout(posted, { decodedSize, partBegin = 0, partEnd = 0, firstBytes = 0 }) {
+  const total = Number(decodedSize), partSize = partEnd >= partBegin && partBegin > 0 ? partEnd - partBegin + 1 : Number(firstBytes);
+  if (!posted?.segments?.length || !Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(partSize) || partSize <= 0) return false;
+  posted.segments.forEach((segment, index) => { segment.decodedBytes = Math.min(partSize, Math.max(0, total - index * partSize)); });
+  return posted.segments.every(segment => segment.decodedBytes > 0) && posted.segments.reduce((sum, segment) => sum + segment.decodedBytes, 0) === total;
 }
 function nzbFiles(xml) {
   return [...xml.matchAll(/<file\s+([^>]*)>([\s\S]*?)<\/file>/gi)].map(([, attrs, file]) => ({
     subject: entityDecode((attrs.match(/\bsubject="([^"]*)"/i) || [, ''])[1]),
-    segments: [...file.matchAll(/<segment[^>]*\bnumber="(\d+)"[^>]*>([\s\S]*?)<\/segment>/gi)].map(([, number, id]) => ({ number: Number(number), id: entityDecode(id.trim()) })).sort((a, b) => a.number - b.number)
+    segments: [...file.matchAll(/<segment\b([^>]*)>([\s\S]*?)<\/segment>/gi)].map(([, segmentAttrs, id]) => {
+      const bytes = Number((segmentAttrs.match(/\bbytes="(\d+)"/i) || [, ''])[1]);
+      return { number: Number((segmentAttrs.match(/\bnumber="(\d+)"/i) || [, ''])[1]), ...(bytes > 0 ? { bytes } : {}), id: entityDecode(id.trim()) };
+    }).filter(segment => segment.number > 0).sort((a, b) => a.number - b.number)
   }));
 }
 function videosFrom(files) { return files.filter(file => /\.(mkv|mp4|m4v|mov|webm)(?:\"|\s|$)/i.test(file.subject) && file.segments.length).sort((a, b) => b.segments.length - a.segments.length); }
@@ -210,6 +226,51 @@ export async function streamPostedFile(posted, settings, consume, connect = conn
     }, consume);
   } finally { for (const client of clients) client.close(); }
 }
+
+export function postedFileByteLayout(posted) {
+  if (!posted?.segments?.length || posted.segments.some(segment => !Number.isInteger(Number(segment.decodedBytes)) || Number(segment.decodedBytes) <= 0)) return null;
+  const offsets = [0];
+  for (const segment of posted.segments) offsets.push(offsets.at(-1) + Number(segment.decodedBytes));
+  return { total: offsets.at(-1), offsets };
+}
+
+export async function writePostedFileRange(posted, start, end, load, consume, { shouldContinue = () => true, concurrency = 1 } = {}) {
+  const layout = postedFileByteLayout(posted);
+  if (!layout) throw new Error('This post does not include byte-range metadata.');
+  const first = Math.max(0, Math.min(layout.total - 1, Number(start) || 0));
+  const last = Math.max(first, Math.min(layout.total - 1, Number(end) || 0));
+  const indexes = posted.segments.flatMap((segment, index) => layout.offsets[index] <= last && layout.offsets[index + 1] > first ? [index] : []);
+  await orderedPrefetch(indexes, concurrency, async index => {
+    if (!shouldContinue()) return null;
+    return { index, chunk: await load(posted.segments[index], index) };
+  }, async loaded => {
+    if (!loaded || !shouldContinue()) return;
+    const { index, chunk } = loaded;
+    if (chunk.length !== posted.segments[index].decodedBytes) throw new Error('Usenet segment size did not match its yEnc byte metadata.');
+    const from = Math.max(0, first - layout.offsets[index]);
+    const to = Math.min(chunk.length, last - layout.offsets[index] + 1);
+    if (to > from) await consume(chunk.subarray(from, to));
+  });
+}
+
+export function createPlaybackPlanCache({ ttl = 30 * 60 * 1000, maximum = 50, now = Date.now } = {}) {
+  const entries = new Map();
+  const key = media => offlineMediaKey(media);
+  return {
+    get(media) {
+      const id = key(media), entry = entries.get(id);
+      if (!id || !entry || entry.expires <= now()) { if (id) entries.delete(id); return null; }
+      entries.delete(id); entries.set(id, entry);
+      return entry.value;
+    },
+    set(media, value) {
+      const id = key(media); if (!id) return;
+      entries.delete(id); entries.set(id, { value, expires: now() + ttl });
+      while (entries.size > maximum) entries.delete(entries.keys().next().value);
+    },
+    delete(media) { const id = key(media); if (id) entries.delete(id); }
+  };
+}
 function filename(subject, fallback) { return (subject.match(/([^/\\\"]+\.(?:part\d+\.rar|rar|r\d\d|7z(?:\.\d{3})?|zip(?:\.\d{3})?|z\d\d|mkv|mp4|m4v|mov|webm))/i) || [, fallback])[1].replace(/[^a-z0-9._ -]/gi, '_'); }
 export function archiveFilenames(archives) {
   const names = archives.map(archive => filename(archive.subject, 'archive.rar'));
@@ -241,7 +302,7 @@ export async function writeStreamToResponse(stream, res, { end = true } = {}) {
 }
 export function conversionSucceeded(code, stderr = '', bytes = 1) { return code === 0 && !String(stderr).trim() && bytes > 0; }
 async function extractedVideo(directory) { const names = await readdir(directory, { recursive: true }); return names.find(name => /\.(mkv|mp4|m4v|mov|webm)$/i.test(name)); }
-export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2) {
+export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
   const englishMetadataMaps = [
     '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:m:language:en-US:?', '0:a:m:language:en-GB:?',
@@ -249,7 +310,8 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
     '0:a:m:handler_name:English:?', '0:a:m:handler_name:english:?', '0:a:m:handler_name:ENG:?'
   ];
   const audioMaps = [...englishMetadataMaps, ...(fallbackIndex ? [`0:a:${fallbackIndex}?`] : []), '0:a:0?'];
-  return ['-y', '-loglevel', 'error', '-i', input, ...(start > 0 ? ['-ss', String(start)] : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
+  const seek = start > 0 ? ['-ss', String(start)] : [];
+  return ['-y', '-loglevel', 'error', ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
 }
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
@@ -288,12 +350,93 @@ async function audioSafeOfflineRecord(record) {
   const strategy = await cachedPlaybackStrategy(record.path, record.release);
   return strategy === 'raw' ? record : { ...record, mode: 'cached-convert', sourcePath: record.path, mime: 'video/mp4', strategy };
 }
+
+function createPostedSegmentLoader(posted, settings, prefetchedSegments = new Map(), connect = connectNntp) {
+  const width = Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, posted.segments.length);
+  const lanes = Array.from({ length: width }, () => ({ client: null, tail: Promise.resolve() }));
+  const cached = new Map(prefetchedSegments);
+  let nextLane = 0;
+  const load = (segment, index) => {
+    if (cached.has(index)) return Promise.resolve(cached.get(index));
+    const lane = lanes[nextLane++ % lanes.length];
+    const pending = lane.tail.then(async () => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const chunks = [];
+        try {
+          lane.client ||= await connect(settings);
+          await lane.client.body(segment.id, line => { if (!line.startsWith('=y')) chunks.push(decodeYenc(line)); });
+          return Buffer.concat(chunks);
+        } catch (error) {
+          lane.client?.close(); lane.client = null;
+          if (attempt) throw error;
+        }
+      }
+    });
+    lane.tail = pending.catch(() => {});
+    cached.set(index, pending);
+    return pending;
+  };
+  return {
+    load,
+    async close() {
+      await Promise.all(lanes.map(lane => lane.tail));
+      for (const lane of lanes) lane.client?.close();
+    }
+  };
+}
+
+export async function openPostedRangeServer(job, settings, connect = connectNntp) {
+  const layout = postedFileByteLayout(job.file);
+  if (!layout) return null;
+  const loader = createPostedSegmentLoader(job.file, settings, job.prefetchedSegments, connect);
+  const server = createServer((req, res) => {
+    void (async () => {
+      if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405, { allow: 'GET, HEAD' }); return res.end(); }
+      const range = req.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
+      let start = range?.[1] ? Number(range[1]) : 0;
+      let end = range?.[2] ? Number(range[2]) : layout.total - 1;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= layout.total || end < start) {
+        res.writeHead(416, { 'content-range': `bytes */${layout.total}` }); return res.end();
+      }
+      end = Math.min(end, layout.total - 1);
+      const partial = Boolean(range);
+      res.writeHead(partial ? 206 : 200, {
+        'content-type': videoType(job.file.subject),
+        'content-length': end - start + 1,
+        'accept-ranges': 'bytes',
+        ...(partial ? { 'content-range': `bytes ${start}-${end}/${layout.total}` } : {})
+      });
+      if (req.method === 'HEAD') return res.end();
+      let aborted = false; res.on('close', () => { aborted = true; });
+      await writePostedFileRange(job.file, start, end, loader.load, async chunk => { if (!res.write(chunk)) await once(res, 'drain'); }, { shouldContinue: () => !aborted, concurrency: settings.maxConnections });
+      if (!aborted) res.end();
+    })().catch(error => { if (res.headersSent) res.destroy(error); else { res.writeHead(500); res.end(); } });
+  });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  const address = server.address();
+  return {
+    url: `http://127.0.0.1:${address.port}/video`,
+    async close() {
+      await new Promise(resolve => server.close(resolve));
+      await loader.close();
+    }
+  };
+}
+
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
-  const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack)); let stderr = '';
+  const rangeSource = start > 0 ? await openPostedRangeServer(job, settings) : null;
+  const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource))); let stderr = '';
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
-  try { await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }, connectNntp, job.prefetchedSegments); child.stdin.end(); const [code] = await once(child, 'close'); const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end(); }
+  try {
+    if (!rangeSource) {
+      await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }, connectNntp, job.prefetchedSegments);
+      child.stdin.end();
+    }
+    const [code] = await once(child, 'close'); const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end();
+  }
   catch (error) { child.kill(); await output.catch(() => {}); if (!closed) throw error; }
+  finally { await rangeSource?.close(); }
 }
 async function streamCachedConversion(req, res, job, settings) {
   const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true, 0, settings.untaggedAudioTrack)); let stderr = '';
@@ -496,6 +639,14 @@ async function prepareArchive(job, settings, archives) {
 }
 async function preparePlayback(job, settings) {
   try {
+    if (!job.manualRelease) {
+      const plan = playbackPlans.get(job.media);
+      if (plan) {
+        Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments), status: 'ready', message: plan.strategy === 'raw' ? 'Reusing the direct stream selected earlier.' : 'Reusing the browser-compatible stream selected earlier.', progress: 100, mode: 'direct' });
+        jobEvent(job, 'plan-cache-hit', job.message, { release: plan.release, strategy: plan.strategy, mode: 'direct' });
+        return;
+      }
+    }
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await findReleases(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await findReleases(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
     for (let i = 0; i < Math.min(releases.length, 10); i++) {
@@ -520,6 +671,7 @@ async function preparePlayback(job, settings) {
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
           if (shouldCacheDirectPlayback(job)) { await cacheDirect(job, settings); return; }
+          playbackPlans.set(job.media, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;
@@ -535,10 +687,11 @@ async function preparePlayback(job, settings) {
 }
 async function startOfflineMediaDownload(media, settings) {
   const key = offlineMediaKey(media), records = await readOfflineRecords();
-  if (!key || key === `tv:${media.id}`) throw new Error('Choose an individual episode or the whole series.');
+  if (!key || (media.type === 'tv' && (!Number.isInteger(Number(media.season)) || !Number.isInteger(Number(media.episode))))) throw new Error('Choose an individual episode or the whole series.');
   if (records.get(key)?.status === 'ready') return null;
   const existing = [...offlineJobs.values()].find(job => job.offlineKey === key && job.status !== 'error');
   if (existing) return existing;
+  for (const [jobId, previous] of offlineJobs) if (previous.offlineKey === key && previous.status === 'error') offlineJobs.delete(jobId);
   const id = randomUUID(), directory = join(OFFLINE_ROOT, id);
   const job = { id, offlineKey: key, offlineDownload: true, directory, media: { ...media }, status: 'selecting', message: 'Queued for offline download…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), events: [] };
   offlineJobs.set(id, job);
@@ -553,26 +706,32 @@ async function startOfflineMediaDownload(media, settings) {
   return job;
 }
 async function startSeriesDownload(media, settings) {
-  const existing = [...offlineSeriesJobs.values()].find(job => job.media.id === media.id && !['ready', 'error'].includes(job.status));
+  const requestedSeason = Number.isInteger(Number(media.season)) ? Number(media.season) : null;
+  const batchKey = requestedSeason ? `tv:${media.id}:s${requestedSeason}` : `tv:${media.id}`;
+  const existing = [...offlineSeriesJobs.values()].find(job => job.offlineKey === batchKey && !['ready', 'error'].includes(job.status));
   if (existing) return existing;
-  const job = { id: randomUUID(), media: { ...media }, status: 'selecting', message: 'Loading series episodes…', progress: 0, created: Date.now(), completed: 0, total: 0 };
+  for (const [jobId, previous] of offlineSeriesJobs) if (previous.offlineKey === batchKey && previous.status === 'error') offlineSeriesJobs.delete(jobId);
+  const job = { id: randomUUID(), offlineKey: batchKey, media: { ...media, ...(requestedSeason ? { season: requestedSeason } : {}) }, status: 'selecting', message: requestedSeason ? `Loading season ${requestedSeason} episodes…` : 'Loading series episodes…', progress: 0, created: Date.now(), completed: 0, total: 0 };
   offlineSeriesJobs.set(job.id, job);
   void (async () => {
     try {
       const items = [];
       const today = new Date().toISOString().slice(0, 10);
-      for (const season of await catalogueSeasons(settings, media.id)) {
+      const seasons = await catalogueSeasons(settings, media.id);
+      for (const season of seasons.filter(item => requestedSeason === null || item.number === requestedSeason)) {
         for (const episode of await catalogueEpisodes(settings, media.id, season.number)) if (!episode.airDate || episode.airDate <= today) items.push({ ...media, season: season.number, episode: episode.number, episodeTitle: episode.name, ...(episode.runtime ? { durationHint: episode.runtime * 60 } : {}) });
       }
       job.total = items.length;
       if (!items.length) throw new Error('No episodes were found for this series.');
       let failures = 0, lastFailure = '';
       for (const item of items) {
+        job.currentMedia = item;
         job.status = 'downloading'; job.message = `Downloading S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')} · ${job.completed + 1}/${job.total}`;
         const child = await startOfflineMediaDownload(item, settings);
         if (child) { await child.completion; if (child.status === 'error') { failures++; lastFailure = `${item.episodeTitle || `Episode ${item.episode}`}: ${child.message}`; } }
         job.completed++; job.progress = Math.round(job.completed / job.total * 100);
       }
+      job.currentMedia = null;
       job.status = failures ? 'error' : 'ready'; job.message = failures ? `${job.total - failures} episodes downloaded; ${failures} failed. ${lastFailure}` : `${job.total} episodes available offline.`;
     } catch (error) { job.status = 'error'; job.message = error.message || 'Series download failed.'; }
   })();
@@ -620,6 +779,15 @@ export async function handleRequest(req, res) {
       const records = await readOfflineRecords(), [type, id] = offlineDeleteMatch.slice(1); let removed = 0;
       for (const [key, record] of [...records]) if (record.media.type === type && Number(record.media.id) === Number(id)) { records.delete(key); removed++; if (record.directory) await rm(record.directory, { recursive: true, force: true }); }
       await writeOfflineRecords(); return json(res, 200, { removed });
+    }
+    const offlineItemDeleteMatch = url.pathname.match(/^\/api\/offline\/item\/(.+)$/);
+    if (req.method === 'DELETE' && offlineItemDeleteMatch) {
+      const records = await readOfflineRecords(), key = decodeURIComponent(offlineItemDeleteMatch[1]);
+      const record = records.get(key);
+      if (!record) return json(res, 404, { error: 'That offline download was not found.' });
+      records.delete(key);
+      if (record.directory) await rm(record.directory, { recursive: true, force: true });
+      await writeOfflineRecords(); return json(res, 200, { removed: 1 });
     }
     const offlineStreamMatch = url.pathname.match(/^\/api\/offline\/(.+)\/stream$/);
     if (req.method === 'GET' && offlineStreamMatch) {

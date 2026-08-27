@@ -3,10 +3,10 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldShowUpNext } from '$lib/playback-controls.js';
+  import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext } from '$lib/playback-controls.js';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
-  import { offlineAvailability, offlineEpisodes } from '$lib/offline.js';
+  import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey } from '$lib/offline.js';
 
   const media = { id: Number(page.params.id), type: page.params.type, title: page.url.searchParams.get('title') || '', year: page.url.searchParams.get('year') || '', poster: page.url.searchParams.get('poster') || '' };
   const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1', shouldStartImmediately = page.url.searchParams.get('play') === '1' || shouldResume;
@@ -18,7 +18,7 @@
   let resumeStreamOffset = $state(0), resumeStarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
   let videoDiagnostics = $state(null);
-  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0;
+  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, preparingNext = false;
   const playbackRequests = createPlaybackRequestGuard();
 
   onMount(() => {
@@ -69,9 +69,9 @@
 
   function scheduleDownloadPoll() { clearTimeout(downloadPollTimer); if (offlineJobs.some(job => !['ready', 'error'].includes(job.status))) downloadPollTimer = setTimeout(() => void refreshOfflineDownloads(), 1000); }
   async function refreshOfflineDownloads() { try { const state = await api.get('/api/offline'); offlineDownloads = state.downloads; offlineJobs = state.jobs; } catch {} scheduleDownloadPoll(); }
-  function activeDownload(item = media) { return offlineJobs.find(job => job.media?.type === item.type && Number(job.media?.id) === Number(item.id) && !['ready', 'error'].includes(job.status)); }
+  function activeDownload(item = media) { const key = offlineMediaKey(item); return offlineJobs.find(job => job.key === key && !['ready', 'error'].includes(job.status)); }
   function downloaded(item = media) { return offlineAvailability(item, offlineDownloads); }
-  function episodeDownloaded(item) { return offlineDownloads.some(download => download.status === 'ready' && download.media?.type === 'tv' && Number(download.media.id) === Number(item?.id) && Number(download.media.season) === Number(item?.season) && Number(download.media.episode) === Number(item?.episode)); }
+  function episodeDownloadState(item) { return offlineEpisodeState(item, offlineDownloads, offlineJobs); }
   async function downloadForOffline(item) {
     downloadError = '';
     try { const job = await api.post('/api/offline', item); if (job?.id) offlineJobs = [...offlineJobs.filter(existing => existing.id !== job.id), job]; scheduleDownloadPoll(); }
@@ -100,9 +100,10 @@
   async function startPlayback(selectedMedia, preparedJob = null, resume = false) {
     if (manualReleaseSelection && !offlineMode && !selectedMedia.releaseId && !preparedJob) return chooseRelease(selectedMedia, resume);
     const requestToken = playbackRequests.begin();
+    currentPlaybackRequestToken = requestToken;
     try {
       void savePlaybackProgress(true);
-      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); nextMedia = null; nextJob = null; showUpNext = false; autoPlayNext = true; videoDiagnostics = null;
+      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); nextMedia = null; nextJob = null; preparingNext = false; showUpNext = false; autoPlayNext = true; videoDiagnostics = null;
       if (selectedMedia.type === 'tv') {
         selectedSeason = String(selectedMedia.season);
         selectedEpisode = String(selectedMedia.episode);
@@ -116,7 +117,7 @@
       playback = preparedJob || { status: 'selecting', message: 'Finding the best available release…', progress: 3 };
       const job = preparedJob || await api.post('/api/play', selectedMedia);
       if (!playbackRequests.isCurrent(requestToken)) return;
-      playback = job; void poll(job.id, requestToken);
+      playback = job; void poll(job.id, requestToken, 0);
     } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; }
   }
 
@@ -130,7 +131,7 @@
     } catch (e) { playback = { status: 'error', message: e.message, progress: 0 }; }
   }
 
-  async function poll(id, requestToken) {
+  async function poll(id, requestToken, attempt = 0) {
     try {
       const job = await api.get(`/api/play/${id}`);
       if (!playbackRequests.isCurrent(requestToken)) return;
@@ -141,9 +142,9 @@
         resumeStreamOffset = resumePlayback && job.mode === 'direct' ? resumePosition(entry, duration) : 0;
         beginPlaybackWarmup();
         if (playbackDiagnostics) diagnosticPollTimer = setTimeout(() => void refreshDiagnostics(id, requestToken), 1000);
-        void prepareNextEpisode(currentMedia, requestToken); return;
+        return;
       }
-      if (job.status !== 'error') pollTimer = setTimeout(() => void poll(id, requestToken), 900);
+      if (job.status !== 'error') pollTimer = setTimeout(() => void poll(id, requestToken, attempt + 1), playbackPollDelay(attempt));
     } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; }
   }
 
@@ -157,7 +158,8 @@
   }
 
   async function prepareNextEpisode(selectedMedia, requestToken) {
-    if (manualReleaseSelection || selectedMedia?.type !== 'tv' || nextMedia) return;
+    if (preparingNext || nextMedia || !shouldPrepareNextEpisode({ playing, mediaType: selectedMedia?.type, manualReleaseSelection, playbackMode: playback?.mode, bufferedAhead: bufferedPlaybackAhead() })) return;
+    preparingNext = true;
     const candidate = await adjacentEpisodeMedia(selectedMedia, 1);
     if (!candidate || !playbackRequests.isCurrent(requestToken) || itemKey(currentMedia) !== itemKey(selectedMedia)) return;
     nextMedia = candidate;
@@ -328,9 +330,15 @@
     playing = true; playbackNeedsAction = false; playbackRecovery = null;
     captureVideoDiagnostics('playing');
     clearTimeout(interruptionTimer); showPlayerControls();
-    if (playbackSettled) return;
-    clearTimeout(startupStableTimer);
-    startupStableTimer = setTimeout(settlePlaybackWarmup, 1200);
+    if (!playbackSettled) settlePlaybackWarmup();
+    void prepareNextEpisode(currentMedia, currentPlaybackRequestToken);
+  }
+  function bufferedPlaybackAhead() {
+    if (!player || !Number.isFinite(player.currentTime)) return 0;
+    for (let index = 0; index < player.buffered.length; index++) {
+      if (player.buffered.start(index) <= player.currentTime + 0.1 && player.buffered.end(index) >= player.currentTime) return Math.max(0, player.buffered.end(index) - player.currentTime);
+    }
+    return 0;
   }
   function handleStartupBuffering() {
     captureVideoDiagnostics('buffering');
@@ -352,7 +360,8 @@
   async function retryPlayback() {
     if (!playback?.id) return;
     const requestToken = playbackRequests.begin(), id = playback.id;
-    try { const job = await api.post(`/api/play/${id}/retry`); if (!playbackRequests.isCurrent(requestToken)) return; playback = job; void poll(job.id, requestToken); } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { ...playback, status: 'error', message: e.message }; }
+    currentPlaybackRequestToken = requestToken;
+    try { const job = await api.post(`/api/play/${id}/retry`); if (!playbackRequests.isCurrent(requestToken)) return; playback = job; void poll(job.id, requestToken, 0); } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { ...playback, status: 'error', message: e.message }; }
   }
 
   function formatPosition(seconds) { const value = Math.max(0, Math.round(seconds)); const hours = Math.floor(value / 3600), minutes = Math.floor(value % 3600 / 60), remainder = value % 60; return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}` : `${minutes}:${String(remainder).padStart(2, '0')}`; }
@@ -383,7 +392,7 @@
     streamAttempt++;
     beginPlaybackWarmup();
   }
-  async function fallback() { if (!canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. The download is complete; try a different release or check this browser’s codec support.' }; return; } const requestToken = playbackRequests.begin(), id = playback.id; clearTimeout(interruptionTimer); recoveryPosition = playbackRecovery?.position ?? currentPlaybackPosition(); playbackRecovery = null; playbackNeedsAction = false; resumePlayback = recoveryPosition >= 5; try { await savePlaybackProgress(true); const job = await api.post(`/api/play/${id}/fallback`); if (!playbackRequests.isCurrent(requestToken)) return; playback = job; void poll(job.id, requestToken); } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; } }
+  async function fallback() { if (!canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. The download is complete; try a different release or check this browser’s codec support.' }; return; } const requestToken = playbackRequests.begin(), id = playback.id; currentPlaybackRequestToken = requestToken; clearTimeout(interruptionTimer); recoveryPosition = playbackRecovery?.position ?? currentPlaybackPosition(); playbackRecovery = null; playbackNeedsAction = false; resumePlayback = recoveryPosition >= 5; try { await savePlaybackProgress(true); const job = await api.post(`/api/play/${id}/fallback`); if (!playbackRequests.isCurrent(requestToken)) return; playback = job; void poll(job.id, requestToken, 0); } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; } }
   function playNextEpisode() { if (!nextMedia || nextJob?.status === 'error') return; void setWatched(currentMedia, true); const selectedMedia = nextMedia, job = nextJob; void startPlayback(selectedMedia, job, false); setTimeout(() => player?.play().catch(() => {}), 0); }
   function handleTimeUpdate() {
     clearTimeout(interruptionTimer);
@@ -392,6 +401,7 @@
     restorePlaybackProgress();
     const timeline = controlTimeline();
     showUpNext = shouldShowUpNext(autoPlayNext && Boolean(nextMedia), timeline.position, timeline.duration);
+    void prepareNextEpisode(currentMedia, currentPlaybackRequestToken);
     void savePlaybackProgress();
     captureVideoDiagnostics('time update');
   }
@@ -470,7 +480,7 @@
 
 <section class="watch-page py-2 sm:py-6">
   <a class="link link-hover text-sm text-base-content/60" href="/">← Back to discover</a>
-  <div class="watch-heading mt-6 border-b border-base-300 pb-8 sm:flex sm:items-end sm:justify-between sm:gap-6"><div><p class="page-eyebrow">{media.type === 'tv' ? 'Series' : 'Film'}{media.year ? ` · ${media.year}` : ''}</p><h1 class="mt-3 text-4xl sm:text-6xl">{media.title || 'Watch'}</h1>{#if media.type === 'tv' && selectedSeason && selectedEpisode}<p class="mt-3 text-sm text-base-content/50">Season {selectedSeason}, episode {selectedEpisode}</p>{/if}</div><div class="watch-actions mt-5 flex flex-wrap gap-x-5 gap-y-2 sm:mt-0"><button class="btn btn-sm btn-ghost" onclick={toggleLibrary}>{isInLibrary() ? 'Remove from library' : '+ Add to library'}</button>{#if !offlineMode}{#if activeDownload(media)}<button class="btn btn-sm btn-ghost" disabled><span class="loading loading-spinner loading-xs"></span>{Math.round(activeDownload(media).progress || 0)}%</button>{:else if media.type === 'tv'}<button class="btn btn-sm btn-ghost" onclick={() => void downloadForOffline(media)}>Download series{downloaded(media).count ? ` (${downloaded(media).count} saved)` : ''}</button>{:else if downloaded(media).available}<span class="badge badge-success self-center">Available offline</span>{:else}<button class="btn btn-sm btn-ghost" onclick={() => void downloadForOffline(media)}>Download movie</button>{/if}{/if}<button class="btn btn-sm btn-ghost" onclick={toggleWatched} disabled={media.type === 'tv' && !selectedEpisode}>{isWatched() ? `Mark ${media.type === 'tv' ? 'episode ' : ''}unwatched` : `Mark ${media.type === 'tv' ? 'episode ' : ''}watched`}</button></div></div>
+  <div class="watch-heading mt-6 border-b border-base-300 pb-8 sm:flex sm:items-end sm:justify-between sm:gap-6"><div><p class="page-eyebrow">{media.type === 'tv' ? 'Series' : 'Film'}{media.year ? ` · ${media.year}` : ''}</p><h1 class="mt-3 text-4xl sm:text-6xl">{media.title || 'Watch'}</h1>{#if media.type === 'tv' && selectedSeason && selectedEpisode}<p class="mt-3 text-sm text-base-content/50">Season {selectedSeason}, episode {selectedEpisode}</p>{/if}</div><div class="watch-actions mt-5 flex flex-wrap gap-x-5 gap-y-2 sm:mt-0"><button class="btn btn-sm btn-ghost" onclick={toggleLibrary}>{isInLibrary() ? 'Remove from library' : '+ Add to library'}</button>{#if !offlineMode}{#if activeDownload(media)}<a class="btn btn-sm btn-ghost" href="/downloads"><span class="loading loading-spinner loading-xs"></span>{Math.round(activeDownload(media).progress || 0)}%</a>{:else if media.type === 'tv'}<button class="btn btn-sm btn-ghost" onclick={() => void downloadForOffline(media)}>Download series{downloaded(media).count ? ` (${downloaded(media).count} saved)` : ''}</button>{:else if downloaded(media).available}<a class="btn btn-sm btn-ghost" href="/downloads">Available offline</a>{:else}<button class="btn btn-sm btn-ghost" onclick={() => void downloadForOffline(media)}>Download movie</button>{/if}{/if}<button class="btn btn-sm btn-ghost" onclick={toggleWatched} disabled={media.type === 'tv' && !selectedEpisode}>{isWatched() ? `Mark ${media.type === 'tv' ? 'episode ' : ''}unwatched` : `Mark ${media.type === 'tv' ? 'episode ' : ''}watched`}</button></div></div>
   {#if downloadError}<div class="alert alert-error mt-4"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}
   {#if bulkError}<div class="alert alert-error mt-4"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}
   <div class="mt-8 grid gap-8 {media.type === 'tv' || releaseChoices.length ? 'xl:grid-cols-[minmax(0,1fr)_24rem]' : ''}">
@@ -542,6 +552,7 @@
               <ul class="editorial-menu menu dropdown-content z-30 mt-2 w-56 border border-base-300 bg-base-100 p-1" aria-label="Bulk episode actions">
                 <li><button onclick={(event) => runBulkAction(event, toggleSeasonWatched)}>{isSeasonWatched() ? 'Mark season unwatched' : 'Mark season watched'}</button></li>
                 <li><button onclick={(event) => runBulkAction(event, () => void toggleSeriesWatched())}>{isSeriesWatched() ? 'Mark series unwatched' : 'Mark series watched'}</button></li>
+                {#if !offlineMode}<li><button onclick={(event) => runBulkAction(event, () => void downloadForOffline({ ...media, season: Number(selectedSeason) }))}>Download season {selectedSeason}</button></li>{/if}
               </ul>
             </details>
           </div>
@@ -551,23 +562,29 @@
             {#each episodes as episode}
               {@const episodeMedia = { ...media, season: Number(selectedSeason), episode: episode.number, episodeTitle: episode.name }}
               {@const episodeWatched = isWatched(episodeMedia)}
+              {@const downloadState = episodeDownloadState(episodeMedia)}
               <div
                 class="episode-row group flex w-full items-center text-left transition-colors hover:bg-base-200"
                 class:bg-base-200={String(episode.number) === selectedEpisode}
               >
-                <button class="flex min-w-0 flex-1 items-center gap-4 px-2 py-4 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" aria-current={String(episode.number) === selectedEpisode ? 'true' : undefined} aria-label={`Play episode ${episode.number}, ${episode.name}`} onclick={() => playEpisodeNumber(episode.number)}>
+                <button class="flex min-w-0 flex-1 items-center gap-4 py-4 pl-4 pr-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" aria-current={String(episode.number) === selectedEpisode ? 'true' : undefined} aria-label={`Play episode ${episode.number}, ${episode.name}`} onclick={() => playEpisodeNumber(episode.number)}>
                   <span class="episode-marker grid h-10 w-10 shrink-0 place-items-center border border-base-300 text-sm font-semibold text-base-content/55 transition-colors group-hover:border-primary group-hover:bg-primary group-hover:text-primary-content">
                     {#if currentMedia?.type === 'tv' && currentMedia.season === Number(selectedSeason) && currentMedia.episode === episode.number && playback?.status === 'ready'}<span class="text-xs tracking-wide">NOW</span>{:else}<svg class="h-4 w-4 translate-x-px" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M5.5 3.9a1 1 0 0 1 1.52-.85l9.1 6.1a1 1 0 0 1 0 1.7l-9.1 6.1a1 1 0 0 1-1.52-.85V3.9Z" /></svg>{/if}
                   </span>
                   <span class="min-w-0 flex-1"><span class="flex items-baseline gap-2"><span class="text-xs font-semibold text-base-content/50">{episode.number}</span><span class="truncate text-sm font-medium group-hover:text-primary">{episode.name}</span></span>{#if episode.airDate}<span class="mt-1 block text-xs text-base-content/50">{formatAirDate(episode.airDate)}</span>{/if}</span>
                 </button>
+                {#if !offlineMode}
+                  <button class="episode-watched grid size-9 shrink-0 place-items-center hover:bg-base-300 hover:text-primary focus-visible:outline-2 focus-visible:outline-primary" disabled={!['available', 'error'].includes(downloadState.status)} aria-label={downloadState.status === 'ready' ? `Episode ${episode.number} is downloaded` : downloadState.status === 'error' ? `Retry download for episode ${episode.number}` : `Download episode ${episode.number}`} title={downloadState.status === 'ready' ? 'Downloaded' : downloadState.status === 'error' ? 'Retry download' : 'Download episode'} onclick={() => void downloadForOffline(episodeMedia)}>
+                    {#if ['selecting', 'downloading', 'extracting', 'optimizing'].includes(downloadState.status)}<span class="loading loading-spinner loading-xs"></span>{:else if downloadState.status === 'ready'}<svg class="size-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 13.5v2h12v-2M10 3v9m-3-3 3 3 3-3" /></svg>{:else if downloadState.status === 'error'}<span aria-hidden="true">↻</span>{:else}<span aria-hidden="true">↓</span>{/if}
+                  </button>
+                {/if}
                 <button class="episode-watched mr-2 grid size-9 shrink-0 place-items-center text-sm hover:bg-base-300 hover:text-primary focus-visible:outline-2 focus-visible:outline-primary" class:text-primary={episodeWatched} aria-label={episodeWatched ? `Mark episode ${episode.number} unwatched` : `Mark episode ${episode.number} watched`} aria-pressed={episodeWatched} onclick={() => void setWatched(episodeMedia, !episodeWatched)}>{episodeWatched ? '✓' : '○'}</button>
               </div>
             {/each}
           </div>
         {:else if playback?.status === 'selecting'}
           <div class="mt-4 space-y-1 border-y border-base-300 py-2" aria-label="Loading episodes">
-            {#each Array(4) as _}<div class="flex animate-pulse items-center gap-4 px-2 py-3"><span class="h-10 w-10 bg-base-300"></span><span class="h-4 w-2/3 bg-base-300"></span></div>{/each}
+            {#each Array(4) as _}<div class="flex animate-pulse items-center gap-4 py-3 pl-4 pr-2"><span class="h-10 w-10 bg-base-300"></span><span class="h-4 w-2/3 bg-base-300"></span></div>{/each}
           </div>
         {/if}
       {/if}

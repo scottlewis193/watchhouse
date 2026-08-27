@@ -50,6 +50,19 @@ test('watched media leaves Continue Watching and marking unwatched resets it', a
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test('clears playback progress without marking media watched', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchhouse-state-'));
+  const store = createMediaStateStore(join(directory, 'state.json'));
+  const movie = { id: 10, type: 'movie', title: 'Film' };
+  try {
+    await store.setProgress(movie, { position: 300, duration: 1200 });
+    const state = await store.setProgress(movie, { watched: false, reset: true });
+    assert.equal(state.continueWatching.length, 0);
+    assert.equal(state.progress[0].position, 0);
+    assert.equal(state.progress[0].watched, false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('updates a whole episode collection atomically', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'watchhouse-state-'));
   const store = createMediaStateStore(join(directory, 'state.json'));

@@ -64,6 +64,18 @@ export function resumePosition(entry, duration, threshold = 30) {
   if (!entry || entry.watched || !Number.isFinite(duration) || duration <= 0 || entry.position < 5 || duration - entry.position <= threshold) return 0;
   return Math.min(entry.position, Math.max(0, duration - threshold - 1));
 }
+
+export function playbackPollDelay(attempt) {
+  if (attempt < 5) return 200;
+  if (attempt < 15) return 500;
+  return 900;
+}
+
+export function shouldPrepareNextEpisode({ playing, mediaType, manualReleaseSelection, playbackMode, bufferedAhead = 0 }, minimumBuffer = 30) {
+  if (!playing || mediaType !== 'tv' || manualReleaseSelection) return false;
+  return playbackMode !== 'direct' || bufferedAhead >= minimumBuffer;
+}
+
 export function createPlaybackRequestGuard() {
   let generation = 0;
   return {
