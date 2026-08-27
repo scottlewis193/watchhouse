@@ -97,6 +97,13 @@
     } catch (e) { playback = { status: 'error', message: e.message, progress: 0 }; }
   }
 
+  function chooseSeason(event, season) {
+    event.currentTarget.closest('details')?.removeAttribute('open');
+    if (String(season.number) === selectedSeason) return;
+    selectedSeason = String(season.number);
+    void loadEpisodes();
+  }
+
   async function startPlayback(selectedMedia, preparedJob = null, resume = false) {
     if (manualReleaseSelection && !offlineMode && !selectedMedia.releaseId && !preparedJob) return chooseRelease(selectedMedia, resume);
     const requestToken = playbackRequests.begin();
@@ -546,7 +553,12 @@
         <div class="flex flex-wrap items-end justify-between gap-4">
           <div><p class="page-eyebrow">Series guide</p><h2 class="episode-title mt-2">Episodes</h2><p class="mt-1 text-xs text-base-content/45">Select an episode to start watching</p></div>
           <div class="flex flex-wrap items-center justify-end gap-2">
-            <label class="form-control w-40"><span class="sr-only">Season</span><select class="select select-bordered select-sm w-full" aria-label="Season" aria-busy={!seasons.length && playback?.status !== 'error'} bind:value={selectedSeason} disabled={!seasons.length} onchange={() => loadEpisodes()}>{#if seasons.length}{#each seasons as season}<option value={String(season.number)}>{season.name}</option>{/each}{:else}<option value="">{playback?.status === 'error' ? 'Seasons unavailable' : 'Loading seasons…'}</option>{/if}</select></label>
+            <details class="dropdown dropdown-end" class:pointer-events-none={!seasons.length}>
+              <summary class="btn btn-sm btn-ghost min-w-40 justify-between" class:opacity-50={!seasons.length} aria-disabled={!seasons.length} aria-busy={!seasons.length && playback?.status !== 'error'}>
+                <span>{seasons.find(season => String(season.number) === selectedSeason)?.name || (playback?.status === 'error' ? 'Seasons unavailable' : 'Loading seasons…')}</span><span aria-hidden="true">⌄</span>
+              </summary>
+              {#if seasons.length}<ul class="editorial-menu menu dropdown-content z-30 mt-2 max-h-72 w-56 overflow-y-auto border border-base-300 bg-base-100 p-1" aria-label="Choose season">{#each seasons as season}<li><button class:menu-active={String(season.number) === selectedSeason} aria-current={String(season.number) === selectedSeason ? 'true' : undefined} onclick={(event) => chooseSeason(event, season)}><span>{season.name}</span><span class="ml-auto text-[10px] text-base-content/40">{season.episodeCount} EP</span></button></li>{/each}</ul>{/if}
+            </details>
             <details class="dropdown dropdown-end" class:pointer-events-none={!episodes.length || bulkUpdating}>
               <summary class="btn btn-sm btn-ghost" class:opacity-50={!episodes.length || bulkUpdating} aria-disabled={!episodes.length || bulkUpdating}>Bulk actions <span aria-hidden="true">⌄</span></summary>
               <ul class="editorial-menu menu dropdown-content z-30 mt-2 w-56 border border-base-300 bg-base-100 p-1" aria-label="Bulk episode actions">

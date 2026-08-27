@@ -423,6 +423,11 @@ button:not(:disabled):active { transform: scale(.97); }
   border-color: color-mix(in srgb, var(--color-base-content) 16%, transparent);
   background: color-mix(in srgb, var(--color-base-content) 2%, transparent);
 }
+.select option,
+.select optgroup {
+  background-color: var(--color-base-100);
+  color: var(--color-base-content);
+}
 .input:focus,
 .select:focus {
   border-color: color-mix(in srgb, var(--color-base-content) 52%, transparent);
