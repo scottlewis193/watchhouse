@@ -320,7 +320,7 @@ export function shouldCacheDirectPlayback(job) {
   return Boolean(job.offlineDownload);
 }
 export function shouldFinalizeCachedPlayback(job, strategy) {
-  return Boolean(job.prepareAhead && strategy !== 'raw');
+  return Boolean((job.prepareAhead || job.offlineDownload) && strategy !== 'raw');
 }
 export function preparationDownloadSettings(job, settings) {
   if (!job.prepareAhead) return settings;
@@ -737,6 +737,21 @@ async function startSeriesDownload(media, settings) {
   })();
   return job;
 }
+async function finalizeExistingOfflineRecord(record, job, settings) {
+  try {
+    const source = record.sourcePath || record.path;
+    setJob(job, 'optimizing', 'Preparing the downloaded copy for reliable offline playback…', 95);
+    const optimized = await optimizeCachedVideo({ ...job, offlineDownload: true, release: record.release, directory: record.directory }, source);
+    const updated = { ...record, ...optimized, mode: 'cached' };
+    delete updated.sourcePath;
+    const records = await readOfflineRecords();
+    records.set(record.key, updated);
+    await writeOfflineRecords();
+    Object.assign(job, { ...updated, status: 'ready', message: 'Downloaded copy is ready to play.', progress: 100 });
+  } catch (error) {
+    setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
+  }
+}
 function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, created: job.created, events: events || [] } } : {}) }; }
 async function serveLocalVideo(req, res, job) {
   const info = await stat(job.path), range = req.headers.range; let start = 0, end = info.size - 1, status = 200;
@@ -830,6 +845,14 @@ export async function handleRequest(req, res) {
       if (offline?.status === 'ready') {
         const local = await audioSafeOfflineRecord(offline);
         const playbackSettings = await readSettings();
+        if (local.mode === 'cached-convert') {
+          const existing = [...playbackJobs.values()].find(candidate => candidate.offlineKey === offline.key && !['ready', 'error'].includes(candidate.status));
+          if (existing) return json(res, 202, publicJob(existing));
+          const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', message: 'Preparing the downloaded copy for reliable offline playback…', progress: 95, created: Date.now(), mode: local.mode, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
+          playbackJobs.set(job.id, job);
+          void finalizeExistingOfflineRecord(offline, job, playbackSettings);
+          return json(res, 202, publicJob(job));
+        }
         const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
         playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
       }

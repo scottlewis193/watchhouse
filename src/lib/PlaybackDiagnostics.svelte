@@ -6,7 +6,17 @@
   }
   function stateLabel(value, labels) { return labels[value] || String(value ?? '—'); }
   const readyLabels = ['Nothing', 'Metadata', 'Current data', 'Future data', 'Enough data'];
-  const networkLabels = ['Empty', 'Idle', 'Loading', 'No source'];
+  function mediaFetchLabel(value) {
+    if (value === 0) return 'Not started';
+    if (value === 1) return 'Buffered / idle';
+    if (value === 2) {
+      if (playback?.mode === 'cached') return 'Reading saved file';
+      if (playback?.mode === 'cached-convert') return 'Processing saved file';
+      return 'Fetching stream';
+    }
+    if (value === 3) return 'No media source';
+    return String(value ?? '—');
+  }
 </script>
 
 <details class="playback-diagnostics mt-5 border-y border-base-300">
@@ -28,7 +38,7 @@
       <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Browser video</h3>
       <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2">
         <dt class="text-base-content/50">Ready state</dt><dd>{stateLabel(video?.readyState, readyLabels)}</dd>
-        <dt class="text-base-content/50">Network state</dt><dd>{stateLabel(video?.networkState, networkLabels)}</dd>
+        <dt class="text-base-content/50">Media fetch</dt><dd>{mediaFetchLabel(video?.networkState)}</dd>
         <dt class="text-base-content/50">Playback</dt><dd>{video?.event || 'Waiting for player'}{video?.paused === false ? ' · playing' : ' · paused'}</dd>
         <dt class="text-base-content/50">Position</dt><dd>{Math.round(video?.currentTime || 0)}s / {Number.isFinite(video?.duration) ? `${Math.round(video.duration)}s` : 'unknown'}</dd>
         <dt class="text-base-content/50">Buffered</dt><dd>{video?.buffered || '—'}</dd>

@@ -6,7 +6,7 @@
   import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext } from '$lib/playback-controls.js';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
-  import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey } from '$lib/offline.js';
+  import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
 
   const media = { id: Number(page.params.id), type: page.params.type, title: page.url.searchParams.get('title') || '', year: page.url.searchParams.get('year') || '', poster: page.url.searchParams.get('poster') || '' };
   const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1', shouldStartImmediately = page.url.searchParams.get('play') === '1' || shouldResume;
@@ -46,17 +46,7 @@
     }
     playback = { status: 'selecting', message: 'Loading seasons…', progress: 3 };
     try {
-      if (offlineMode) {
-        const local = offlineEpisodes(offlineDownloads, media.id);
-        if (!local.length) throw new Error('This series has no downloaded episodes.');
-        const numbers = [...new Set(local.map(item => item.season))];
-        seasons = numbers.map(number => ({ number, name: `Season ${number}`, episodeCount: local.filter(item => item.season === number).length }));
-        episodesBySeason = Object.fromEntries(numbers.map(number => [String(number), local.filter(item => item.season === number).map(item => ({ number: item.episode, name: item.episodeTitle || `Episode ${item.episode}`, runtime: Math.round((item.durationHint || 0) / 60) }))]));
-        selectedSeason = numbers.includes(Number(requestedSeason)) ? requestedSeason : String(numbers[0]);
-        await loadEpisodes(requestedEpisode);
-        if (!shouldStartImmediately) { currentMedia = selectedMediaItem(); playback = null; return; }
-        if (requestedEpisode) playEpisode(shouldResume); else await playNextUnwatchedEpisode(); return;
-      }
+      if (offlineMode) return await initialiseOfflineSeries();
       seasons = (await api.get(`/api/catalog/shows/${media.id}/seasons`)).seasons;
       if (!seasons.length) throw new Error('No selectable seasons were found for this show.');
       selectedSeason = seasons.some(season => String(season.number) === requestedSeason) ? requestedSeason : String(seasons[0].number);
@@ -64,7 +54,23 @@
       if (!shouldStartImmediately) { currentMedia = selectedMediaItem(); playback = null; return; }
       if (requestedEpisode) playEpisode(shouldResume);
       else await playNextUnwatchedEpisode();
-    } catch (e) { playback = { status: 'error', message: e.message, progress: 0 }; }
+    } catch (e) {
+      if (!offlineMode && offlineAvailability(media, offlineDownloads).available) {
+        try { await initialiseOfflineSeries(); return; } catch {}
+      }
+      playback = { status: 'error', message: e.message, progress: 0 };
+    }
+  }
+
+  async function initialiseOfflineSeries() {
+    const local = offlineSeriesCatalogue(offlineDownloads, media.id);
+    if (!local.seasons.length) throw new Error('This series has no downloaded episodes.');
+    seasons = local.seasons;
+    episodesBySeason = local.episodesBySeason;
+    selectedSeason = seasons.some(season => String(season.number) === requestedSeason) ? requestedSeason : String(seasons[0].number);
+    await loadEpisodes(requestedEpisode);
+    if (!shouldStartImmediately) { currentMedia = selectedMediaItem(); playback = null; return; }
+    if (requestedEpisode) playEpisode(shouldResume); else await playNextUnwatchedEpisode();
   }
 
   function scheduleDownloadPoll() { clearTimeout(downloadPollTimer); if (offlineJobs.some(job => !['ready', 'error'].includes(job.status))) downloadPollTimer = setTimeout(() => void refreshOfflineDownloads(), 1000); }

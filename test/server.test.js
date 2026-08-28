@@ -216,8 +216,11 @@ test('builds a valid playback payload for the selected episode', () => {
   assert.equal(episodePlaybackMedia(show, '2', '', [{ number: 3, name: 'Third' }]), null);
 });
 
-test('makes a prepare-ahead result fully browser-ready before the episode handoff', () => {
+test('makes persistent and prepare-ahead downloads fully browser-ready before playback', () => {
   assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'remux'), true);
+  assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'remux'), true);
+  assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'transcode'), true);
+  assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'raw'), false);
   assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'raw'), false);
   assert.equal(shouldCacheDirectPlayback({ prepareAhead: true }), false);
   assert.equal(shouldCacheDirectPlayback({}), false);
@@ -529,6 +532,22 @@ test('identifies persistent offline copies for movies and individual episodes', 
   assert.deepEqual(offlineEpisodes(downloads, 20), [episode]);
   assert.equal(offlineEpisodeState(episode, downloads, []).status, 'ready');
   assert.equal(offlineEpisodeState({ ...episode, episode: 4 }, [], [{ status: 'error', media: { ...episode, episode: 4 } }]).status, 'error');
+});
+
+test('builds a series guide entirely from downloaded episodes when the catalogue is unreachable', async () => {
+  const { offlineSeriesCatalogue } = await import('../src/lib/offline.js');
+  assert.equal(typeof offlineSeriesCatalogue, 'function');
+  const downloads = [
+    { status: 'ready', media: { id: 20, type: 'tv', title: 'Show', season: 2, episode: 3, episodeTitle: 'Third', durationHint: 3120 } },
+    { status: 'ready', media: { id: 20, type: 'tv', title: 'Show', season: 1, episode: 1, episodeTitle: 'Pilot', durationHint: 2700 } }
+  ];
+  assert.deepEqual(offlineSeriesCatalogue(downloads, 20), {
+    seasons: [{ number: 1, name: 'Season 1', episodeCount: 1 }, { number: 2, name: 'Season 2', episodeCount: 1 }],
+    episodesBySeason: {
+      '1': [{ number: 1, name: 'Pilot', runtime: 45 }],
+      '2': [{ number: 3, name: 'Third', runtime: 52 }]
+    }
+  });
 });
 
 test('keeps title-only fallback ranking anchored to the selected year', () => {

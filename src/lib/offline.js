@@ -31,3 +31,14 @@ export function offlineEpisodes(downloads, showId) {
     .map(download => download.media)
     .sort((a, b) => a.season - b.season || a.episode - b.episode);
 }
+
+export function offlineSeriesCatalogue(downloads, showId) {
+  const local = offlineEpisodes(downloads, showId);
+  const numbers = [...new Set(local.map(item => item.season))];
+  return {
+    seasons: numbers.map(number => ({ number, name: `Season ${number}`, episodeCount: local.filter(item => item.season === number).length })),
+    episodesBySeason: Object.fromEntries(numbers.map(number => [String(number), local
+      .filter(item => item.season === number)
+      .map(item => ({ number: item.episode, name: item.episodeTitle || `Episode ${item.episode}`, runtime: Math.round((item.durationHint || 0) / 60) }))]))
+  };
+}
