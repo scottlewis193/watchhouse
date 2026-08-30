@@ -5,7 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext, videoPlaybackStats } from '../src/lib/playback-controls.js';
+import { canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createPlaybackRequestGuard, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
@@ -391,6 +391,26 @@ test('polls preparation responsively and starts prepare-ahead only after playbac
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: true }), false);
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 12 }), false);
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 30 }), true);
+});
+
+test('waits for the prepared next episode and runs a deterministic 30 second countdown', () => {
+  assert.equal(nextEpisodeEndAction(true, null, null), 'resolve');
+  assert.equal(nextEpisodeEndAction(true, { episode: 2 }, { status: 'preparing' }), 'wait');
+  assert.equal(nextEpisodeEndAction(true, { episode: 2 }, { status: 'ready' }), 'play');
+  assert.equal(nextEpisodeEndAction(false, { episode: 2 }, { status: 'ready' }), 'none');
+  assert.equal(canStartNextEpisode({ episode: 2 }, { status: 'preparing' }), false);
+  assert.equal(canStartNextEpisode({ episode: 2 }, { status: 'ready' }), true);
+  assert.deepEqual(upNextCountdown(10_000, 10_000), { seconds: 30, elapsed: false });
+  assert.deepEqual(upNextCountdown(10_000, 39_001), { seconds: 1, elapsed: false });
+  assert.deepEqual(upNextCountdown(10_000, 40_000), { seconds: 0, elapsed: true });
+});
+
+test('recognises conservative end-credit frames only near the expected episode end', () => {
+  assert.equal(shouldSampleForCredits(2_500, 3_000), true);
+  assert.equal(shouldSampleForCredits(1_000, 3_000), false);
+  assert.equal(creditFrameLooksLikely({ darkFraction: 0.82, brightFraction: 0.06, edgeDensity: 0.12 }), true);
+  assert.equal(creditFrameLooksLikely({ darkFraction: 0.95, brightFraction: 0.001, edgeDensity: 0.002 }), false);
+  assert.equal(creditFrameLooksLikely({ darkFraction: 0.25, brightFraction: 0.4, edgeDensity: 0.3 }), false);
 });
 
 test('transcodes video as well as audio when restarting a direct stream after a seek', async () => {

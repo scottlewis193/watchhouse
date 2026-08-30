@@ -54,6 +54,34 @@ export function shouldShowUpNext(eligible, position, duration, threshold = 30) {
   return Boolean(eligible) && Number.isFinite(position) && position >= 0 && Number.isFinite(duration) && duration > threshold && duration - position <= threshold;
 }
 
+export function canStartNextEpisode(nextMedia, nextJob) {
+  return Boolean(nextMedia) && nextJob?.status === 'ready';
+}
+
+export function nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob) {
+  if (!autoPlayNext) return 'none';
+  if (!nextMedia) return 'resolve';
+  if (nextJob?.status === 'ready') return 'play';
+  if (nextJob?.status === 'error') return 'retry';
+  return 'wait';
+}
+
+export function upNextCountdown(startedAt, now = Date.now(), delaySeconds = 30) {
+  const remaining = Math.max(0, delaySeconds * 1000 - Math.max(0, now - startedAt));
+  return { seconds: Math.ceil(remaining / 1000), elapsed: remaining === 0 };
+}
+
+export function shouldSampleForCredits(position, duration, maximumLead = 15 * 60) {
+  if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return false;
+  return position >= Math.max(duration * 0.65, duration - maximumLead) && position < duration;
+}
+
+export function creditFrameLooksLikely({ darkFraction, brightFraction, edgeDensity }) {
+  return Number.isFinite(darkFraction) && Number.isFinite(brightFraction) && Number.isFinite(edgeDensity)
+    && darkFraction >= 0.72 && brightFraction >= 0.012 && brightFraction <= 0.18
+    && edgeDensity >= 0.025 && edgeDensity <= 0.3;
+}
+
 export function videoPlaybackStats(current, previous = null, minimumSampleMs = 250) {
   const total = Math.max(0, Number(current?.total) || 0);
   const dropped = Math.min(total, Math.max(0, Number(current?.dropped) || 0));
