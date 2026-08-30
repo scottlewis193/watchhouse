@@ -1,0 +1,317 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - link "Watchhouse" [ref=e6] [cursor=pointer]:
+        - /url: /
+      - navigation "Main navigation" [ref=e7]:
+        - link "Home" [ref=e8] [cursor=pointer]:
+          - /url: /
+        - link "Library" [ref=e9] [cursor=pointer]:
+          - /url: /library
+        - link "Downloads" [ref=e10] [cursor=pointer]:
+          - /url: /downloads
+        - link "Settings" [ref=e11] [cursor=pointer]:
+          - /url: /settings
+      - search [ref=e12]:
+        - searchbox "Search movies and shows" [ref=e16]
+  - main [ref=e17]:
+    - generic [ref=e18]:
+      - generic [ref=e19]:
+        - generic [ref=e20]:
+          - paragraph [ref=e21]: Offline viewing
+          - heading "Downloads" [level=1] [ref=e22]
+        - generic [ref=e23]: 33 saved
+      - generic [ref=e25]:
+        - article [ref=e26]:
+          - link [ref=e27] [cursor=pointer]:
+            - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=2
+          - generic [ref=e29]:
+            - generic [ref=e30]:
+              - generic [ref=e31]:
+                - paragraph [ref=e32]: Series · 2024
+                - heading [level=2] [ref=e33]:
+                  - link "Ludwig" [ref=e34] [cursor=pointer]:
+                    - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=2
+                - paragraph [ref=e35]: 9 items ready offline
+              - button "Remove all" [ref=e36] [cursor=pointer]
+            - generic [ref=e37]:
+              - generic [ref=e38]:
+                - link "S01E01 Episode 1" [ref=e39] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=1
+                  - generic [ref=e40]: S01E01
+                  - generic [ref=e41]: Episode 1
+                - generic [ref=e42]: Ready
+                - button "Remove" [ref=e43] [cursor=pointer]
+              - generic [ref=e44]:
+                - link "S01E02 Episode 2" [ref=e45] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=2
+                  - generic [ref=e46]: S01E02
+                  - generic [ref=e47]: Episode 2
+                - generic [ref=e48]: Ready
+                - button "Remove" [ref=e49] [cursor=pointer]
+              - generic [ref=e50]:
+                - link "S01E03 Episode 3" [ref=e51] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=3
+                  - generic [ref=e52]: S01E03
+                  - generic [ref=e53]: Episode 3
+                - generic [ref=e54]: Ready
+                - button "Remove" [ref=e55] [cursor=pointer]
+              - generic [ref=e56]:
+                - link "S01E04 Episode 4" [ref=e57] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=4
+                  - generic [ref=e58]: S01E04
+                  - generic [ref=e59]: Episode 4
+                - generic [ref=e60]: Ready
+                - button "Remove" [ref=e61] [cursor=pointer]
+              - generic [ref=e62]:
+                - link "S01E05 Episode 5" [ref=e63] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=5
+                  - generic [ref=e64]: S01E05
+                  - generic [ref=e65]: Episode 5
+                - generic [ref=e66]: Ready
+                - button "Remove" [ref=e67] [cursor=pointer]
+              - generic [ref=e68]:
+                - link "S01E06 Episode 6" [ref=e69] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=1&episode=6
+                  - generic [ref=e70]: S01E06
+                  - generic [ref=e71]: Episode 6
+                - generic [ref=e72]: Ready
+                - button "Remove" [ref=e73] [cursor=pointer]
+              - generic [ref=e74]:
+                - link "S02E01 Episode 1" [ref=e75] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=2&episode=1
+                  - generic [ref=e76]: S02E01
+                  - generic [ref=e77]: Episode 1
+                - generic [ref=e78]: Ready
+                - button "Remove" [ref=e79] [cursor=pointer]
+              - generic [ref=e80]:
+                - link "S02E02 Episode 2" [ref=e81] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=2&episode=2
+                  - generic [ref=e82]: S02E02
+                  - generic [ref=e83]: Episode 2
+                - generic [ref=e84]: Ready
+                - button "Remove" [ref=e85] [cursor=pointer]
+              - generic [ref=e86]:
+                - link "S02E03 Episode 3" [ref=e87] [cursor=pointer]:
+                  - /url: /watch/tv/243360?title=Ludwig&year=2024&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2F6xpAG4tJKhRT6y2Uxw2nAJareoQ.jpg&season=2&episode=3
+                  - generic [ref=e88]: S02E03
+                  - generic [ref=e89]: Episode 3
+                - generic [ref=e90]: Ready
+                - button "Remove" [ref=e91] [cursor=pointer]
+        - article [ref=e92]:
+          - link [ref=e93] [cursor=pointer]:
+            - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=1
+          - generic [ref=e95]:
+            - generic [ref=e96]:
+              - generic [ref=e97]:
+                - paragraph [ref=e98]: Series · 2022
+                - heading [level=2] [ref=e99]:
+                  - link "Reacher" [ref=e100] [cursor=pointer]:
+                    - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=1
+                - paragraph [ref=e101]: 10 items ready offline
+              - button "Remove all" [ref=e102] [cursor=pointer]
+            - generic [ref=e103]:
+              - generic [ref=e104]:
+                - link "S01E01 Welcome to Margrave" [ref=e105] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=1
+                  - generic [ref=e106]: S01E01
+                  - generic [ref=e107]: Welcome to Margrave
+                - generic [ref=e108]: Ready
+                - button "Remove" [ref=e109] [cursor=pointer]
+              - generic [ref=e110]:
+                - link "S01E02 First Dance" [ref=e111] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=2
+                  - generic [ref=e112]: S01E02
+                  - generic [ref=e113]: First Dance
+                - generic [ref=e114]: Ready
+                - button "Remove" [ref=e115] [cursor=pointer]
+              - generic [ref=e116]:
+                - link "S01E03 Spoonful" [ref=e117] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=3
+                  - generic [ref=e118]: S01E03
+                  - generic [ref=e119]: Spoonful
+                - generic [ref=e120]: Ready
+                - button "Remove" [ref=e121] [cursor=pointer]
+              - generic [ref=e122]:
+                - link "S01E04 In a Tree" [ref=e123] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=4
+                  - generic [ref=e124]: S01E04
+                  - generic [ref=e125]: In a Tree
+                - generic [ref=e126]: Ready
+                - button "Remove" [ref=e127] [cursor=pointer]
+              - generic [ref=e128]:
+                - link "S01E05 No Apologies" [ref=e129] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=5
+                  - generic [ref=e130]: S01E05
+                  - generic [ref=e131]: No Apologies
+                - generic [ref=e132]: Ready
+                - button "Remove" [ref=e133] [cursor=pointer]
+              - generic [ref=e134]:
+                - link "S01E06 Papier" [ref=e135] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=6
+                  - generic [ref=e136]: S01E06
+                  - generic [ref=e137]: Papier
+                - generic [ref=e138]: Ready
+                - button "Remove" [ref=e139] [cursor=pointer]
+              - generic [ref=e140]:
+                - link "S01E07 Reacher Said Nothing" [ref=e141] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=7
+                  - generic [ref=e142]: S01E07
+                  - generic [ref=e143]: Reacher Said Nothing
+                - generic [ref=e144]: Ready
+                - button "Remove" [ref=e145] [cursor=pointer]
+              - generic [ref=e146]:
+                - link "S01E08 Pie" [ref=e147] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=1&episode=8
+                  - generic [ref=e148]: S01E08
+                  - generic [ref=e149]: Pie
+                - generic [ref=e150]: Ready
+                - button "Remove" [ref=e151] [cursor=pointer]
+              - generic [ref=e152]:
+                - link "S02E01 ATM" [ref=e153] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=2&episode=1
+                  - generic [ref=e154]: S02E01
+                  - generic [ref=e155]: ATM
+                - generic [ref=e156]: Ready
+                - button "Remove" [ref=e157] [cursor=pointer]
+              - generic [ref=e158]:
+                - link "S02E02 What Happens in Atlantic City" [ref=e159] [cursor=pointer]:
+                  - /url: /watch/tv/108978?title=Reacher&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2Ff1VCQIG2iCyOookdgOzwtUpwWC0.jpg&season=2&episode=2
+                  - generic [ref=e160]: S02E02
+                  - generic [ref=e161]: What Happens in Atlantic City
+                - generic [ref=e162]: Ready
+                - button "Remove" [ref=e163] [cursor=pointer]
+        - article [ref=e164]:
+          - link [ref=e165] [cursor=pointer]:
+            - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=1
+          - generic [ref=e167]:
+            - generic [ref=e168]:
+              - generic [ref=e169]:
+                - paragraph [ref=e170]: Series · 2022
+                - heading [level=2] [ref=e171]:
+                  - link "Severance" [ref=e172] [cursor=pointer]:
+                    - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=1
+                - paragraph [ref=e173]: 11 items ready offline
+              - button "Remove all" [ref=e174] [cursor=pointer]
+            - generic [ref=e175]:
+              - generic [ref=e176]:
+                - link "S01E01 Good News About Hell" [ref=e177] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=1
+                  - generic [ref=e178]: S01E01
+                  - generic [ref=e179]: Good News About Hell
+                - generic [ref=e180]: Ready
+                - button "Remove" [ref=e181] [cursor=pointer]
+              - generic [ref=e182]:
+                - link "S01E02 Half Loop" [ref=e183] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=2
+                  - generic [ref=e184]: S01E02
+                  - generic [ref=e185]: Half Loop
+                - generic [ref=e186]: Ready
+                - button "Remove" [ref=e187] [cursor=pointer]
+              - generic [ref=e188]:
+                - link "S01E03 In Perpetuity" [ref=e189] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=3
+                  - generic [ref=e190]: S01E03
+                  - generic [ref=e191]: In Perpetuity
+                - generic [ref=e192]: Ready
+                - button "Remove" [ref=e193] [cursor=pointer]
+              - generic [ref=e194]:
+                - link "S01E06 Hide and Seek" [ref=e195] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=6
+                  - generic [ref=e196]: S01E06
+                  - generic [ref=e197]: Hide and Seek
+                - generic [ref=e198]: Ready
+                - button "Remove" [ref=e199] [cursor=pointer]
+              - generic [ref=e200]:
+                - link "S01E07 Defiant Jazz" [ref=e201] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=7
+                  - generic [ref=e202]: S01E07
+                  - generic [ref=e203]: Defiant Jazz
+                - generic [ref=e204]: Ready
+                - button "Remove" [ref=e205] [cursor=pointer]
+              - generic [ref=e206]:
+                - link "S01E08 What's for Dinner?" [ref=e207] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=8
+                  - generic [ref=e208]: S01E08
+                  - generic [ref=e209]: What's for Dinner?
+                - generic [ref=e210]: Ready
+                - button "Remove" [ref=e211] [cursor=pointer]
+              - generic [ref=e212]:
+                - link "S01E09 The We We Are" [ref=e213] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=1&episode=9
+                  - generic [ref=e214]: S01E09
+                  - generic [ref=e215]: The We We Are
+                - generic [ref=e216]: Ready
+                - button "Remove" [ref=e217] [cursor=pointer]
+              - generic [ref=e218]:
+                - link "S02E01 Hello, Ms. Cobel" [ref=e219] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=2&episode=1
+                  - generic [ref=e220]: S02E01
+                  - generic [ref=e221]: Hello, Ms. Cobel
+                - generic [ref=e222]: Ready
+                - button "Remove" [ref=e223] [cursor=pointer]
+              - generic [ref=e224]:
+                - link "S02E05 Trojan's Horse" [ref=e225] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=2&episode=5
+                  - generic [ref=e226]: S02E05
+                  - generic [ref=e227]: Trojan's Horse
+                - generic [ref=e228]: Ready
+                - button "Remove" [ref=e229] [cursor=pointer]
+              - generic [ref=e230]:
+                - link "S02E06 Attila" [ref=e231] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=2&episode=6
+                  - generic [ref=e232]: S02E06
+                  - generic [ref=e233]: Attila
+                - generic [ref=e234]: Ready
+                - button "Remove" [ref=e235] [cursor=pointer]
+              - generic [ref=e236]:
+                - link "S02E08 Sweet Vitriol" [ref=e237] [cursor=pointer]:
+                  - /url: /watch/tv/95396?title=Severance&year=2022&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FpPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg&season=2&episode=8
+                  - generic [ref=e238]: S02E08
+                  - generic [ref=e239]: Sweet Vitriol
+                - generic [ref=e240]: Ready
+                - button "Remove" [ref=e241] [cursor=pointer]
+        - article [ref=e242]:
+          - link [ref=e243] [cursor=pointer]:
+            - /url: /watch/tv/125988?title=Silo&year=2023&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgMYZZvnkVNTqSVnVCphWbPXwWwb.jpg&season=1&episode=1
+          - generic [ref=e245]:
+            - generic [ref=e246]:
+              - generic [ref=e247]:
+                - paragraph [ref=e248]: Series · 2023
+                - heading [level=2] [ref=e249]:
+                  - link "Silo" [ref=e250] [cursor=pointer]:
+                    - /url: /watch/tv/125988?title=Silo&year=2023&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgMYZZvnkVNTqSVnVCphWbPXwWwb.jpg&season=1&episode=1
+                - paragraph [ref=e251]: 2 items ready offline
+              - button "Remove all" [ref=e252] [cursor=pointer]
+            - generic [ref=e253]:
+              - generic [ref=e254]:
+                - link "S01E01 Freedom Day" [ref=e255] [cursor=pointer]:
+                  - /url: /watch/tv/125988?title=Silo&year=2023&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgMYZZvnkVNTqSVnVCphWbPXwWwb.jpg&season=1&episode=1
+                  - generic [ref=e256]: S01E01
+                  - generic [ref=e257]: Freedom Day
+                - generic [ref=e258]: Ready
+                - button "Remove" [ref=e259] [cursor=pointer]
+              - generic [ref=e260]:
+                - link "S01E02 Holston's Pick" [ref=e261] [cursor=pointer]:
+                  - /url: /watch/tv/125988?title=Silo&year=2023&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FgMYZZvnkVNTqSVnVCphWbPXwWwb.jpg&season=1&episode=2
+                  - generic [ref=e262]: S01E02
+                  - generic [ref=e263]: Holston's Pick
+                - generic [ref=e264]: Ready
+                - button "Remove" [ref=e265] [cursor=pointer]
+        - article [ref=e266]:
+          - link [ref=e267] [cursor=pointer]:
+            - /url: /watch/movie/969681?title=Spider-Man%3A+Brand+New+Day&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FbjiS5ipwxb9JFy3XRRN4OAilSeX.jpg
+          - generic [ref=e270]:
+            - generic [ref=e271]:
+              - paragraph [ref=e272]: Film · 2026
+              - heading [level=2] [ref=e273]:
+                - 'link "Spider-Man: Brand New Day" [ref=e274] [cursor=pointer]':
+                  - /url: /watch/movie/969681?title=Spider-Man%3A+Brand+New+Day&year=2026&poster=https%3A%2F%2Fimage.tmdb.org%2Ft%2Fp%2Fw500%2FbjiS5ipwxb9JFy3XRRN4OAilSeX.jpg
+              - paragraph [ref=e275]: 1 item ready offline
+            - button "Remove all" [ref=e276] [cursor=pointer]
+  - contentinfo [ref=e277]:
+    - paragraph [ref=e278]: WATCHHOUSE · PRIVATE SCREENING ROOM
+    - link "TMDB Uses the TMDB API. Not endorsed or certified by TMDB." [ref=e279] [cursor=pointer]:
+      - /url: https://www.themoviedb.org
+      - img "TMDB" [ref=e280]
+      - generic [ref=e281]: Uses the TMDB API. Not endorsed or certified by TMDB.

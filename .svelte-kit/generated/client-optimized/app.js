@@ -14,16 +14,18 @@ export const nodes = [
 	() => import('./nodes/2'),
 	() => import('./nodes/3'),
 	() => import('./nodes/4'),
-	() => import('./nodes/5')
+	() => import('./nodes/5'),
+	() => import('./nodes/6')
 ];
 
 export const server_loads = [];
 
 export const dictionary = {
 		"/": [2],
-		"/library": [3],
-		"/settings": [4],
-		"/watch/[type]/[id]": [5]
+		"/downloads": [3],
+		"/library": [4],
+		"/settings": [5],
+		"/watch/[type]/[id]": [6]
 	};
 
 export const hooks = {

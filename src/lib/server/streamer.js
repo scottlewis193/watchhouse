@@ -302,6 +302,9 @@ export async function writeStreamToResponse(stream, res, { end = true } = {}) {
 }
 export function conversionSucceeded(code, stderr = '', bytes = 1) { return code === 0 && !String(stderr).trim() && bytes > 0; }
 async function extractedVideo(directory) { const names = await readdir(directory, { recursive: true }); return names.find(name => /\.(mkv|mp4|m4v|mov|webm)$/i.test(name)); }
+export function seekPlaybackStrategy(strategy, start = 0) {
+  return start > 0 ? 'transcode' : strategy;
+}
 export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
   const englishMetadataMaps = [
@@ -345,9 +348,10 @@ async function optimizeCachedVideo(job, path) {
   }
   return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy };
 }
-async function audioSafeOfflineRecord(record) {
+export async function audioSafeOfflineRecord(record, inspectStrategy = cachedPlaybackStrategy) {
   if (record.mode !== 'cached' || !record.path) return record;
-  const strategy = await cachedPlaybackStrategy(record.path, record.release);
+  if (record.strategy === 'raw' && record.mime === 'video/mp4') return record;
+  const strategy = await inspectStrategy(record.path, record.release);
   return strategy === 'raw' ? record : { ...record, mode: 'cached-convert', sourcePath: record.path, mime: 'video/mp4', strategy };
 }
 
@@ -425,7 +429,7 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
 
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
   const rangeSource = start > 0 ? await openPostedRangeServer(job, settings) : null;
-  const strategy = strategyOverride || playbackStrategy(job.file.subject, job.release), child = spawn('ffmpeg', ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource))); let stderr = '';
+  const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start), child = spawn('ffmpeg', ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource))); let stderr = '';
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
   try {

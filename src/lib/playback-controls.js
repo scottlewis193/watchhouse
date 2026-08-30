@@ -54,6 +54,19 @@ export function shouldShowUpNext(eligible, position, duration, threshold = 30) {
   return Boolean(eligible) && Number.isFinite(position) && position >= 0 && Number.isFinite(duration) && duration > threshold && duration - position <= threshold;
 }
 
+export function videoPlaybackStats(current, previous = null, minimumSampleMs = 250) {
+  const total = Math.max(0, Number(current?.total) || 0);
+  const dropped = Math.min(total, Math.max(0, Number(current?.dropped) || 0));
+  const at = Number(current?.at) || 0;
+  const sample = { at, total, dropped };
+  const droppedPercent = total ? dropped / total * 100 : 0;
+  if (!previous || at <= previous.at || total < previous.total || dropped < previous.dropped) return { fps: null, total, dropped, droppedPercent, sample };
+  const elapsed = at - previous.at;
+  if (elapsed < minimumSampleMs) return { fps: null, total, dropped, droppedPercent, sample: previous };
+  const renderedFrames = Math.max(0, (total - dropped) - (previous.total - previous.dropped));
+  return { fps: renderedFrames * 1000 / elapsed, total, dropped, droppedPercent, sample };
+}
+
 export function resumeStreamUrl(url, playbackMode, position) {
   if (!url || playbackMode !== 'direct' || !Number.isFinite(position) || position <= 0) return url;
   const separator = url.includes('?') ? '&' : '?';

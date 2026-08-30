@@ -29,7 +29,7 @@ declare module "$app/types" {
 	type MatcherParam<M> = M extends (param : string) => param is (infer U extends string) ? U : string;
 
 	export interface AppTypes {
-		RouteId(): "/" | "/api" | "/api/[...path]" | "/library" | "/settings" | "/watch" | "/watch/[type]" | "/watch/[type]/[id]";
+		RouteId(): "/" | "/api" | "/api/[...path]" | "/downloads" | "/library" | "/settings" | "/watch" | "/watch/[type]" | "/watch/[type]/[id]";
 		RouteParams(): {
 			"/api/[...path]": { path: string };
 			"/watch/[type]": { type: string };
@@ -39,13 +39,14 @@ declare module "$app/types" {
 			"/": { path?: string | undefined; type?: string | undefined; id?: string | undefined };
 			"/api": { path?: string | undefined };
 			"/api/[...path]": { path: string };
+			"/downloads": Record<string, never>;
 			"/library": Record<string, never>;
 			"/settings": Record<string, never>;
 			"/watch": { type?: string | undefined; id?: string | undefined };
 			"/watch/[type]": { type: string; id?: string | undefined };
 			"/watch/[type]/[id]": { type: string; id: string }
 		};
-		Pathname(): "/" | `/api/${string}` & {} | "/library" | "/settings" | `/watch/${string}/${string}` & {};
+		Pathname(): "/" | `/api/${string}` & {} | "/downloads" | "/library" | "/settings" | `/watch/${string}/${string}` & {};
 		ResolvedPathname(): `${"" | `/${string}`}${ReturnType<AppTypes['Pathname']>}`;
 		Asset(): "/apple-touch-icon.png" | "/icon-192.png" | "/icon-512.png" | "/icon-maskable-512.png" | "/icon-maskable.svg" | "/icon.svg" | "/manifest.webmanifest" | "/offline.html" | string & {};
 	}

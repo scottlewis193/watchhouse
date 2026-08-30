@@ -37,6 +37,10 @@
       "_server.js"
     ]
   },
+  "_offline.js": {
+    "file": "chunks/offline.js",
+    "name": "offline"
+  },
   "_root.js": {
     "file": "chunks/root.js",
     "name": "root",
@@ -110,10 +114,14 @@
     "isEntry": true,
     "imports": [
       "_index.js",
+      "_exports.js",
+      "_utils2.js",
+      "_root.js",
+      "_state.svelte.js",
       "_index2.js"
     ],
     "css": [
-      "_app/immutable/assets/_layout.CKY7pbMK.css"
+      "_app/immutable/assets/_layout.SEqAGLAG.css"
     ]
   },
   "src/routes/+page.svelte": {
@@ -133,7 +141,22 @@
     "file": "entries/endpoints/api/_...path_/_server.js",
     "name": "entries/endpoints/api/_...path_/_server",
     "src": "src/routes/api/[...path]/+server.js",
-    "isEntry": true
+    "isEntry": true,
+    "imports": [
+      "_offline.js"
+    ]
+  },
+  "src/routes/downloads/+page.svelte": {
+    "file": "entries/pages/downloads/_page.svelte.js",
+    "name": "entries/pages/downloads/_page.svelte",
+    "src": "src/routes/downloads/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js"
+    ],
+    "css": [
+      "_app/immutable/assets/_page.uminNjQs.css"
+    ]
   },
   "src/routes/library/+page.svelte": {
     "file": "entries/pages/library/_page.svelte.js",
@@ -160,7 +183,15 @@
     "isEntry": true,
     "imports": [
       "_index.js",
-      "_index2.js"
+      "_exports.js",
+      "_utils2.js",
+      "_root.js",
+      "_state.svelte.js",
+      "_index2.js",
+      "_offline.js"
+    ],
+    "css": [
+      "_app/immutable/assets/_page.Cl9Jpcbi.css"
     ]
   },
   "virtual:__sveltekit/env": {

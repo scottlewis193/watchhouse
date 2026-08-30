@@ -5,7 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext } from '../src/lib/playback-controls.js';
+import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
@@ -209,6 +209,18 @@ test('formats and prioritizes the selected episode', () => {
   assert.match(ranked[0].title, /S02E03/);
 });
 
+test('rejects another series with the same season and episode tag', () => {
+  const media = { title: 'Reacher', type: 'tv', season: 2, episode: 3 };
+  const ranked = rankReleases([
+    { title: 'Marie.Antoinette.2022.S02E03.Treacherous.Legacy.1080p.WEB-DL.ENGLISH' },
+    { title: 'Vikings.S02E03.Treachery.1080p.WEB-DL.ENGLISH' },
+    { title: 'Reacher.S02E03.Picture.Says.a.Thousand.Words.720p.WEB-DL.ENGLISH' }
+  ], media);
+  assert.deepEqual(ranked.map(release => release.title), [
+    'Reacher.S02E03.Picture.Says.a.Thousand.Words.720p.WEB-DL.ENGLISH'
+  ]);
+});
+
 test('builds a valid playback payload for the selected episode', () => {
   const show = { id: 42, type: 'tv', title: 'Example Show', year: '2024' };
   const media = episodePlaybackMedia(show, '2', '3', [{ number: 2, name: 'Second' }, { number: 3, name: 'Third', runtime: 52 }]);
@@ -226,6 +238,16 @@ test('makes persistent and prepare-ahead downloads fully browser-ready before pl
   assert.equal(shouldCacheDirectPlayback({}), false);
   assert.equal(preparationDownloadSettings({ prepareAhead: true }, { maxConnections: 12 }).maxConnections, 2);
   assert.equal(preparationDownloadSettings({}, { maxConnections: 12 }).maxConnections, 12);
+});
+
+test('does not prepare an already finalized offline MP4 again', async () => {
+  const { audioSafeOfflineRecord } = await import('../src/lib/server/streamer.js');
+  assert.equal(typeof audioSafeOfflineRecord, 'function');
+  const record = { key: 'tv:20:s1:e2', mode: 'cached', strategy: 'raw', mime: 'video/mp4', path: '/offline/episode.mkv.browser.mp4' };
+  let compatibilityChecks = 0;
+  const result = await audioSafeOfflineRecord(record, async () => { compatibilityChecks++; return 'remux'; });
+  assert.equal(result, record);
+  assert.equal(compatibilityChecks, 0);
 });
 
 test('reuses the validated first article when a prepared direct stream starts', async () => {
@@ -371,6 +393,15 @@ test('polls preparation responsively and starts prepare-ahead only after playbac
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 30 }), true);
 });
 
+test('transcodes video as well as audio when restarting a direct stream after a seek', async () => {
+  const { seekPlaybackStrategy } = await import('../src/lib/server/streamer.js');
+  assert.equal(typeof seekPlaybackStrategy, 'function');
+  assert.equal(seekPlaybackStrategy('raw', 120), 'transcode');
+  assert.equal(seekPlaybackStrategy('remux', 120), 'transcode');
+  assert.equal(seekPlaybackStrategy('transcode', 120), 'transcode');
+  assert.equal(seekPlaybackStrategy('remux', 0), 'remux');
+});
+
 test('completed media cannot be overwritten by a trailing playback progress save', () => {
   assert.equal(canSavePlaybackProgress('tv:20:s1:e2', ''), true);
   assert.equal(canSavePlaybackProgress('tv:20:s1:e2', 'tv:20:s1:e2'), false);
@@ -387,6 +418,16 @@ test('shows Up Next only during the final 30 seconds of the full runtime', () =>
   assert.equal(shouldShowUpNext(true, 35, 2700), false);
   assert.equal(shouldShowUpNext(true, 2670, 2700), true);
   assert.equal(shouldShowUpNext(false, 2670, 2700), false);
+});
+
+test('reports rendered FPS and dropped-frame totals from browser playback counters', () => {
+  const initial = videoPlaybackStats({ at: 1_000, total: 100, dropped: 5 });
+  assert.deepEqual(initial, { fps: null, total: 100, dropped: 5, droppedPercent: 5, sample: { at: 1_000, total: 100, dropped: 5 } });
+  const measured = videoPlaybackStats({ at: 2_000, total: 130, dropped: 8 }, initial.sample);
+  assert.equal(measured.fps, 27);
+  assert.equal(measured.total, 130);
+  assert.equal(measured.dropped, 8);
+  assert.equal(Math.round(measured.droppedPercent * 100) / 100, 6.15);
 });
 
 test('writes a media stream to the SvelteKit response interface without pipe()', async () => {

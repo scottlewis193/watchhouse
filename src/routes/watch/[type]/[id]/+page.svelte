@@ -1,9 +1,9 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext } from '$lib/playback-controls.js';
+  import { canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldMarkWatched, shouldPrepareNextEpisode, shouldShowUpNext, videoPlaybackStats } from '$lib/playback-controls.js';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
@@ -12,13 +12,14 @@
   const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1', shouldStartImmediately = page.url.searchParams.get('play') === '1' || shouldResume;
   let seasons = $state([]), episodes = $state([]), episodesBySeason = $state({}), selectedSeason = $state(''), selectedEpisode = $state('');
   let playback = $state(null), player = $state(), playerShell = $state(), manualReleaseSelection = $state(false), detailedPlaybackProgress = $state(false), playbackDiagnostics = $state(false), releaseChoices = $state([]), pendingMedia = $state(null), pendingResume = $state(false);
+  let releasePicker = $state();
   let currentMedia = $state(null), nextMedia = $state(null), nextJob = $state(null), showUpNext = $state(false), autoPlayNext = $state(true);
   let library = $state([]), progressEntries = $state([]);
   let offlineMode = $state(false), offlineDownloads = $state([]), offlineJobs = $state([]), downloadError = $state('');
   let resumeStreamOffset = $state(0), resumeStarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
   let videoDiagnostics = $state(null);
-  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, preparingNext = false;
+  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, preparingNext = false, videoFrameSample = null, measuredVideoFps = null;
   const playbackRequests = createPlaybackRequestGuard();
 
   onMount(() => {
@@ -116,7 +117,7 @@
     currentPlaybackRequestToken = requestToken;
     try {
       void savePlaybackProgress(true);
-      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); nextMedia = null; nextJob = null; preparingNext = false; showUpNext = false; autoPlayNext = true; videoDiagnostics = null;
+      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); nextMedia = null; nextJob = null; preparingNext = false; showUpNext = false; autoPlayNext = true; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
       if (selectedMedia.type === 'tv') {
         selectedSeason = String(selectedMedia.season);
         selectedEpisode = String(selectedMedia.episode);
@@ -141,6 +142,9 @@
       releaseChoices = (await api.post('/api/releases', selectedMedia)).releases;
       if (!releaseChoices.length) throw new Error('No compatible releases were found for this title.');
       playback = null;
+      await tick();
+      releasePicker?.focus({ preventScroll: true });
+      releasePicker?.scrollIntoView({ block: 'center' });
     } catch (e) { playback = { status: 'error', message: e.message, progress: 0 }; }
   }
 
@@ -437,7 +441,16 @@
     if (!playbackDiagnostics || !player) return;
     const ranges = [];
     for (let index = 0; index < player.buffered.length; index++) ranges.push(`${player.buffered.start(index).toFixed(1)}–${player.buffered.end(index).toFixed(1)}s`);
-    videoDiagnostics = { event, readyState: player.readyState, networkState: player.networkState, paused: player.paused, currentTime: player.currentTime, duration: player.duration, buffered: ranges.join(', '), error: player.error ? `MediaError ${player.error.code}${player.error.message ? `: ${player.error.message}` : ''}` : '' };
+    const quality = player.getVideoPlaybackQuality?.();
+    const totalFrames = Number(quality?.totalVideoFrames ?? player.webkitDecodedFrameCount);
+    const droppedFrames = Number(quality?.droppedVideoFrames ?? player.webkitDroppedFrameCount);
+    let frameStats = {};
+    if (Number.isFinite(totalFrames) && Number.isFinite(droppedFrames)) {
+      const stats = videoPlaybackStats({ at: performance.now(), total: totalFrames, dropped: droppedFrames }, videoFrameSample);
+      if (stats.sample !== videoFrameSample) { videoFrameSample = stats.sample; measuredVideoFps = stats.fps; }
+      frameStats = { fps: measuredVideoFps, totalFrames: stats.total, droppedFrames: stats.dropped, droppedFramePercent: stats.droppedPercent };
+    }
+    videoDiagnostics = { event, readyState: player.readyState, networkState: player.networkState, paused: player.paused, currentTime: player.currentTime, duration: player.duration, buffered: ranges.join(', '), error: player.error ? `MediaError ${player.error.code}${player.error.message ? `: ${player.error.message}` : ''}` : '', ...frameStats };
   }
   function togglePlayback() { if (!player) return; if (player.paused) void player.play(); else player.pause(); }
   function hidePlayerControls() {
@@ -457,6 +470,7 @@
       void savePlaybackProgress(true);
       resumeStreamOffset = target;
       playerPosition = 0;
+      videoFrameSample = null; measuredVideoFps = null;
       beginPlaybackWarmup();
       setTimeout(() => player?.play().catch(() => {}), 0);
     } else player.currentTime = target;
@@ -606,7 +620,7 @@
           </div>
         {/if}
       {/if}
-      {#if releaseChoices.length}<div class="release-picker mt-8 border-t border-base-300 pt-6"><p class="page-eyebrow">Choose a release</p><div class="mt-4 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="release-option flex w-full items-start justify-between gap-3 py-4 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/45">{release.readiness.label} · {release.category}</span></span>{#if release.size}<span class="shrink-0 text-xs text-base-content/45">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
+      {#if releaseChoices.length}<div class="release-picker mt-8 border-t border-base-300 pt-6" bind:this={releasePicker} tabindex="-1" aria-labelledby="release-picker-title"><p class="page-eyebrow" id="release-picker-title">Choose a release</p><div class="mt-4 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="release-option flex w-full items-start justify-between gap-3 py-4 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/45">{release.readiness.label} · {release.category}</span></span>{#if release.size}<span class="shrink-0 text-xs text-base-content/45">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
     </aside>{/if}
   </div>
 </section>

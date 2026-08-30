@@ -96,14 +96,33 @@ const options = {
   // added lazily, via `get_hooks`
   preload_strategy: "modulepreload",
   root,
-  service_worker: false,
+  service_worker: true,
   service_worker_options: void 0,
   server_error_boundaries: false,
   templates: {
-    app: ({ head, body, assets, nonce, env }) => '<!doctype html>\n<html lang="en" data-theme="night">\n  <head>\n    <meta charset="utf-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1" />\n    ' + head + '\n  </head>\n  <body data-sveltekit-preload-data="hover">\n    <div style="display: contents">' + body + "</div>\n  </body>\n</html>\n",
+    app: ({ head, body, assets, nonce, env }) => `<!doctype html>
+<html lang="en" data-theme="watchhouse">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#08090a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Watchhouse" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <script>
+      try {
+        const theme = localStorage.getItem('watchhouse-theme');
+        if (['watchhouse', 'midnight', 'cinema', 'paper'].includes(theme)) document.documentElement.dataset.theme = theme;
+      } catch {}
+    <\/script>
+    ` + head + '\n  </head>\n  <body data-sveltekit-preload-data="hover">\n    <div style="display: contents">' + body + "</div>\n  </body>\n</html>\n",
     error
   },
-  version_hash: "ixt6c6"
+  version_hash: "1jrvl7d"
 };
 async function get_hooks() {
   let handle;

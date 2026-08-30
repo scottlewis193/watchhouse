@@ -41,6 +41,9 @@
         <dt class="text-base-content/50">Media fetch</dt><dd>{mediaFetchLabel(video?.networkState)}</dd>
         <dt class="text-base-content/50">Playback</dt><dd>{video?.event || 'Waiting for player'}{video?.paused === false ? ' · playing' : ' · paused'}</dd>
         <dt class="text-base-content/50">Position</dt><dd>{Math.round(video?.currentTime || 0)}s / {Number.isFinite(video?.duration) ? `${Math.round(video.duration)}s` : 'unknown'}</dd>
+        <dt class="text-base-content/50">Rendered FPS</dt><dd>{Number.isFinite(video?.fps) ? `${video.fps.toFixed(1)} fps` : 'Measuring…'}</dd>
+        <dt class="text-base-content/50">Video frames</dt><dd>{Number.isFinite(video?.totalFrames) ? video.totalFrames.toLocaleString() : 'Unavailable'}</dd>
+        <dt class="text-base-content/50">Dropped</dt><dd>{Number.isFinite(video?.droppedFrames) ? `${video.droppedFrames.toLocaleString()} (${video.droppedFramePercent.toFixed(2)}%)` : 'Unavailable'}</dd>
         <dt class="text-base-content/50">Buffered</dt><dd>{video?.buffered || '—'}</dd>
         <dt class="text-base-content/50">Error</dt><dd>{video?.error || 'None'}</dd>
       </dl>

@@ -57,6 +57,21 @@ export function titleVariants(title) {
   return [...new Set([original, withoutApostrophes].filter(Boolean))];
 }
 
+function titleTokens(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/['‘’`]/g, '')
+    .replace(/&/g, ' and ')
+    .match(/[a-z0-9]+/g) || [];
+}
+
+export function releaseTitleMatches(release, media) {
+  const expected = titleTokens(media?.title);
+  if (!expected.length) return true;
+  const actual = titleTokens(release?.title);
+  return actual.some((_, start) => expected.every((token, offset) => actual[start + offset] === token));
+}
+
 export function releaseScore(release, media, preferences = {}) {
   const text = release.title.toLowerCase();
   let score = releaseAudioConfidence(release) * 20;
@@ -99,7 +114,10 @@ export function englishAudioRelease(release) {
 }
 
 export function rankReleases(releases, media, preferences) {
-  return releases.filter(englishAudioRelease).sort((a, b) => releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
+  return releases
+    .filter(release => releaseTitleMatches(release, media))
+    .filter(englishAudioRelease)
+    .sort((a, b) => releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
 }
 
 export function releaseReadiness(release) {

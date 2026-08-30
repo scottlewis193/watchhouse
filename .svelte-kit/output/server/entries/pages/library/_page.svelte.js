@@ -1,19 +1,28 @@
-import { h as head } from "../../../chunks/index.js";
+import { h as head, e as escape_html } from "../../../chunks/index.js";
 function _page($$renderer, $$props) {
   $$renderer.component(($$renderer2) => {
+    let library = [];
     head("c8k2rg", $$renderer2, ($$renderer3) => {
       $$renderer3.title(($$renderer4) => {
         $$renderer4.push(`<title>Library · Watchhouse</title>`);
       });
     });
-    $$renderer2.push(`<section class="pt-2"><div class="border-b border-base-300 pb-4"><p class="text-xs font-semibold tracking-[0.18em] text-base-content/50">YOUR COLLECTION</p><h1 class="mt-2 text-3xl font-semibold tracking-tight">Library</h1></div> `);
+    $$renderer2.push(`<section class="library-page"><div class="page-heading"><div><p class="page-eyebrow">Your collection</p><h1>Library</h1></div><div class="page-heading-meta"><span>${escape_html(library.length)} ${escape_html(library.length === 1 ? "title" : "titles")}</span><a href="/downloads">Manage downloads</a></div></div> `);
+    {
+      $$renderer2.push("<!--[-1-->");
+    }
+    $$renderer2.push(`<!--]--> `);
+    {
+      $$renderer2.push("<!--[-1-->");
+    }
+    $$renderer2.push(`<!--]--> `);
     {
       $$renderer2.push("<!--[-1-->");
     }
     $$renderer2.push(`<!--]--> `);
     {
       $$renderer2.push("<!--[0-->");
-      $$renderer2.push(`<div class="grid place-items-center py-20"><span class="loading loading-spinner loading-lg"></span></div>`);
+      $$renderer2.push(`<div class="editorial-loading grid place-items-center py-24"><span class="loading loading-spinner loading-lg"></span><p>Opening your library</p></div>`);
     }
     $$renderer2.push(`<!--]--></section>`);
   });
