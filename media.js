@@ -83,9 +83,11 @@ export function releaseScore(release, media, preferences = {}) {
   else if (/1080p/.test(text)) score += 40;
   else if (/720p/.test(text)) score += 25;
   if (/web[- .]?dl|bluray|blu[- .]?ray/.test(text)) score += 12;
-  if (/h[ .]?264|x264|avc/.test(text)) score += 15;
-  if (/x265|hevc|h[ .]?265/.test(text)) score -= 45;
-  if (/av1/.test(text)) score -= 30;
+  if (preferences.playbackQuality !== 'quality') {
+    if (/h[ .]?264|x264|avc/.test(text)) score += 15;
+    if (/x265|hevc|h[ .]?265/.test(text)) score -= 45;
+    if (/av1/.test(text)) score -= 30;
+  }
   if (preferences.playbackQuality === 'fast') {
     if (/\.mp4\b|web[- .]?dl.*h[ .]?264|x264/.test(text)) score += 60;
     if (/rar|7z|zip/.test(text)) score -= 80;

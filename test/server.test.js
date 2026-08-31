@@ -700,6 +700,14 @@ test('prefers practical H.264 playback over expensive HEVC conversion', () => {
   assert.match(ranked[0].title, /H264/);
 });
 
+test('best-quality playback prefers 2160p despite the cost of HEVC conversion', () => {
+  const ranked = rankReleases([
+    { title: 'Film.2024.2160p.HEVC.BluRay' },
+    { title: 'Film.2024.1080p.H264.WEB-DL.mp4' }
+  ], { title: 'Film', year: '2024' }, { playbackQuality: 'quality' });
+  assert.match(ranked[0].title, /2160p/);
+});
+
 test('can favour a quick-start release and explains release readiness', () => {
   const ranked = rankReleases([
     { title: 'Film.2024.2160p.HEVC.BluRay' },
