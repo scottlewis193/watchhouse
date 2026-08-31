@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
 
-  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
+  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
   let loading = $state(true);
   let saving = $state(false);
   let notice = $state('');
@@ -25,7 +25,7 @@
   function show(message, type = 'success') { notice = message; noticeType = type; }
   async function save() { saving = true; try { const config = await api.put('/api/settings', form); configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); form.indexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
   async function testConnection() { try { show('Testing Usenet connection…'); show((await api.post('/api/usenet/test', form)).message); } catch (e) { show(e.message, 'error'); } }
-  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
+  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
   function selectTheme(nextTheme) {
     theme = nextTheme;
     document.documentElement.dataset.theme = nextTheme;
@@ -116,11 +116,16 @@
       <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body gap-0 p-5 sm:p-7">
           <h2 class="card-title">Playback experience</h2>
-          <p class="mt-2 text-sm leading-relaxed text-base-content/65">Choose how much technical information Watchhouse shows while preparing a title.</p>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">Choose how playback continues and how much preparation detail Watchhouse shows.</p>
 
           <label class="mt-6 flex cursor-pointer items-start gap-3 border-y border-base-300 py-5">
+            <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.autoPlayNextEpisode} />
+            <span><span class="block text-sm font-medium">Auto-play next episode</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Automatically continue with the next episode after the countdown. Enabled by default.</span></span>
+          </label>
+
+          <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.smartAutoplay} />
-            <span><span class="block text-sm font-medium">Smart next episode</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Look for end-credit frames on this device, show a 30-second countdown, then play the next prepared episode.</span></span>
+            <span><span class="block text-sm font-medium">Smart next episode</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Look for end-credit frames on this device and start the next-episode countdown early.</span></span>
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">

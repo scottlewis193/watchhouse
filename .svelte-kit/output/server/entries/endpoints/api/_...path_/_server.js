@@ -270,7 +270,7 @@ const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {
 cacheSweep.unref();
 function publicSettings(settings) {
   const { indexerKey, usenetPass, tmdbToken, omdbKey, watchmodeKey, ...safe } = settings;
-  return { ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
+  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
 }
 function connectionTestSettings(saved, entered = {}) {
   return { ...saved, ...Object.fromEntries(Object.entries(entered).filter(([, value]) => value !== "")) };

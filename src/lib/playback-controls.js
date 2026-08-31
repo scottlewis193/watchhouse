@@ -58,6 +58,10 @@ export function canStartNextEpisode(nextMedia, nextJob) {
   return Boolean(nextMedia) && nextJob?.status === 'ready';
 }
 
+export function shouldContinuePlayback(autoAdvance, playback) {
+  return Boolean(autoAdvance) && playback?.status === 'ready';
+}
+
 export function nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob) {
   if (!autoPlayNext) return 'none';
   if (!nextMedia) return 'resolve';
@@ -112,8 +116,8 @@ export function playbackPollDelay(attempt) {
   return 900;
 }
 
-export function shouldPrepareNextEpisode({ playing, mediaType, manualReleaseSelection, playbackMode, bufferedAhead = 0 }, minimumBuffer = 30) {
-  if (!playing || mediaType !== 'tv' || manualReleaseSelection) return false;
+export function shouldPrepareNextEpisode({ playing, mediaType, manualReleaseSelection, autoPlayNextEpisode = true, playbackMode, bufferedAhead = 0 }, minimumBuffer = 30) {
+  if (!playing || mediaType !== 'tv' || manualReleaseSelection || !autoPlayNextEpisode) return false;
   return playbackMode !== 'direct' || bufferedAhead >= minimumBuffer;
 }
 

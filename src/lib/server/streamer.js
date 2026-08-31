@@ -79,9 +79,9 @@ async function clearExpiredPlaybackCache() {
 }
 const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {}), CACHE_SWEEP_MS);
 cacheSweep.unref();
-function publicSettings(settings) {
+export function publicSettings(settings) {
   const { indexerKey, usenetPass, tmdbToken, omdbKey, watchmodeKey, ...safe } = settings;
-  return { ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
+  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
 }
 export function connectionTestSettings(saved, entered = {}) {
   return { ...saved, ...Object.fromEntries(Object.entries(entered).filter(([, value]) => value !== '')) };
