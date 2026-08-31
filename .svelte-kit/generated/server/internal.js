@@ -26,7 +26,7 @@ export const options = {
 		app: ({ head, body, assets, nonce, env }) => "<!doctype html>\n<html lang=\"en\" data-theme=\"watchhouse\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <meta name=\"theme-color\" content=\"#08090a\" />\n    <meta name=\"mobile-web-app-capable\" content=\"yes\" />\n    <meta name=\"apple-mobile-web-app-capable\" content=\"yes\" />\n    <meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\" />\n    <meta name=\"apple-mobile-web-app-title\" content=\"Watchhouse\" />\n    <link rel=\"manifest\" href=\"/manifest.webmanifest\" />\n    <link rel=\"icon\" href=\"/icon.svg\" type=\"image/svg+xml\" />\n    <link rel=\"apple-touch-icon\" href=\"/apple-touch-icon.png\" />\n    <script>\n      try {\n        const theme = localStorage.getItem('watchhouse-theme');\n        if (['watchhouse', 'midnight', 'cinema', 'paper'].includes(theme)) document.documentElement.dataset.theme = theme;\n      } catch {}\n    </script>\n    " + head + "\n  </head>\n  <body data-sveltekit-preload-data=\"hover\">\n    <div style=\"display: contents\">" + body + "</div>\n  </body>\n</html>\n",
 		error
 	},
-	version_hash: "1bdsogu"
+	version_hash: "g9jn22"
 };
 
 export async function get_hooks() {
