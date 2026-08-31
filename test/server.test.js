@@ -5,7 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
+import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
@@ -398,6 +398,27 @@ test('polls preparation responsively and starts prepare-ahead only after playbac
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, autoPlayNextEpisode: false }), false);
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 12 }), false);
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 30 }), true);
+});
+
+test('retries next-episode preparation after episode loading fails', async () => {
+  const preparation = createNextEpisodePreparationController();
+  let attempts = 0;
+  const resolveCandidate = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('Episode catalogue temporarily unavailable');
+    return { type: 'tv', id: 20, season: 1, episode: 2 };
+  };
+  const prepareCandidate = async media => ({ id: 'next-job', status: 'selecting', media });
+
+  const failed = await preparation.attempt({ resolveCandidate, prepareCandidate });
+  assert.equal(failed.status, 'error');
+  assert.equal(preparation.preparing, false);
+
+  const retried = await preparation.attempt({ resolveCandidate, prepareCandidate });
+  assert.equal(retried.status, 'prepared');
+  assert.equal(retried.media.episode, 2);
+  assert.equal(retried.job.id, 'next-job');
+  assert.equal(attempts, 2);
 });
 
 test('waits for the prepared next episode and runs a deterministic 30 second countdown', () => {

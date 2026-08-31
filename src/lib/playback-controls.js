@@ -135,6 +135,35 @@ export function playbackPollDelay(attempt) {
   return 900;
 }
 
+export function createNextEpisodePreparationController() {
+  let state = 'idle';
+  let generation = 0;
+  return {
+    get preparing() { return state === 'preparing'; },
+    reset() { generation++; state = 'idle'; },
+    async attempt({ resolveCandidate, prepareCandidate, isCurrent = () => true }) {
+      if (state !== 'idle') return { status: 'skipped' };
+      const token = ++generation;
+      let media = null;
+      state = 'preparing';
+      try {
+        media = await resolveCandidate();
+        if (token !== generation || !isCurrent()) return { status: 'stale' };
+        if (!media) { state = 'unavailable'; return { status: 'unavailable' }; }
+        const job = await prepareCandidate(media);
+        if (token !== generation || !isCurrent()) return { status: 'stale' };
+        state = 'prepared';
+        return { status: 'prepared', media, job };
+      } catch (error) {
+        if (token === generation) state = 'idle';
+        return { status: 'error', media, error };
+      } finally {
+        if (token === generation && state === 'preparing') state = 'idle';
+      }
+    }
+  };
+}
+
 export function shouldPrepareNextEpisode({ playing, mediaType, manualReleaseSelection, autoPlayNextEpisode = true, playbackMode, bufferedAhead = 0 }, minimumBuffer = 30) {
   if (!playing || mediaType !== 'tv' || manualReleaseSelection || !autoPlayNextEpisode) return false;
   return playbackMode !== 'direct' || bufferedAhead >= minimumBuffer;

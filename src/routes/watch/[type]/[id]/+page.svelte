@@ -3,7 +3,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
+  import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
@@ -19,8 +19,9 @@
   let resumeStreamOffset = $state(0), resumeStarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
   let videoDiagnostics = $state(null), creditDiagnostics = $state(null);
-  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, preparingNext = false, continuePlaybackOnReady = false, videoFrameSample = null, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
+  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
   const playbackRequests = createPlaybackRequestGuard();
+  const nextEpisodePreparation = createNextEpisodePreparationController();
 
   onMount(() => {
     offlineMode = !navigator.onLine;
@@ -117,7 +118,7 @@
     currentPlaybackRequestToken = requestToken;
     try {
       void savePlaybackProgress(true);
-      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; preparingNext = false; continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
+      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; nextEpisodePreparation.reset(); continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
       if (selectedMedia.type === 'tv') {
         selectedSeason = String(selectedMedia.season);
         selectedEpisode = String(selectedMedia.episode);
@@ -184,12 +185,16 @@
   }
 
   async function prepareNextEpisode(selectedMedia, requestToken) {
-    if (preparingNext || nextMedia || !shouldPrepareNextEpisode({ playing, mediaType: selectedMedia?.type, manualReleaseSelection, autoPlayNextEpisode, playbackMode: playback?.mode, bufferedAhead: bufferedPlaybackAhead() })) return;
-    preparingNext = true;
-    const candidate = await adjacentEpisodeMedia(selectedMedia, 1);
-    if (!candidate || !playbackRequests.isCurrent(requestToken) || itemKey(currentMedia) !== itemKey(selectedMedia)) return;
-    nextMedia = candidate;
-    try { const job = await api.post('/api/play', { ...nextMedia, prepareAhead: true }); if (!playbackRequests.isCurrent(requestToken) || itemKey(currentMedia) !== itemKey(selectedMedia)) return; nextJob = job; void pollNextEpisode(job.id, requestToken); } catch { if (playbackRequests.isCurrent(requestToken)) nextJob = { status: 'error' }; }
+    if (nextEpisodePreparation.preparing || nextMedia || !shouldPrepareNextEpisode({ playing, mediaType: selectedMedia?.type, manualReleaseSelection, autoPlayNextEpisode, playbackMode: playback?.mode, bufferedAhead: bufferedPlaybackAhead() })) return;
+    const isCurrent = () => playbackRequests.isCurrent(requestToken) && itemKey(currentMedia) === itemKey(selectedMedia);
+    const result = await nextEpisodePreparation.attempt({
+      resolveCandidate: () => adjacentEpisodeMedia(selectedMedia, 1),
+      prepareCandidate: candidate => { nextMedia = candidate; return api.post('/api/play', { ...candidate, prepareAhead: true }); },
+      isCurrent
+    });
+    if (!isCurrent()) return;
+    if (result.status === 'prepared') { nextJob = result.job; void pollNextEpisode(result.job.id, requestToken); }
+    else if (result.status === 'error' && result.media) nextJob = { status: 'error' };
   }
 
   async function pollNextEpisode(id, requestToken) {
