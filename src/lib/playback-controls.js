@@ -45,7 +45,7 @@ export function playbackTimeline(playbackMode, position, mediaDuration, streamDu
   const offset = Number.isFinite(streamOffset) && streamOffset > 0 ? streamOffset : 0;
   const videoDuration = Number.isFinite(streamDuration) && streamDuration > 0 ? streamDuration : 0;
   if (!hasGrowingStreamDuration(playbackMode)) return { position: Math.min(relativePosition, videoDuration || relativePosition), duration: videoDuration };
-  const positionOffset = playbackMode === 'direct' ? offset : 0;
+  const positionOffset = offset;
   const duration = Number.isFinite(mediaDuration) && mediaDuration > 0 ? mediaDuration : positionOffset + videoDuration;
   return { position: Math.min(positionOffset + relativePosition, duration || positionOffset + relativePosition), duration };
 }
@@ -119,7 +119,7 @@ export function videoPlaybackStats(current, previous = null, minimumSampleMs = 2
 }
 
 export function resumeStreamUrl(url, playbackMode, position) {
-  if (!url || playbackMode !== 'direct' || !Number.isFinite(position) || position <= 0) return url;
+  if (!url || !hasGrowingStreamDuration(playbackMode) || !Number.isFinite(position) || position <= 0) return url;
   const separator = url.includes('?') ? '&' : '?';
   return `${url}${separator}start=${encodeURIComponent(position)}`;
 }

@@ -162,7 +162,7 @@
       if (job.status === 'ready') {
         const entry = progressFor(currentMedia);
         const duration = progressDuration(job.mode, player?.duration) || currentMedia?.durationHint || entry?.duration || 0;
-        resumeStreamOffset = resumePlayback && job.mode === 'direct' ? resumePosition(entry, duration) : 0;
+        resumeStreamOffset = resumePlayback && hasGrowingStreamDuration(job.mode) ? resumePosition(entry, duration) : 0;
         beginPlaybackWarmup();
         if (shouldContinuePlayback(continuePlaybackOnReady, job)) {
           await tick();
@@ -339,7 +339,7 @@
     player.currentTime = Math.min(position, Math.max(0, duration - 31)); recoveryPosition = 0; restoredMediaKey = key;
   }
 
-  function currentPlaybackPosition() { return Math.max(0, Number(player?.currentTime) || 0) + (playback?.mode === 'direct' ? resumeStreamOffset : 0); }
+  function currentPlaybackPosition() { return Math.max(0, Number(player?.currentTime) || 0) + (hasGrowingStreamDuration(playback?.mode) ? resumeStreamOffset : 0); }
   function playbackStreamUrl() { return resumeStreamUrl(playback?.streamUrl, playback?.mode, resumeStreamOffset); }
 
   function beginPlaybackWarmup() {
@@ -549,7 +549,7 @@
     if (!player || !Number.isFinite(position)) return;
     const target = Math.min(controlTimeline().duration, Math.max(0, position));
     seekPreview = null;
-    if (playback?.mode === 'direct') {
+    if (hasGrowingStreamDuration(playback?.mode)) {
       void savePlaybackProgress(true);
       resumeStreamOffset = target;
       playerPosition = 0;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
@@ -105,6 +105,7 @@ test('rejects posted video data whose header does not match its container', () =
 
 test('decodes yEnc line data', () => {
   assert.deepEqual(decodeYenc('klm'), Buffer.from([65, 66, 67]));
+  assert.deepEqual(decodeYenc('=}'), Buffer.from([19]));
 });
 
 test('discovers the real filename from an obfuscated yEnc post', () => {
@@ -304,6 +305,21 @@ test('prefetches resumed byte ranges concurrently while preserving output order'
   assert.equal(Buffer.concat(chunks).toString(), '012345');
 });
 
+test('releases decoded range segments after consumers finish with them', async () => {
+  let reads = 0;
+  const loader = createPostedSegmentLoader(
+    { segments: [{ id: 'one', decodedBytes: 1 }] },
+    { maxConnections: 1 },
+    new Map(),
+    async () => ({ async body(_id, onLine) { reads++; await onLine('k'); }, close() {} })
+  );
+  try {
+    assert.equal((await loader.load({ id: 'one' }, 0)).toString(), 'A');
+    assert.equal((await loader.load({ id: 'one' }, 0)).toString(), 'A');
+    assert.equal(reads, 2);
+  } finally { await loader.close(); }
+});
+
 test('derives exact decoded segment offsets from the first yEnc part', () => {
   const posted = { segments: [{ id: 'one' }, { id: 'two' }, { id: 'three' }] };
   assert.equal(applyYencByteLayout(posted, { decodedSize: 10, partBegin: 1, partEnd: 4, firstBytes: 4 }), true);
@@ -367,6 +383,7 @@ test('resumes unfinished playback and marks the final 30 seconds watched', () =>
   assert.equal(progressDuration('cached', 1200), 1200);
   assert.equal(resumeStreamUrl('/api/play/job/stream', 'direct', 120), '/api/play/job/stream?start=120');
   assert.equal(resumeStreamUrl('/api/play/job/stream', 'direct', 2), '/api/play/job/stream?start=2');
+  assert.equal(resumeStreamUrl('/api/play/job/stream', 'cached-convert', 120), '/api/play/job/stream?start=120');
   assert.equal(resumeStreamUrl('/api/play/job/stream', 'cached', 120), '/api/play/job/stream');
   const args = ffmpegArgs('remux', 'pipe:0', 'pipe:1', true, 120);
   assert.ok(args.indexOf('-ss') > args.indexOf('-i'));
@@ -385,6 +402,16 @@ test('resumes unfinished playback and marks the final 30 seconds watched', () =>
   assert.ok(thirdTrackArgs.includes('0:a:2?'));
   const seekableArgs = ffmpegArgs('remux', 'http://127.0.0.1/source', 'pipe:1', true, 120, 2, true);
   assert.ok(seekableArgs.indexOf('-ss') < seekableArgs.indexOf('-i'));
+});
+
+test('normalizes browser byte ranges for cached and offline playback', () => {
+  assert.deepEqual(parseByteRange(undefined, 100), { start: 0, end: 99, partial: false });
+  assert.deepEqual(parseByteRange('bytes=20-39', 100), { start: 20, end: 39, partial: true });
+  assert.deepEqual(parseByteRange('bytes=80-', 100), { start: 80, end: 99, partial: true });
+  assert.deepEqual(parseByteRange('bytes=-20', 100), { start: 80, end: 99, partial: true });
+  assert.equal(parseByteRange('bytes=120-130', 100), null);
+  assert.equal(parseByteRange('bytes=40-20', 100), null);
+  assert.equal(parseByteRange('bytes=0-1,4-5', 100), null);
 });
 
 test('polls preparation responsively and starts prepare-ahead only after playback begins', () => {
@@ -481,6 +508,7 @@ test('completed media cannot be overwritten by a trailing playback progress save
 
 test('uses the full media runtime for streams whose browser duration grows', () => {
   assert.deepEqual(playbackTimeline('direct', 30, 2700, 600, 1200), { position: 1230, duration: 2700 });
+  assert.deepEqual(playbackTimeline('cached-convert', 30, 2700, 600, 1200), { position: 1230, duration: 2700 });
   assert.deepEqual(playbackTimeline('cached-convert', 30, 2700, 35), { position: 30, duration: 2700 });
   assert.deepEqual(playbackTimeline('cached', 30, 2700, 600, 1200), { position: 30, duration: 600 });
 });
