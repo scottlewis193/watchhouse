@@ -74,7 +74,7 @@ export function releaseTitleMatches(release, media) {
 
 export function releaseScore(release, media, preferences = {}) {
   const text = release.title.toLowerCase();
-  let score = releaseAudioConfidence(release) * 20;
+  let score = releaseAudioConfidence(release) * (preferences.playbackQuality === 'quality' ? 5 : 20);
   const tag = episodeTag(media).toLowerCase();
   if (tag && text.includes(tag)) score += 120;
   else if (tag && text.includes(`${media.season}x${String(media.episode).padStart(2, '0')}`)) score += 100;

@@ -355,13 +355,14 @@ test('reuses an unexpired playback plan for the same title or episode', () => {
   const plans = createPlaybackPlanCache({ ttl: 500, now: () => now });
   const movie = { id: 7, type: 'movie' };
   const episode = { id: 8, type: 'tv', season: 2, episode: 3 };
-  plans.set(movie, { release: 'Movie.Release' });
-  plans.set(episode, { release: 'Show.Release' });
-  assert.equal(plans.get({ ...movie })?.release, 'Movie.Release');
-  assert.equal(plans.get({ ...episode })?.release, 'Show.Release');
-  assert.equal(plans.get({ ...episode, episode: 4 }), null);
+  plans.set(movie, { release: 'Movie.Release' }, 'balanced');
+  plans.set(episode, { release: 'Show.Release' }, 'balanced');
+  assert.equal(plans.get({ ...movie }, 'balanced')?.release, 'Movie.Release');
+  assert.equal(plans.get({ ...movie }, 'quality'), null);
+  assert.equal(plans.get({ ...episode }, 'balanced')?.release, 'Show.Release');
+  assert.equal(plans.get({ ...episode, episode: 4 }, 'balanced'), null);
   now = 1_501;
-  assert.equal(plans.get(movie), null);
+  assert.equal(plans.get(movie, 'balanced'), null);
 });
 
 test('selects the first episode that has not been watched', () => {
@@ -705,6 +706,14 @@ test('best-quality playback prefers 2160p despite the cost of HEVC conversion', 
     { title: 'Film.2024.2160p.HEVC.BluRay' },
     { title: 'Film.2024.1080p.H264.WEB-DL.mp4' }
   ], { title: 'Film', year: '2024' }, { playbackQuality: 'quality' });
+  assert.match(ranked[0].title, /2160p/);
+});
+
+test('best-quality playback does not let audio-label confidence override 2160p', () => {
+  const ranked = rankReleases([
+    { title: 'Film.2160p' },
+    { title: 'Film.1080p.ENGLISH' }
+  ], { title: 'Film' }, { playbackQuality: 'quality' });
   assert.match(ranked[0].title, /2160p/);
 });
 

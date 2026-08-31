@@ -264,20 +264,27 @@ export async function writePostedFileRange(posted, start, end, load, consume, { 
 
 export function createPlaybackPlanCache({ ttl = 30 * 60 * 1000, maximum = 50, now = Date.now } = {}) {
   const entries = new Map();
-  const key = media => offlineMediaKey(media);
+  const mediaKey = media => offlineMediaKey(media);
+  const key = (media, variant = '') => {
+    const id = mediaKey(media);
+    return id ? `${id}\0${variant}` : '';
+  };
   return {
-    get(media) {
-      const id = key(media), entry = entries.get(id);
+    get(media, variant) {
+      const id = key(media, variant), entry = entries.get(id);
       if (!id || !entry || entry.expires <= now()) { if (id) entries.delete(id); return null; }
       entries.delete(id); entries.set(id, entry);
       return entry.value;
     },
-    set(media, value) {
-      const id = key(media); if (!id) return;
+    set(media, value, variant) {
+      const id = key(media, variant); if (!id) return;
       entries.delete(id); entries.set(id, { value, expires: now() + ttl });
       while (entries.size > maximum) entries.delete(entries.keys().next().value);
     },
-    delete(media) { const id = key(media); if (id) entries.delete(id); }
+    delete(media) {
+      const prefix = `${mediaKey(media)}\0`;
+      if (prefix.length > 1) for (const id of entries.keys()) if (id.startsWith(prefix)) entries.delete(id);
+    }
   };
 }
 function filename(subject, fallback) { return (subject.match(/([^/\\\"]+\.(?:part\d+\.rar|rar|r\d\d|7z(?:\.\d{3})?|zip(?:\.\d{3})?|z\d\d|mkv|mp4|m4v|mov|webm))/i) || [, fallback])[1].replace(/[^a-z0-9._ -]/gi, '_'); }
@@ -656,7 +663,7 @@ async function prepareArchive(job, settings, archives) {
 async function preparePlayback(job, settings) {
   try {
     if (!job.manualRelease) {
-      const plan = playbackPlans.get(job.media);
+      const plan = playbackPlans.get(job.media, settings.playbackQuality);
       if (plan) {
         Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments), status: 'ready', message: plan.strategy === 'raw' ? 'Reusing the direct stream selected earlier.' : 'Reusing the browser-compatible stream selected earlier.', progress: 100, mode: 'direct' });
         jobEvent(job, 'plan-cache-hit', job.message, { release: plan.release, strategy: plan.strategy, mode: 'direct' });
@@ -687,7 +694,7 @@ async function preparePlayback(job, settings) {
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
           if (shouldCacheDirectPlayback(job)) { await cacheDirect(job, settings); return; }
-          playbackPlans.set(job.media, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
+          playbackPlans.set(job.media, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) }, settings.playbackQuality);
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;
