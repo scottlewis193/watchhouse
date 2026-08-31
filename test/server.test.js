@@ -5,7 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createPlaybackRequestGuard, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
+import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
@@ -425,6 +425,22 @@ test('recognises conservative end-credit frames only near the expected episode e
   assert.equal(creditFrameLooksLikely({ darkFraction: 0.82, brightFraction: 0.06, edgeDensity: 0.12 }), true);
   assert.equal(creditFrameLooksLikely({ darkFraction: 0.95, brightFraction: 0.001, edgeDensity: 0.002 }), false);
   assert.equal(creditFrameLooksLikely({ darkFraction: 0.25, brightFraction: 0.4, edgeDensity: 0.3 }), false);
+});
+
+test('reports why smart credit detection has or has not triggered', () => {
+  const active = { enabled: true, autoPlayNext: true, playing: true, hasNextEpisode: true, position: 2_500, duration: 3_000 };
+  assert.equal(creditDetectionStatus({ ...active, hasNextEpisode: false }).state, 'waiting-next');
+  assert.equal(creditDetectionStatus({ ...active, position: 1_000 }).state, 'waiting-window');
+  assert.equal(creditDetectionStatus({ ...active, sample: { darkFraction: 0.82, brightFraction: 0.06, edgeDensity: 0.12, likely: true }, consecutiveMatches: 1 }).state, 'matching');
+  assert.equal(creditDetectionStatus({ ...active, sample: { darkFraction: 0.82, brightFraction: 0.06, edgeDensity: 0.12, likely: true }, consecutiveMatches: 2, detected: true }).state, 'detected');
+  const unavailable = creditDetectionStatus({ ...active, error: 'Canvas sampling failed' });
+  assert.deepEqual({ state: unavailable.state, eligible: unavailable.eligible }, { state: 'unavailable', eligible: true });
+});
+
+test('attempts credit sampling when a growing stream reports conservative frame readiness', () => {
+  assert.equal(canAttemptCreditFrameSample({ readyState: 1, videoWidth: 1920, videoHeight: 1080 }), true);
+  assert.equal(canAttemptCreditFrameSample({ readyState: 1, videoWidth: 0, videoHeight: 0 }), true);
+  assert.equal(canAttemptCreditFrameSample(null), false);
 });
 
 test('transcodes video as well as audio when restarting a direct stream after a seek', async () => {

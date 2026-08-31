@@ -86,6 +86,25 @@ export function creditFrameLooksLikely({ darkFraction, brightFraction, edgeDensi
     && edgeDensity >= 0.025 && edgeDensity <= 0.3;
 }
 
+export function canAttemptCreditFrameSample(video) {
+  return Boolean(video);
+}
+
+export function creditDetectionStatus({ enabled, autoPlayNext, playing, hasNextEpisode, position, duration, sample = null, consecutiveMatches = 0, detected = false, error = '' }) {
+  const sampleFrom = Number.isFinite(duration) && duration > 0 ? Math.max(duration * 0.65, duration - 15 * 60) : 0;
+  const result = { sample, consecutiveMatches, detected, sampleFrom, eligible: false };
+  if (!enabled) return { ...result, state: 'disabled', label: 'Disabled in settings' };
+  if (!autoPlayNext) return { ...result, state: 'autoplay-off', label: 'Auto-play next episode is off' };
+  if (!playing) return { ...result, state: 'paused', label: 'Waiting for playback' };
+  if (!hasNextEpisode) return { ...result, state: 'waiting-next', label: 'Waiting for the next episode to be prepared' };
+  if (!shouldSampleForCredits(position, duration)) return { ...result, state: 'waiting-window', label: sampleFrom ? `Waiting until ${Math.round(sampleFrom)}s` : 'Waiting for a reliable duration' };
+  if (error) return { ...result, eligible: true, state: 'unavailable', label: error };
+  if (detected) return { ...result, eligible: true, state: 'detected', label: 'Credits detected — countdown triggered' };
+  if (sample?.likely) return { ...result, eligible: true, state: 'matching', label: `Likely credits (${consecutiveMatches}/2 matching frames)` };
+  if (sample) return { ...result, eligible: true, state: 'rejected', label: 'Latest frame did not look like credits' };
+  return { ...result, eligible: true, state: 'eligible', label: 'Sampling frames for credits' };
+}
+
 export function videoPlaybackStats(current, previous = null, minimumSampleMs = 250) {
   const total = Math.max(0, Number(current?.total) || 0);
   const dropped = Math.min(total, Math.max(0, Number(current?.dropped) || 0));

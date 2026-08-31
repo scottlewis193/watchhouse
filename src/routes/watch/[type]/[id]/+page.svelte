@@ -3,7 +3,7 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createPlaybackRequestGuard, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
+  import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
@@ -18,8 +18,8 @@
   let offlineMode = $state(false), offlineDownloads = $state([]), offlineJobs = $state([]), downloadError = $state('');
   let resumeStreamOffset = $state(0), resumeStarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
-  let videoDiagnostics = $state(null);
-  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, preparingNext = false, continuePlaybackOnReady = false, videoFrameSample = null, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, creditCanvas = null;
+  let videoDiagnostics = $state(null), creditDiagnostics = $state(null);
+  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, preparingNext = false, continuePlaybackOnReady = false, videoFrameSample = null, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
   const playbackRequests = createPlaybackRequestGuard();
 
   onMount(() => {
@@ -117,7 +117,7 @@
     currentPlaybackRequestToken = requestToken;
     try {
       void savePlaybackProgress(true);
-      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; preparingNext = false; continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; lastCreditSampleAt = 0; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
+      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; preparingNext = false; continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
       if (selectedMedia.type === 'tv') {
         selectedSeason = String(selectedMedia.season);
         selectedEpisode = String(selectedMedia.episode);
@@ -445,9 +445,16 @@
     void startPlayback(selectedMedia, job, false, true);
   }
   function sampleForEndCredits(timeline) {
-    if (!autoPlayNext || !smartAutoplay || showUpNext || !playing || !nextMedia || !shouldSampleForCredits(timeline.position, timeline.duration)) return;
+    const detectionInput = () => ({ enabled: smartAutoplay, autoPlayNext, playing, hasNextEpisode: Boolean(nextMedia), position: timeline.position, duration: timeline.duration, sample: lastCreditSample, consecutiveMatches: likelyCreditFrames, detected: showUpNext && upNextReason === 'End credits detected', error: creditSamplingError });
+    creditDiagnostics = creditDetectionStatus(detectionInput());
+    if (!creditDiagnostics.eligible || showUpNext) return;
     const now = performance.now();
-    if (now - lastCreditSampleAt < 2000 || !player || player.readyState < 2 || !player.videoWidth || !player.videoHeight) return;
+    if (!canAttemptCreditFrameSample(player)) {
+      creditSamplingError = 'Video player is not available for frame sampling';
+      creditDiagnostics = creditDetectionStatus(detectionInput());
+      return;
+    }
+    if (now - lastCreditSampleAt < 2000) return;
     lastCreditSampleAt = now;
     try {
       creditCanvas ||= document.createElement('canvas');
@@ -466,9 +473,17 @@
         }
       }
       const total = width * height;
-      likelyCreditFrames = creditFrameLooksLikely({ darkFraction: dark / total, brightFraction: bright / total, edgeDensity: edges / total }) ? likelyCreditFrames + 1 : 0;
+      const metrics = { darkFraction: dark / total, brightFraction: bright / total, edgeDensity: edges / total };
+      lastCreditSample = { ...metrics, likely: creditFrameLooksLikely(metrics), at: Date.now() };
+      creditSamplingError = '';
+      likelyCreditFrames = lastCreditSample.likely ? likelyCreditFrames + 1 : 0;
       if (likelyCreditFrames >= 2) beginUpNextCountdown('End credits detected');
-    } catch { likelyCreditFrames = 0; }
+      creditDiagnostics = creditDetectionStatus(detectionInput());
+    } catch (error) {
+      likelyCreditFrames = 0;
+      creditSamplingError = error?.message || 'Video frame sampling failed';
+      creditDiagnostics = creditDetectionStatus(detectionInput());
+    }
   }
   function handleTimeUpdate() {
     clearTimeout(interruptionTimer);
@@ -513,7 +528,7 @@
       if (stats.sample !== videoFrameSample) { videoFrameSample = stats.sample; measuredVideoFps = stats.fps; }
       frameStats = { fps: measuredVideoFps, totalFrames: stats.total, droppedFrames: stats.dropped, droppedFramePercent: stats.droppedPercent };
     }
-    videoDiagnostics = { event, readyState: player.readyState, networkState: player.networkState, paused: player.paused, currentTime: player.currentTime, duration: player.duration, buffered: ranges.join(', '), error: player.error ? `MediaError ${player.error.code}${player.error.message ? `: ${player.error.message}` : ''}` : '', ...frameStats };
+    videoDiagnostics = { event, readyState: player.readyState, networkState: player.networkState, paused: player.paused, currentTime: player.currentTime, duration: player.duration, videoWidth: player.videoWidth, videoHeight: player.videoHeight, buffered: ranges.join(', '), error: player.error ? `MediaError ${player.error.code}${player.error.message ? `: ${player.error.message}` : ''}` : '', ...frameStats };
   }
   function togglePlayback() { if (!player) return; if (player.paused) void player.play(); else player.pause(); }
   function hidePlayerControls() {
@@ -629,7 +644,7 @@
         <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
       {/if}
       {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}</div>{/if}
-      {#if playbackDiagnostics}<PlaybackDiagnostics {playback} {nextJob} video={videoDiagnostics} />{/if}
+      {#if playbackDiagnostics}<PlaybackDiagnostics {playback} {nextJob} video={videoDiagnostics} credits={creditDiagnostics} />{/if}
     </div>
     {#if media.type === 'tv' || releaseChoices.length}<aside class="episode-panel border-t border-base-300 pt-7 xl:border-l xl:border-t-0 xl:pl-8 xl:pt-0">
       {#if media.type === 'tv'}

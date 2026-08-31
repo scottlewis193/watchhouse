@@ -1,10 +1,11 @@
 <script>
-  let { playback = null, nextJob = null, video = null } = $props();
+  let { playback = null, nextJob = null, video = null, credits = null } = $props();
 
   function time(value) {
     return value ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value)) : '—';
   }
   function stateLabel(value, labels) { return labels[value] || String(value ?? '—'); }
+  function percent(value) { return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—'; }
   const readyLabels = ['Nothing', 'Metadata', 'Current data', 'Future data', 'Enough data'];
   function mediaFetchLabel(value) {
     if (value === 0) return 'Not started';
@@ -41,10 +42,14 @@
         <dt class="text-base-content/50">Media fetch</dt><dd>{mediaFetchLabel(video?.networkState)}</dd>
         <dt class="text-base-content/50">Playback</dt><dd>{video?.event || 'Waiting for player'}{video?.paused === false ? ' · playing' : ' · paused'}</dd>
         <dt class="text-base-content/50">Position</dt><dd>{Math.round(video?.currentTime || 0)}s / {Number.isFinite(video?.duration) ? `${Math.round(video.duration)}s` : 'unknown'}</dd>
+        <dt class="text-base-content/50">Frame size</dt><dd>{video?.videoWidth && video?.videoHeight ? `${video.videoWidth} × ${video.videoHeight}` : 'Not reported'}</dd>
         <dt class="text-base-content/50">Rendered FPS</dt><dd>{Number.isFinite(video?.fps) ? `${video.fps.toFixed(1)} fps` : 'Measuring…'}</dd>
         <dt class="text-base-content/50">Video frames</dt><dd>{Number.isFinite(video?.totalFrames) ? video.totalFrames.toLocaleString() : 'Unavailable'}</dd>
         <dt class="text-base-content/50">Dropped</dt><dd>{Number.isFinite(video?.droppedFrames) ? `${video.droppedFrames.toLocaleString()} (${video.droppedFramePercent.toFixed(2)}%)` : 'Unavailable'}</dd>
         <dt class="text-base-content/50">Buffered</dt><dd>{video?.buffered || '—'}</dd>
+        <dt class="text-base-content/50">Smart credits</dt><dd>{credits?.label || 'Waiting for playback data'}</dd>
+        <dt class="text-base-content/50">Credit sample</dt><dd>{credits?.sample ? `dark ${percent(credits.sample.darkFraction)} · bright ${percent(credits.sample.brightFraction)} · edges ${percent(credits.sample.edgeDensity)}` : 'No frame sampled yet'}</dd>
+        <dt class="text-base-content/50">Credit matches</dt><dd>{credits?.detected ? 'Detected' : `${credits?.consecutiveMatches || 0} / 2 consecutive frames`}</dd>
         <dt class="text-base-content/50">Error</dt><dd>{video?.error || 'None'}</dd>
       </dl>
     </section>
