@@ -78,11 +78,14 @@ export function releaseScore(release, media, preferences = {}) {
   const tag = episodeTag(media).toLowerCase();
   if (tag && text.includes(tag)) score += 120;
   else if (tag && text.includes(`${media.season}x${String(media.episode).padStart(2, '0')}`)) score += 100;
-  if (media.year && text.includes(media.year)) score += 80;
+  if (media.type !== 'tv' && media.year && text.includes(media.year)) score += 80;
   if (/2160p|4k|uhd/.test(text)) score += preferences.playbackQuality === 'quality' ? 65 : 30;
   else if (/1080p/.test(text)) score += 40;
   else if (/720p/.test(text)) score += 25;
   if (/web[- .]?dl|bluray|blu[- .]?ray/.test(text)) score += 12;
+  const dynamicRange = releaseDynamicRange(release);
+  if (dynamicRange === 'dolby-vision') score -= 50;
+  else if (dynamicRange === 'hdr') score -= 5;
   if (preferences.playbackQuality !== 'quality') {
     if (/h[ .]?264|x264|avc/.test(text)) score += 15;
     if (/x265|hevc|h[ .]?265/.test(text)) score -= 45;
@@ -125,14 +128,22 @@ export function rankReleases(releases, media, preferences) {
 export function releaseReadiness(release) {
   const title = release.title.toLowerCase();
   if (/\.part\d+\.rar|\.rar\b|\.r\d\d\b|\.7z|\.zip\b/.test(title)) return { kind: 'download', label: 'Download first' };
-  if (/\.mp4\b|\.m4v\b|\.mov\b|\.webm\b/.test(title) && !/hevc|x265|h[ .]?265|av1/.test(title)) return { kind: 'direct', label: 'Likely direct' };
-  if (/\.mkv\b|hevc|x265|h[ .]?265|av1/.test(title)) return { kind: 'convert', label: 'Live conversion' };
+  if (/\.mp4\b|\.m4v\b|\.mov\b|\.webm\b/.test(title) && !/hevc|x265|h[ .]?265|av1/.test(title) && releaseDynamicRange(release) === 'sdr') return { kind: 'direct', label: 'Likely direct' };
+  if (releaseDynamicRange(release) !== 'sdr' || /\.mkv\b|hevc|x265|h[ .]?265|av1/.test(title)) return { kind: 'convert', label: 'Live conversion' };
   return { kind: 'check', label: 'Checking on start' };
+}
+
+export function releaseDynamicRange(release) {
+  const text = ` ${String(typeof release === 'string' ? release : release?.title || '').toLowerCase().replace(/[._-]+/g, ' ')} `;
+  if (/\b(?:dv|dovi|dolby vision)\b/.test(text)) return 'dolby-vision';
+  if (/\b(?:hdr(?:10(?:\+|plus)?)?|hlg)\b/.test(text)) return 'hdr';
+  return 'sdr';
 }
 
 export function playbackStrategy(subject, releaseTitle = '') {
   const extension = (subject.match(/\.(mkv|mp4|m4v|mov|webm)(?:\"|\s|$)/i) || [])[1]?.toLowerCase();
   const description = `${subject} ${releaseTitle}`.toLowerCase();
+  if (releaseDynamicRange(description) !== 'sdr') return 'transcode';
   if (extension === 'webm') return 'transcode';
   if (['mp4', 'm4v', 'mov'].includes(extension) && !/hevc|h[ .]?265|x265|av1/.test(description)) return 'remux';
   if (extension === 'mkv' && /h[ .]?264|x264|avc/.test(description)) return 'remux';

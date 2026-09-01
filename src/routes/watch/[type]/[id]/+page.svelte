@@ -9,7 +9,7 @@
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
 
   const media = { id: Number(page.params.id), type: page.params.type, title: page.url.searchParams.get('title') || '', year: page.url.searchParams.get('year') || '', poster: page.url.searchParams.get('poster') || '' };
-  const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1', shouldStartImmediately = page.url.searchParams.get('play') === '1' || shouldResume;
+  const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1';
   let seasons = $state([]), episodes = $state([]), episodesBySeason = $state({}), selectedSeason = $state(''), selectedEpisode = $state('');
   let playback = $state(null), player = $state(), playerShell = $state(), manualReleaseSelection = $state(false), detailedPlaybackProgress = $state(false), playbackDiagnostics = $state(false), releaseChoices = $state([]), pendingMedia = $state(null), pendingResume = $state(false);
   let releasePicker = $state();
@@ -43,8 +43,7 @@
       if (savedDuration) media.durationHint = savedDuration;
       else try { media.durationHint = (await api.get(`/api/catalog/movies/${media.id}/runtime`)).duration; } catch {}
       currentMedia = media;
-      if (!shouldStartImmediately) { playback = null; return; }
-      return startPlayback(media, null, shouldResume && Boolean(progressFor(media)?.position));
+      return startPlayback(media, null, shouldResume && Boolean(progressFor(media)?.position), true);
     }
     playback = { status: 'selecting', message: 'Loading seasons…', progress: 3 };
     try {
@@ -53,8 +52,7 @@
       if (!seasons.length) throw new Error('No selectable seasons were found for this show.');
       selectedSeason = seasons.some(season => String(season.number) === requestedSeason) ? requestedSeason : String(seasons[0].number);
       await loadEpisodes(requestedEpisode);
-      if (!shouldStartImmediately) { currentMedia = selectedMediaItem(); playback = null; return; }
-      if (requestedEpisode) playEpisode(shouldResume);
+      if (requestedEpisode) playEpisode(shouldResume, true);
       else await playNextUnwatchedEpisode();
     } catch (e) {
       if (!offlineMode && offlineAvailability(media, offlineDownloads).available) {
@@ -71,8 +69,7 @@
     episodesBySeason = local.episodesBySeason;
     selectedSeason = seasons.some(season => String(season.number) === requestedSeason) ? requestedSeason : String(seasons[0].number);
     await loadEpisodes(requestedEpisode);
-    if (!shouldStartImmediately) { currentMedia = selectedMediaItem(); playback = null; return; }
-    if (requestedEpisode) playEpisode(shouldResume); else await playNextUnwatchedEpisode();
+    if (requestedEpisode) playEpisode(shouldResume, true); else await playNextUnwatchedEpisode();
   }
 
   function scheduleDownloadPoll() { clearTimeout(downloadPollTimer); if (offlineJobs.some(job => !['ready', 'error'].includes(job.status))) downloadPollTimer = setTimeout(() => void refreshOfflineDownloads(), 1000); }
@@ -202,10 +199,10 @@
     catch { if (playbackRequests.isCurrent(requestToken) && nextJob?.id === id) nextJob = { ...nextJob, status: 'error' }; }
   }
 
-  function playEpisode(resume = true) {
+  function playEpisode(resume = true, autoplay = false) {
     const selectedMedia = episodePlaybackMedia(media, selectedSeason, selectedEpisode, episodes);
     if (!selectedMedia) { playback = { status: 'error', message: 'Choose a valid season and episode before starting playback.', progress: 0 }; return; }
-    void startPlayback(selectedMedia, null, resume && Boolean(progressFor(selectedMedia)?.position));
+    void startPlayback(selectedMedia, null, resume && Boolean(progressFor(selectedMedia)?.position), autoplay);
   }
 
   function playSelectedMedia() {
@@ -236,11 +233,13 @@
       if (!episode) continue;
       selectedSeason = String(season.number); episodes = seasonEpisodes; selectedEpisode = String(episode.number);
       const selectedMedia = episodeMedia(season.number, episode);
-      await startPlayback(selectedMedia, null, Boolean(progressFor(selectedMedia)?.position));
+      await startPlayback(selectedMedia, null, Boolean(progressFor(selectedMedia)?.position), true);
       return;
     }
     selectedSeason = String(seasons[0].number); episodes = await episodesForSeason(selectedSeason); selectedEpisode = episodes.length ? String(episodes[0].number) : '';
-    playback = null;
+    const selectedMedia = selectedMediaItem();
+    if (selectedMedia) await startPlayback(selectedMedia, null, false, true);
+    else playback = null;
   }
 
   async function adjacentEpisodeMedia(item, direction) {
@@ -605,7 +604,7 @@
             {@const timeline = controlTimeline()}
             {#key streamAttempt}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="h-full w-full bg-black object-contain transition-opacity focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary" class:opacity-0={resumeStarting} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={resumeStarting ? -1 : 0} aria-hidden={resumeStarting} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); offerPlaybackRecovery('The direct stream encountered a playback error.'); }} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
+              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={resumeStarting} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={resumeStarting ? -1 : 0} aria-hidden={resumeStarting} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); offerPlaybackRecovery('The direct stream encountered a playback error.'); }} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
             {/key}
             {#if playbackRecovery}
               <div class="player-modal absolute inset-0 z-30 grid place-items-center p-6 text-center text-white">

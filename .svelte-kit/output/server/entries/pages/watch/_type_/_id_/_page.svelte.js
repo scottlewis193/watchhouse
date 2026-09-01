@@ -33,8 +33,7 @@ function _page($$renderer, $$props) {
     };
     page.url.searchParams.get("season") || "";
     page.url.searchParams.get("episode") || "";
-    const shouldResume = page.url.searchParams.get("resume") === "1";
-    page.url.searchParams.get("play") === "1" || shouldResume;
+    page.url.searchParams.get("resume") === "1";
     let seasons = [];
     let episodes = [];
     let selectedSeason = "";

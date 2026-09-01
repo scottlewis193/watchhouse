@@ -65,18 +65,23 @@ function releaseTitleMatches(release, media) {
 }
 function releaseScore(release, media, preferences = {}) {
   const text = release.title.toLowerCase();
-  let score = releaseAudioConfidence(release) * 20;
+  let score = releaseAudioConfidence(release) * (preferences.playbackQuality === "quality" ? 5 : 20);
   const tag = episodeTag(media).toLowerCase();
   if (tag && text.includes(tag)) score += 120;
   else if (tag && text.includes(`${media.season}x${String(media.episode).padStart(2, "0")}`)) score += 100;
-  if (media.year && text.includes(media.year)) score += 80;
+  if (media.type !== "tv" && media.year && text.includes(media.year)) score += 80;
   if (/2160p|4k|uhd/.test(text)) score += preferences.playbackQuality === "quality" ? 65 : 30;
   else if (/1080p/.test(text)) score += 40;
   else if (/720p/.test(text)) score += 25;
   if (/web[- .]?dl|bluray|blu[- .]?ray/.test(text)) score += 12;
-  if (/h[ .]?264|x264|avc/.test(text)) score += 15;
-  if (/x265|hevc|h[ .]?265/.test(text)) score -= 45;
-  if (/av1/.test(text)) score -= 30;
+  const dynamicRange = releaseDynamicRange(release);
+  if (dynamicRange === "dolby-vision") score -= 50;
+  else if (dynamicRange === "hdr") score -= 5;
+  if (preferences.playbackQuality !== "quality") {
+    if (/h[ .]?264|x264|avc/.test(text)) score += 15;
+    if (/x265|hevc|h[ .]?265/.test(text)) score -= 45;
+    if (/av1/.test(text)) score -= 30;
+  }
   if (preferences.playbackQuality === "fast") {
     if (/\.mp4\b|web[- .]?dl.*h[ .]?264|x264/.test(text)) score += 60;
     if (/rar|7z|zip/.test(text)) score -= 80;
@@ -107,13 +112,20 @@ function rankReleases(releases, media, preferences) {
 function releaseReadiness(release) {
   const title = release.title.toLowerCase();
   if (/\.part\d+\.rar|\.rar\b|\.r\d\d\b|\.7z|\.zip\b/.test(title)) return { kind: "download", label: "Download first" };
-  if (/\.mp4\b|\.m4v\b|\.mov\b|\.webm\b/.test(title) && !/hevc|x265|h[ .]?265|av1/.test(title)) return { kind: "direct", label: "Likely direct" };
-  if (/\.mkv\b|hevc|x265|h[ .]?265|av1/.test(title)) return { kind: "convert", label: "Live conversion" };
+  if (/\.mp4\b|\.m4v\b|\.mov\b|\.webm\b/.test(title) && !/hevc|x265|h[ .]?265|av1/.test(title) && releaseDynamicRange(release) === "sdr") return { kind: "direct", label: "Likely direct" };
+  if (releaseDynamicRange(release) !== "sdr" || /\.mkv\b|hevc|x265|h[ .]?265|av1/.test(title)) return { kind: "convert", label: "Live conversion" };
   return { kind: "check", label: "Checking on start" };
+}
+function releaseDynamicRange(release) {
+  const text = ` ${String(typeof release === "string" ? release : release?.title || "").toLowerCase().replace(/[._-]+/g, " ")} `;
+  if (/\b(?:dv|dovi|dolby vision)\b/.test(text)) return "dolby-vision";
+  if (/\b(?:hdr(?:10(?:\+|plus)?)?|hlg)\b/.test(text)) return "hdr";
+  return "sdr";
 }
 function playbackStrategy(subject, releaseTitle = "") {
   const extension = (subject.match(/\.(mkv|mp4|m4v|mov|webm)(?:\"|\s|$)/i) || [])[1]?.toLowerCase();
   const description = `${subject} ${releaseTitle}`.toLowerCase();
+  if (releaseDynamicRange(description) !== "sdr") return "transcode";
   if (extension === "webm") return "transcode";
   if (["mp4", "m4v", "mov"].includes(extension) && !/hevc|h[ .]?265|x265|av1/.test(description)) return "remux";
   if (extension === "mkv" && /h[ .]?264|x264|avc/.test(description)) return "remux";
@@ -457,13 +469,14 @@ function archiveFiles(xml) {
   return archivesFrom(nzbFiles(xml));
 }
 function decodeYenc(line) {
-  const bytes = [];
+  const bytes = Buffer.allocUnsafe(line.length);
+  let written = 0;
   for (let i = 0; i < line.length; i++) {
     let code = line.charCodeAt(i);
     if (code === 61 && i + 1 < line.length) code = line.charCodeAt(++i) - 64;
-    bytes.push(code - 42 + 256 & 255);
+    bytes[written++] = code - 42 + 256 & 255;
   }
-  return Buffer.from(bytes);
+  return bytes.subarray(0, written);
 }
 function yencName(line) {
   return (line.match(/^=ybegin\s+.*\bname=(.+)$/i) || [])[1];
@@ -552,10 +565,14 @@ async function writePostedFileRange(posted, start, end, load, consume, { shouldC
 }
 function createPlaybackPlanCache({ ttl = 30 * 60 * 1e3, maximum = 50, now = Date.now } = {}) {
   const entries = /* @__PURE__ */ new Map();
-  const key = (media) => offlineMediaKey(media);
+  const mediaKey2 = (media) => offlineMediaKey(media);
+  const key = (media, variant = "") => {
+    const id = mediaKey2(media);
+    return id ? `${id}\0${variant}` : "";
+  };
   return {
-    get(media) {
-      const id = key(media), entry = entries.get(id);
+    get(media, variant) {
+      const id = key(media, variant), entry = entries.get(id);
       if (!id || !entry || entry.expires <= now()) {
         if (id) entries.delete(id);
         return null;
@@ -564,16 +581,18 @@ function createPlaybackPlanCache({ ttl = 30 * 60 * 1e3, maximum = 50, now = Date
       entries.set(id, entry);
       return entry.value;
     },
-    set(media, value) {
-      const id = key(media);
+    set(media, value, variant) {
+      const id = key(media, variant);
       if (!id) return;
       entries.delete(id);
       entries.set(id, { value, expires: now() + ttl });
       while (entries.size > maximum) entries.delete(entries.keys().next().value);
     },
     delete(media) {
-      const id = key(media);
-      if (id) entries.delete(id);
+      const prefix = `${mediaKey2(media)}\0`;
+      if (prefix.length > 1) {
+        for (const id of entries.keys()) if (id.startsWith(prefix)) entries.delete(id);
+      }
     }
   };
 }
@@ -616,6 +635,23 @@ function runOutput(command, args, cwd) {
     child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`)));
   });
 }
+const VAAPI_DEVICES = Array.from({ length: 8 }, (_, index) => `/dev/dri/renderD${128 + index}`);
+let videoAccelerationDetection;
+async function detectVideoAcceleration({ devices = VAAPI_DEVICES, exists = existsSync, execute = run } = {}) {
+  for (const device of devices) {
+    if (!exists(device)) continue;
+    try {
+      await execute("ffmpeg", ["-hide_banner", "-loglevel", "error", "-vaapi_device", device, "-f", "lavfi", "-i", "color=size=128x128:rate=1", "-frames:v", "1", "-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-f", "null", "-"]);
+      return { kind: "vaapi", device };
+    } catch {
+    }
+  }
+  return null;
+}
+function availableVideoAcceleration() {
+  videoAccelerationDetection ||= detectVideoAcceleration();
+  return videoAccelerationDetection;
+}
 async function writeStreamToResponse(stream, res, { end = true } = {}) {
   let bytes = 0;
   for await (const chunk of stream) {
@@ -635,7 +671,21 @@ async function extractedVideo(directory) {
 function seekPlaybackStrategy(strategy, start = 0) {
   return start > 0 ? "transcode" : strategy;
 }
-function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false) {
+function playbackAccelerationLabel(strategy, toneMap = false, acceleration = null) {
+  if (["raw", "remux"].includes(strategy)) return "Not needed · video stream copy";
+  if (acceleration?.kind === "vaapi") return toneMap ? "GPU encode · CPU HDR tone mapping" : "GPU · VAAPI decode + encode";
+  return toneMap ? "CPU · HDR tone mapping" : "CPU · software transcode";
+}
+async function configurePlaybackAcceleration(job, strategy, toneMap = false) {
+  const acceleration = ["raw", "remux"].includes(strategy) ? null : await availableVideoAcceleration();
+  const label = playbackAccelerationLabel(strategy, toneMap, acceleration);
+  if (job.videoAcceleration !== label) {
+    job.videoAcceleration = label;
+    jobEvent(job, "acceleration", label);
+  }
+  return acceleration;
+}
+function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
   const englishMetadataMaps = [
     "0:a:m:language:eng:?",
@@ -651,7 +701,14 @@ function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, unta
   ];
   const audioMaps = [...englishMetadataMaps, ...fallbackIndex ? [`0:a:${fallbackIndex}?`] : [], "0:a:0?"];
   const seek = start > 0 ? ["-ss", String(start)] : [];
-  return ["-y", "-loglevel", "error", ...seekableInput ? seek : [], "-i", input, ...!seekableInput ? seek : [], "-map", "0:v:0", ...audioMaps.flatMap((map) => ["-map", map]), "-c:v", strategy === "remux" ? "copy" : "libx264", ...strategy === "remux" ? [] : ["-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p"], "-c:a", "aac", "-b:a", "192k", "-disposition:a", "0", "-disposition:a:0", "default", "-movflags", fragmented ? "frag_keyframe+empty_moov+default_base_moof" : "+faststart", ...fragmented ? ["-f", "mp4"] : [], output];
+  const transcodeVideo = strategy !== "remux" || toneMap;
+  const vaapi = transcodeVideo && acceleration?.kind === "vaapi";
+  const hardwareInputArgs = vaapi ? toneMap ? ["-vaapi_device", acceleration.device] : ["-hwaccel", "vaapi", "-hwaccel_device", acceleration.device, "-hwaccel_output_format", "vaapi"] : [];
+  const filter = toneMap ? `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? "nv12,hwupload" : "yuv420p"}` : vaapi ? "scale_vaapi=format=nv12" : "";
+  const filterArgs = filter ? ["-vf", filter] : [];
+  const colorArgs = toneMap ? ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"] : [];
+  const videoCodecArgs = !transcodeVideo ? ["-c:v", "copy"] : vaapi ? ["-c:v", "h264_vaapi", "-rc_mode", "CQP", "-qp", "22"] : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p"];
+  return ["-y", "-loglevel", "error", ...hardwareInputArgs, ...seekableInput ? seek : [], "-i", input, ...!seekableInput ? seek : [], "-map", "0:v:0", ...audioMaps.flatMap((map) => ["-map", map]), ...filterArgs, ...colorArgs, ...videoCodecArgs, "-c:a", "aac", "-b:a", "192k", "-disposition:a", "0", "-disposition:a:0", "default", "-movflags", fragmented ? "frag_keyframe+empty_moov+default_base_moof" : "+faststart", ...fragmented ? ["-f", "mp4"] : [], output];
 }
 function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === "raw" && streams.filter((stream) => stream.codec_type === "audio").length > 1 ? "remux" : suggested;
@@ -679,13 +736,15 @@ async function cachedPlaybackStrategy(path, release) {
 }
 async function optimizeCachedVideo(job, path) {
   const strategy = await cachedPlaybackStrategy(path, job.release);
-  if (strategy === "raw") return { path, mime: videoType(path) };
+  const toneMap = releaseDynamicRange(job.release) !== "sdr";
+  const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
+  if (strategy === "raw") return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration };
   if (shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
-    await run("ffmpeg", ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack), job.directory || ROOT);
-    return { path: browserPath, mime: "video/mp4", strategy: "raw" };
+    await run("ffmpeg", ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration), job.directory || ROOT);
+    return { path: browserPath, mime: "video/mp4", strategy: "raw", videoAcceleration: job.videoAcceleration };
   }
-  return { sourcePath: path, mime: "video/mp4", mode: "cached-convert", strategy };
+  return { sourcePath: path, mime: "video/mp4", mode: "cached-convert", strategy, videoAcceleration: job.videoAcceleration };
 }
 async function audioSafeOfflineRecord(record, inspectStrategy = cachedPlaybackStrategy) {
   if (record.mode !== "cached" || !record.path) return record;
@@ -696,10 +755,12 @@ async function audioSafeOfflineRecord(record, inspectStrategy = cachedPlaybackSt
 function createPostedSegmentLoader(posted, settings, prefetchedSegments = /* @__PURE__ */ new Map(), connect = connectNntp) {
   const width = Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, posted.segments.length);
   const lanes = Array.from({ length: width }, () => ({ client: null, tail: Promise.resolve() }));
-  const cached = new Map(prefetchedSegments);
+  const prefetched = new Map(prefetchedSegments);
+  const inflight = /* @__PURE__ */ new Map();
   let nextLane = 0;
   const load = (segment, index) => {
-    if (cached.has(index)) return Promise.resolve(cached.get(index));
+    if (prefetched.has(index)) return Promise.resolve(prefetched.get(index));
+    if (inflight.has(index)) return inflight.get(index);
     const lane = lanes[nextLane++ % lanes.length];
     const pending = lane.tail.then(async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -719,7 +780,11 @@ function createPostedSegmentLoader(posted, settings, prefetchedSegments = /* @__
     });
     lane.tail = pending.catch(() => {
     });
-    cached.set(index, pending);
+    inflight.set(index, pending);
+    void pending.finally(() => {
+      if (inflight.get(index) === pending) inflight.delete(index);
+    }).catch(() => {
+    });
     return pending;
   };
   return {
@@ -787,7 +852,10 @@ async function openPostedRangeServer(job, settings, connect = connectNntp) {
 }
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = "") {
   const rangeSource = start > 0 ? await openPostedRangeServer(job, settings) : null;
-  const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start), child = spawn("ffmpeg", ffmpegArgs(strategy, rangeSource?.url || "pipe:0", "pipe:1", true, start, settings.untaggedAudioTrack, Boolean(rangeSource)));
+  const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
+  const toneMap = releaseDynamicRange(job.release) !== "sdr";
+  const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
+  const child = spawn("ffmpeg", ffmpegArgs(strategy, rangeSource?.url || "pipe:0", "pipe:1", true, start, settings.untaggedAudioTrack, Boolean(rangeSource), toneMap, acceleration));
   let stderr = "";
   let closed = false;
   child.stderr.on("data", (chunk) => stderr += chunk);
@@ -823,8 +891,10 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
     await rangeSource?.close();
   }
 }
-async function streamCachedConversion(req, res, job, settings) {
-  const child = spawn("ffmpeg", ffmpegArgs(job.strategy, job.sourcePath, "pipe:1", true, 0, settings.untaggedAudioTrack));
+async function streamCachedConversion(req, res, job, settings, start = 0) {
+  const toneMap = releaseDynamicRange(job.release) !== "sdr";
+  const acceleration = await configurePlaybackAcceleration(job, job.strategy, toneMap);
+  const child = spawn("ffmpeg", ffmpegArgs(job.strategy, job.sourcePath, "pipe:1", true, start, settings.untaggedAudioTrack, true, toneMap, acceleration));
   let stderr = "";
   let closed = false;
   child.stderr.on("data", (chunk) => stderr += chunk);
@@ -1135,7 +1205,7 @@ async function prepareArchive(job, settings, archives) {
 async function preparePlayback(job, settings) {
   try {
     if (!job.manualRelease) {
-      const plan = playbackPlans.get(job.media);
+      const plan = playbackPlans.get(job.media, settings.playbackQuality);
       if (plan) {
         Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments), status: "ready", message: plan.strategy === "raw" ? "Reusing the direct stream selected earlier." : "Reusing the browser-compatible stream selected earlier.", progress: 100, mode: "direct" });
         jobEvent(job, "plan-cache-hit", job.message, { release: plan.release, strategy: plan.strategy, mode: "direct" });
@@ -1170,11 +1240,12 @@ async function preparePlayback(job, settings) {
           }
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, strategy, prefetchedSegments: /* @__PURE__ */ new Map([[0, firstSegment]]) });
+          await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== "sdr");
           if (shouldCacheDirectPlayback(job)) {
             await cacheDirect(job, settings);
             return;
           }
-          playbackPlans.set(job.media, { file: direct, release: release.title, strategy, prefetchedSegments: /* @__PURE__ */ new Map([[0, firstSegment]]) });
+          playbackPlans.set(job.media, { file: direct, release: release.title, strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: /* @__PURE__ */ new Map([[0, firstSegment]]) }, settings.playbackQuality);
           Object.assign(job, { status: "ready", message: strategy === "raw" ? "Direct stream selected." : strategy === "remux" ? "Live browser-compatible stream selected." : "Live converted stream selected.", progress: 100, mode: "direct" });
           jobEvent(job, "ready", job.message, { release: release.title, strategy, mode: "direct" });
           return;
@@ -1287,20 +1358,32 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
 }
 function publicJob(job) {
   const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job;
-  return { ...safe, title: media.title, streamUrl: job.status === "ready" ? `/api/play/${job.id}/stream` : null, ...diagnosticsEnabled ? { diagnostics: { media: media.type === "tv" ? `${media.title} S${String(media.season).padStart(2, "0")}E${String(media.episode).padStart(2, "0")}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, created: job.created, events: events || [] } } : {} };
+  return { ...safe, title: media.title, streamUrl: job.status === "ready" ? `/api/play/${job.id}/stream` : null, ...diagnosticsEnabled ? { diagnostics: { media: media.type === "tv" ? `${media.title} S${String(media.season).padStart(2, "0")}E${String(media.episode).padStart(2, "0")}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {} };
+}
+function parseByteRange(range, size) {
+  if (!Number.isSafeInteger(size) || size <= 0) return null;
+  if (!range) return { start: 0, end: size - 1, partial: false };
+  const match = String(range).match(/^bytes=(\d*)-(\d*)$/);
+  if (!match || !match[1] && !match[2]) return null;
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return null;
+    return { start: Math.max(0, size - suffix), end: size - 1, partial: true };
+  }
+  const start = Number(match[1]);
+  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= size || requestedEnd < start) return null;
+  return { start, end: Math.min(requestedEnd, size - 1), partial: true };
 }
 async function serveLocalVideo(req, res, job) {
-  const info = await stat(job.path), range = req.headers.range;
-  let start = 0, end = info.size - 1, status = 200;
-  if (range) {
-    const match = range.match(/bytes=(\d*)-(\d*)/);
-    if (match) {
-      start = Number(match[1] || 0);
-      end = Math.min(Number(match[2] || end), end);
-      status = 206;
-    }
+  const info = await stat(job.path), selected = parseByteRange(req.headers.range, info.size);
+  if (!selected) {
+    res.writeHead(416, { "content-range": `bytes */${info.size}`, "accept-ranges": "bytes" });
+    return res.end();
   }
-  res.writeHead(status, { "content-type": job.mime, "content-length": end - start + 1, "accept-ranges": "bytes", ...status === 206 ? { "content-range": `bytes ${start}-${end}/${info.size}` } : {} });
+  const { start, end, partial } = selected;
+  res.writeHead(partial ? 206 : 200, { "content-type": job.mime, "content-length": end - start + 1, "accept-ranges": "bytes", ...partial ? { "content-range": `bytes ${start}-${end}/${info.size}` } : {} });
+  if (req.method === "HEAD") return res.end();
   return writeStreamToResponse(createReadStream(job.path, { start, end }), res);
 }
 async function handleRequest(req, res) {
@@ -1476,12 +1559,16 @@ async function handleRequest(req, res) {
         else return json(res, 409, { error: "This release cannot be resumed." });
         return json(res, 202, publicJob(job));
       }
-      if (req.method === "GET" && playMatch[2] === "stream") {
+      if (["GET", "HEAD"].includes(req.method) && playMatch[2] === "stream") {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get("start")) || 0));
         jobEvent(job, "stream-request", start ? `Browser requested playback from ${Math.round(start)}s.` : "Browser requested the video stream.");
         if (job.status !== "ready") return json(res, 409, { error: "Video is not ready yet." });
-        if (job.mode === "cached-convert") return await streamCachedConversion(req, res, job, await readSettings());
         if (job.mode === "cached") return await serveLocalVideo(req, res, job);
+        if (req.method === "HEAD") {
+          res.writeHead(200, { "content-type": job.mode === "cached-convert" || job.strategy !== "raw" || start ? "video/mp4" : videoType(job.file.subject), "cache-control": "no-store" });
+          return res.end();
+        }
+        if (job.mode === "cached-convert") return await streamCachedConversion(req, res, job, await readSettings(), start);
         if (job.strategy !== "raw" || start) return await streamConverted(req, res, job, await readSettings(), start, start && job.strategy === "raw" ? "remux" : "");
         let closed = false;
         req.on("close", () => {

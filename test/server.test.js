@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
@@ -717,6 +717,27 @@ test('best-quality playback does not let audio-label confidence override 2160p',
   assert.match(ranked[0].title, /2160p/);
 });
 
+test('best-quality TV playback does not let the series premiere year override 2160p', () => {
+  const ranked = rankReleases([
+    { title: 'Reacher.2022.S04E01.1080p.WEB-DL.HEVC.x265-RMTeam' },
+    { title: 'Reacher.S04E01.City.of.Brotherly.Love.2160p.AMZN.WEB-DL.DDP5.1.H.265-NTb' }
+  ], { title: 'Reacher', type: 'tv', year: '2022', season: 4, episode: 1 }, { playbackQuality: 'quality' });
+  assert.match(ranked[0].title, /2160p/);
+});
+
+test('prefers SDR over HDR and Dolby Vision releases at the same resolution', () => {
+  const ranked = rankReleases([
+    { title: 'Show.S01E01.2160p.WEB-DL.DV.H.265' },
+    { title: 'Show.S01E01.2160p.WEB-DL.HDR.H.265' },
+    { title: 'Show.S01E01.2160p.WEB-DL.H.265' }
+  ], { title: 'Show', type: 'tv', season: 1, episode: 1 }, { playbackQuality: 'quality' });
+  assert.deepEqual(ranked.map(release => release.title), [
+    'Show.S01E01.2160p.WEB-DL.H.265',
+    'Show.S01E01.2160p.WEB-DL.HDR.H.265',
+    'Show.S01E01.2160p.WEB-DL.DV.H.265'
+  ]);
+});
+
 test('can favour a quick-start release and explains release readiness', () => {
   const ranked = rankReleases([
     { title: 'Film.2024.2160p.HEVC.BluRay' },
@@ -725,6 +746,7 @@ test('can favour a quick-start release and explains release readiness', () => {
   assert.match(ranked[0].title, /H264/);
   assert.deepEqual(releaseReadiness({ title: 'Film.2024.part01.rar' }), { kind: 'download', label: 'Download first' });
   assert.deepEqual(releaseReadiness({ title: 'Film.2024.1080p.H264.mp4' }), { kind: 'direct', label: 'Likely direct' });
+  assert.deepEqual(releaseReadiness({ title: 'Film.2024.2160p.HDR.H264.mp4' }), { kind: 'convert', label: 'Live conversion' });
 });
 
 test('only requests a download fallback for a direct stream', () => {
@@ -737,6 +759,52 @@ test('chooses browser conversion strategies from container and codec', () => {
   assert.equal(playbackStrategy('movie.webm yEnc', 'Movie VP9'), 'transcode');
   assert.equal(playbackStrategy('movie.mkv yEnc', 'Movie x264 DTS'), 'remux');
   assert.equal(playbackStrategy('movie.mkv yEnc', 'Movie HEVC'), 'transcode');
+  assert.equal(playbackStrategy('movie.mkv yEnc', 'Movie 2160p HDR H264'), 'transcode');
   assert.equal(audioAwarePlaybackStrategy('raw', [{ codec_type: 'video' }, { codec_type: 'audio' }, { codec_type: 'audio', tags: { language: 'eng' } }]), 'remux');
   assert.equal(audioAwarePlaybackStrategy('raw', [{ codec_type: 'video' }, { codec_type: 'audio' }]), 'raw');
+});
+
+test('tone maps HDR transcodes into BT.709 SDR output', () => {
+  const args = ffmpegArgs('transcode', 'pipe:0', 'pipe:1', true, 0, 2, false, true);
+  const filter = args[args.indexOf('-vf') + 1];
+  assert.match(filter, /zscale=t=linear/);
+  assert.match(filter, /tonemap=tonemap=hable/);
+  assert.match(filter, /zscale=t=bt709:m=bt709:r=tv/);
+  assert.ok(args.includes('-colorspace'));
+  assert.ok(args.includes('bt709'));
+});
+
+test('detects a working AMD or Intel VAAPI render device', async () => {
+  const attempts = [];
+  const acceleration = await detectVideoAcceleration({
+    devices: ['/dev/dri/renderD128', '/dev/dri/renderD129'],
+    exists: device => device.endsWith('129'),
+    execute: async (_command, args) => { attempts.push(args); }
+  });
+  assert.deepEqual(acceleration, { kind: 'vaapi', device: '/dev/dri/renderD129' });
+  assert.equal(attempts.length, 1);
+  assert.ok(attempts[0].includes('h264_vaapi'));
+});
+
+test('uses VAAPI decode and encode for SDR transcodes', () => {
+  const acceleration = { kind: 'vaapi', device: '/dev/dri/renderD128' };
+  const args = ffmpegArgs('transcode', 'pipe:0', 'pipe:1', true, 0, 2, false, false, acceleration);
+  assert.deepEqual(args.slice(3, 9), ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi']);
+  assert.ok(args.includes('scale_vaapi=format=nv12'));
+  assert.ok(args.includes('h264_vaapi'));
+  assert.ok(!args.includes('libx264'));
+  assert.equal(playbackAccelerationLabel('transcode', false, acceleration), 'GPU · VAAPI decode + encode');
+});
+
+test('uses CPU tone mapping with VAAPI encoding for HDR transcodes', () => {
+  const acceleration = { kind: 'vaapi', device: '/dev/dri/renderD128' };
+  const args = ffmpegArgs('transcode', 'pipe:0', 'pipe:1', true, 0, 2, false, true, acceleration);
+  const filter = args[args.indexOf('-vf') + 1];
+  assert.deepEqual(args.slice(3, 5), ['-vaapi_device', acceleration.device]);
+  assert.match(filter, /tonemap=tonemap=hable/);
+  assert.match(filter, /format=nv12,hwupload$/);
+  assert.ok(args.includes('h264_vaapi'));
+  assert.equal(playbackAccelerationLabel('transcode', true, acceleration), 'GPU encode · CPU HDR tone mapping');
+  assert.equal(playbackAccelerationLabel('transcode', true, null), 'CPU · HDR tone mapping');
+  assert.equal(playbackAccelerationLabel('remux', false, acceleration), 'Not needed · video stream copy');
 });

@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
-import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants } from '../../../media.js';
+import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, titleVariants } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { createMediaStateStore } from './media-state.js';
 
@@ -307,6 +307,22 @@ export function archiveFilenames(archives) {
 }
 function run(command, args, cwd) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd }); let stderr = ''; child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve() : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
 function runOutput(command, args, cwd) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd }); let stdout = '', stderr = ''; child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
+const VAAPI_DEVICES = Array.from({ length: 8 }, (_, index) => `/dev/dri/renderD${128 + index}`);
+let videoAccelerationDetection;
+export async function detectVideoAcceleration({ devices = VAAPI_DEVICES, exists = existsSync, execute = run } = {}) {
+  for (const device of devices) {
+    if (!exists(device)) continue;
+    try {
+      await execute('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-vaapi_device', device, '-f', 'lavfi', '-i', 'color=size=128x128:rate=1', '-frames:v', '1', '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-f', 'null', '-']);
+      return { kind: 'vaapi', device };
+    } catch {}
+  }
+  return null;
+}
+function availableVideoAcceleration() {
+  videoAccelerationDetection ||= detectVideoAcceleration();
+  return videoAccelerationDetection;
+}
 export async function writeStreamToResponse(stream, res, { end = true } = {}) {
   let bytes = 0;
   for await (const chunk of stream) {
@@ -321,7 +337,21 @@ async function extractedVideo(directory) { const names = await readdir(directory
 export function seekPlaybackStrategy(strategy, start = 0) {
   return start > 0 ? 'transcode' : strategy;
 }
-export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false) {
+export function playbackAccelerationLabel(strategy, toneMap = false, acceleration = null) {
+  if (['raw', 'remux'].includes(strategy)) return 'Not needed · video stream copy';
+  if (acceleration?.kind === 'vaapi') return toneMap ? 'GPU encode · CPU HDR tone mapping' : 'GPU · VAAPI decode + encode';
+  return toneMap ? 'CPU · HDR tone mapping' : 'CPU · software transcode';
+}
+async function configurePlaybackAcceleration(job, strategy, toneMap = false) {
+  const acceleration = ['raw', 'remux'].includes(strategy) ? null : await availableVideoAcceleration();
+  const label = playbackAccelerationLabel(strategy, toneMap, acceleration);
+  if (job.videoAcceleration !== label) {
+    job.videoAcceleration = label;
+    jobEvent(job, 'acceleration', label);
+  }
+  return acceleration;
+}
+export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
   const englishMetadataMaps = [
     '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:m:language:en-US:?', '0:a:m:language:en-GB:?',
@@ -330,7 +360,16 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
   ];
   const audioMaps = [...englishMetadataMaps, ...(fallbackIndex ? [`0:a:${fallbackIndex}?`] : []), '0:a:0?'];
   const seek = start > 0 ? ['-ss', String(start)] : [];
-  return ['-y', '-loglevel', 'error', ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), '-c:v', strategy === 'remux' ? 'copy' : 'libx264', ...(strategy === 'remux' ? [] : ['-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p']), '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
+  const transcodeVideo = strategy !== 'remux' || toneMap;
+  const vaapi = transcodeVideo && acceleration?.kind === 'vaapi';
+  const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi'] : [];
+  const filter = toneMap
+    ? `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`
+    : vaapi ? 'scale_vaapi=format=nv12' : '';
+  const filterArgs = filter ? ['-vf', filter] : [];
+  const colorArgs = toneMap ? ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] : [];
+  const videoCodecArgs = !transcodeVideo ? ['-c:v', 'copy'] : vaapi ? ['-c:v', 'h264_vaapi', '-rc_mode', 'CQP', '-qp', '22'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p'];
+  return ['-y', '-loglevel', 'error', ...hardwareInputArgs, ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), ...filterArgs, ...colorArgs, ...videoCodecArgs, '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
 }
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
@@ -356,13 +395,15 @@ async function cachedPlaybackStrategy(path, release) {
 }
 async function optimizeCachedVideo(job, path) {
   const strategy = await cachedPlaybackStrategy(path, job.release);
-  if (strategy === 'raw') return { path, mime: videoType(path) };
+  const toneMap = releaseDynamicRange(job.release) !== 'sdr';
+  const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
+  if (strategy === 'raw') return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration };
   if (shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
-    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack), job.directory || ROOT);
-    return { path: browserPath, mime: 'video/mp4', strategy: 'raw' };
+    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration), job.directory || ROOT);
+    return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration };
   }
-  return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy };
+  return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy, videoAcceleration: job.videoAcceleration };
 }
 export async function audioSafeOfflineRecord(record, inspectStrategy = cachedPlaybackStrategy) {
   if (record.mode !== 'cached' || !record.path) return record;
@@ -448,7 +489,10 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
 
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
   const rangeSource = start > 0 ? await openPostedRangeServer(job, settings) : null;
-  const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start), child = spawn('ffmpeg', ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource))); let stderr = '';
+  const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
+  const toneMap = releaseDynamicRange(job.release) !== 'sdr';
+  const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
+  const child = spawn('ffmpeg', ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource), toneMap, acceleration)); let stderr = '';
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
   try {
@@ -462,7 +506,9 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
   finally { await rangeSource?.close(); }
 }
 async function streamCachedConversion(req, res, job, settings, start = 0) {
-  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true, start, settings.untaggedAudioTrack, true)); let stderr = '';
+  const toneMap = releaseDynamicRange(job.release) !== 'sdr';
+  const acceleration = await configurePlaybackAcceleration(job, job.strategy, toneMap);
+  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration)); let stderr = '';
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {});
   req.on('close', () => { closed = true; child.kill(); });
@@ -693,8 +739,9 @@ async function preparePlayback(job, settings) {
           }
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
+          await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== 'sdr');
           if (shouldCacheDirectPlayback(job)) { await cacheDirect(job, settings); return; }
-          playbackPlans.set(job.media, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) }, settings.playbackQuality);
+          playbackPlans.set(job.media, { file: direct, release: release.title, strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, settings.playbackQuality);
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;
@@ -775,7 +822,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
   }
 }
-function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };
