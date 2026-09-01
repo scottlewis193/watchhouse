@@ -68,7 +68,7 @@
 <svelte:head><title>Downloads · Watchhouse</title></svelte:head>
 
 <section class="downloads-page">
-  <div class="page-heading"><div><p class="page-eyebrow">Offline viewing</p><h1>Downloads</h1></div><div class="page-heading-meta"><span>{downloads.length} saved</span>{#if activeCount}<span>{activeCount} active</span>{/if}</div></div>
+  <div class="page-tools"><span class="page-eyebrow">{downloads.length} saved{activeCount ? ` · ${activeCount} active` : ''}</span><a class="btn btn-sm btn-ghost" href="/library">Open library</a></div>
   {#if offline}<div class="alert alert-warning"><span>You’re offline. Saved episodes remain playable, but download controls are paused.</span></div>{/if}
   {#if error}<div class="alert alert-error"><span>{error}</span></div>{/if}
   {#if actionError}<div class="alert alert-error"><span>{actionError}</span><button class="btn btn-sm btn-ghost" onclick={() => { actionError = ''; }}>Dismiss</button></div>{/if}

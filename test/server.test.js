@@ -4,7 +4,7 @@ import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
-import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
+import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
 
@@ -154,6 +154,12 @@ test('builds TMDB image URLs without an extra API request', () => {
   assert.equal(tmdbImage('/poster.jpg'), 'https://image.tmdb.org/t/p/w500/poster.jpg');
   assert.equal(tmdbImage('/still.jpg', 'w300'), 'https://image.tmdb.org/t/p/w300/still.jpg');
   assert.equal(tmdbImage(null), null);
+});
+
+test('maps title artwork for the immersive watch hero', () => {
+  assert.deepEqual(mapTmdbTitleDetails({ id: 42, name: 'Show', first_air_date: '2024-01-02', overview: 'Story', poster_path: '/poster.jpg', backdrop_path: '/backdrop.jpg' }, 'tv'), {
+    id: 42, type: 'tv', title: 'Show', year: '2024', overview: 'Story', poster: 'https://image.tmdb.org/t/p/w500/poster.jpg', backdrop: 'https://image.tmdb.org/t/p/w1280/backdrop.jpg'
+  });
 });
 
 test('maps a TMDB movie runtime to seconds for progress display', () => {

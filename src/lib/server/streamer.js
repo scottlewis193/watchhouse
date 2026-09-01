@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
-import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, titleVariants } from '../../../media.js';
+import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, titleVariants } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { createMediaStateStore } from './media-state.js';
 
@@ -15,7 +15,7 @@ const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, 'data', 'settings.json');
 const MEDIA_STATE_PATH = join(ROOT, 'data', 'media-state.json');
 const PLAYBACK_CACHE_ROOT = join(ROOT, 'data', 'cache');
-const DISCOVERY_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, 'tmdb-discovery-v3.json');
+const DISCOVERY_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, 'tmdb-discovery-v4.json');
 const RUNTIME_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, 'tmdb-runtime-v1.json');
 const OFFLINE_ROOT = join(ROOT, 'data', 'offline');
 const OFFLINE_STATE_PATH = join(ROOT, 'data', 'offline-downloads.json');
@@ -603,6 +603,9 @@ async function catalogueMovieRuntime(settings, titleId) {
   await writeFile(RUNTIME_CACHE_PATH, JSON.stringify(runtimeCache), { mode: 0o600 });
   return duration;
 }
+async function catalogueTitleDetails(settings, type, titleId) {
+  return mapTmdbTitleDetails(await tmdbRequest(settings, `${type}/${titleId}`, { language: 'en-GB' }), type);
+}
 async function findReleases(settings, media, includeYear = true) {
   const episodic = media.type === 'tv' && media.season && media.episode;
   const searches = titleVariants(media.title).map(async title => {
@@ -907,6 +910,8 @@ export async function handleRequest(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/api/catalog/search') { const query = url.searchParams.get('q')?.trim(), settings = await readSettings(); if (!query) return json(res, 400, { error: 'A search query is required.' }); if (!settings.tmdbToken) return json(res, 400, { error: 'Add a TMDB read access token in settings before searching.' }); return json(res, 200, { results: await catalogueSearch(settings, query) }); }
     if (req.method === 'GET' && url.pathname === '/api/catalog/discover') { const settings = await readSettings(); if (!settings.tmdbToken) return json(res, 400, { error: 'Add a TMDB read access token in settings before browsing.' }); return json(res, 200, { shelves: await catalogueDiscovery(settings) }); }
+    const titleDetailsMatch = url.pathname.match(/^\/api\/catalog\/(movies|shows)\/(\d+)\/details$/);
+    if (req.method === 'GET' && titleDetailsMatch) { const settings = await readSettings(); return json(res, 200, { details: await catalogueTitleDetails(settings, titleDetailsMatch[1] === 'movies' ? 'movie' : 'tv', titleDetailsMatch[2]) }); }
     const movieRuntimeMatch = url.pathname.match(/^\/api\/catalog\/movies\/(\d+)\/runtime$/);
     if (req.method === 'GET' && movieRuntimeMatch) { const settings = await readSettings(); return json(res, 200, { duration: await catalogueMovieRuntime(settings, movieRuntimeMatch[1]) }); }
     const showMatch = url.pathname.match(/^\/api\/catalog\/shows\/(\d+)\/(seasons|episodes)$/);

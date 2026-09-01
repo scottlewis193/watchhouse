@@ -27,9 +27,22 @@ function mapTmdbTitles(payload, forcedType) {
       title: item.title || item.name,
       year: String(item.release_date || item.first_air_date || "").slice(0, 4),
       overview: item.overview || "",
-      poster: tmdbImage(item.poster_path)
+      poster: tmdbImage(item.poster_path),
+      ...item.backdrop_path ? { backdrop: tmdbImage(item.backdrop_path, "w1280") } : {}
     }];
   });
+}
+function mapTmdbTitleDetails(payload, forcedType) {
+  const type = forcedType || (payload?.title ? "movie" : "tv");
+  return {
+    id: payload?.id,
+    type,
+    title: payload?.title || payload?.name || "",
+    year: String(payload?.release_date || payload?.first_air_date || "").slice(0, 4),
+    overview: payload?.overview || "",
+    poster: tmdbImage(payload?.poster_path),
+    backdrop: tmdbImage(payload?.backdrop_path, "w1280")
+  };
 }
 function mapTmdbSeasons(payload) {
   return (payload.seasons || []).filter((item) => Number.isInteger(item.season_number) && item.season_number > 0).map((item) => ({ id: item.id, number: item.season_number, name: item.name || `Season ${item.season_number}`, episodeCount: item.episode_count || 0 })).sort((a, b) => a.number - b.number);
@@ -219,7 +232,7 @@ const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, "data", "settings.json");
 const MEDIA_STATE_PATH = join(ROOT, "data", "media-state.json");
 const PLAYBACK_CACHE_ROOT = join(ROOT, "data", "cache");
-const DISCOVERY_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, "tmdb-discovery-v3.json");
+const DISCOVERY_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, "tmdb-discovery-v4.json");
 const RUNTIME_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, "tmdb-runtime-v1.json");
 const OFFLINE_ROOT = join(ROOT, "data", "offline");
 const OFFLINE_STATE_PATH = join(ROOT, "data", "offline-downloads.json");
@@ -1011,6 +1024,9 @@ async function catalogueMovieRuntime(settings, titleId) {
   await writeFile(RUNTIME_CACHE_PATH, JSON.stringify(runtimeCache), { mode: 384 });
   return duration;
 }
+async function catalogueTitleDetails(settings, type, titleId) {
+  return mapTmdbTitleDetails(await tmdbRequest(settings, `${type}/${titleId}`, { language: "en-GB" }), type);
+}
 async function findReleases(settings, media, includeYear = true) {
   const episodic = media.type === "tv" && media.season && media.episode;
   const searches = titleVariants(media.title).map(async (title) => {
@@ -1475,6 +1491,11 @@ async function handleRequest(req, res) {
       const settings = await readSettings();
       if (!settings.tmdbToken) return json(res, 400, { error: "Add a TMDB read access token in settings before browsing." });
       return json(res, 200, { shelves: await catalogueDiscovery(settings) });
+    }
+    const titleDetailsMatch = url.pathname.match(/^\/api\/catalog\/(movies|shows)\/(\d+)\/details$/);
+    if (req.method === "GET" && titleDetailsMatch) {
+      const settings = await readSettings();
+      return json(res, 200, { details: await catalogueTitleDetails(settings, titleDetailsMatch[1] === "movies" ? "movie" : "tv", titleDetailsMatch[2]) });
     }
     const movieRuntimeMatch = url.pathname.match(/^\/api\/catalog\/movies\/(\d+)\/runtime$/);
     if (req.method === "GET" && movieRuntimeMatch) {

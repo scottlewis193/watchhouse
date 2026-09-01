@@ -65,7 +65,7 @@
   }
 
   function watchHref(result) {
-    const query = new URLSearchParams({ title: result.title, ...(result.year ? { year: result.year } : {}), ...(result.poster ? { poster: result.poster } : {}), ...(result.season ? { season: result.season, episode: result.episode } : {}) });
+    const query = new URLSearchParams({ title: result.title, ...(result.year ? { year: result.year } : {}), ...(result.poster ? { poster: result.poster } : {}), ...(result.backdrop ? { backdrop: result.backdrop } : {}), ...(result.season ? { season: result.season, episode: result.episode } : {}) });
     return `/watch/${result.type}/${result.id}?${query}`;
   }
 
@@ -103,7 +103,7 @@
 
 {#if hasSearched}
 <section class="discover-page" aria-labelledby="discover-title">
-  <div class="page-heading"><div><p class="page-eyebrow">Catalogue search</p><h1 id="discover-title">Results for “{query}”</h1></div><div class="page-heading-meta"><span>{searchMessage}</span><a href="/">Back to browse</a></div></div>
+  <div class="page-tools"><p id="discover-title"><span class="page-eyebrow">Search</span><span class="ml-3 text-sm text-base-content/75">“{query}” · {searchMessage}</span></p><a class="btn btn-sm btn-ghost" href="/">Clear search</a></div>
   {#if error}<div class="alert alert-error mb-4"><span>{error}</span><a class="btn btn-sm" href="/settings">Open settings</a></div>{/if}
   {#if results.length}
     <div class="poster-grid mt-9">
@@ -115,7 +115,6 @@
 </section>
 {:else}
   <section aria-label="Browse films and series" class="discover-page space-y-12">
-    <div class="page-heading"><div><p class="page-eyebrow">Curated for your screen</p><h1>Discover</h1></div><p class="page-intro">Films and series, gathered in one quiet place.</p></div>
     {#if catalogueError}<div class="alert alert-error"><span>{catalogueError}</span><div class="flex gap-2"><button class="btn btn-sm" onclick={loadDiscovery}>Try again</button><a class="btn btn-sm" href="/settings">Open settings</a></div></div>{/if}
     {#if catalogueLoading}
       {#each Array(3) as _}

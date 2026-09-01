@@ -50,6 +50,7 @@
 }
 
 html { scroll-behavior: smooth; }
+html:has(.watch-page) { scroll-behavior: auto; }
 
 body {
   font-family: var(--font-sans);
@@ -80,6 +81,16 @@ body {
 @keyframes progress-glint {
   from { background-position: 200% 0; }
   to { background-position: -200% 0; }
+}
+
+@keyframes drawer-in-right {
+  from { opacity: 0; transform: translateX(100%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes drawer-in-up {
+  from { opacity: 0; transform: translateY(100%); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .app-header {
@@ -320,6 +331,17 @@ button:not(:disabled):active { transform: scale(.97); }
 }
 .page-heading-meta a { color: var(--color-base-content); text-decoration: underline; text-underline-offset: .3rem; }
 
+.page-tools {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+  padding-bottom: .8rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-base-content) 12%, transparent);
+}
+
 .shelf-heading {
   display: flex;
   align-items: baseline;
@@ -477,15 +499,37 @@ button:not(:disabled):active { transform: scale(.97); }
     #000;
 }
 .player-modal {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: clamp(1rem, 4vw, 3rem);
   background:
-    radial-gradient(circle at 50% 44%, rgb(255 255 255 / 7%), transparent 24rem),
-    rgb(4 5 6 / 92%);
-  backdrop-filter: blur(10px);
+    linear-gradient(to top, rgb(2 3 4 / 92%) 0%, rgb(2 3 4 / 48%) 42%, transparent 78%);
 }
 .player-modal-panel {
-  width: min(100%, 34rem);
-  padding: clamp(2rem, 5vw, 3.5rem) 1.5rem;
-  border-block: 1px solid rgb(255 255 255 / 14%);
+  position: relative;
+  width: min(100%, 32rem);
+  padding: clamp(1.35rem, 3vw, 2rem);
+  border: 1px solid rgb(255 255 255 / 20%);
+  background: rgb(8 9 10 / 84%);
+  box-shadow: 0 30px 80px rgb(0 0 0 / 44%);
+  text-align: left;
+  backdrop-filter: blur(18px);
+  animation: popup-panel-in 480ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.player-modal-panel::before {
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 4rem;
+  height: 2px;
+  background: var(--color-primary);
+  content: '';
+}
+.player-modal-panel-alert::before { background: var(--color-warning); }
+@keyframes popup-panel-in {
+  from { opacity: 0; transform: translateY(1.5rem); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .detail-player {
   background-position: center 28%;
@@ -498,14 +542,36 @@ button:not(:disabled):active { transform: scale(.97); }
   content: '';
 }
 .player-modal-panel h2 {
-  margin-top: .8rem;
+  margin-top: .65rem;
   font-family: var(--font-display);
-  font-size: clamp(2rem, 5vw, 3.35rem);
+  font-size: clamp(1.8rem, 4vw, 2.65rem);
   font-weight: 400;
   letter-spacing: -.04em;
   line-height: 1.02;
 }
 .player-modal-panel > p:not(.player-eyebrow) { margin-top: 1rem; color: rgb(255 255 255 / 55%); font-size: .8rem; line-height: 1.65; }
+.player-modal-actions { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.4rem; }
+.player-popup-button {
+  display: inline-flex;
+  min-height: 2.6rem;
+  align-items: center;
+  justify-content: center;
+  gap: .55rem;
+  padding: 0 .9rem;
+  border: 1px solid rgb(255 255 255 / 22%);
+  background: rgb(255 255 255 / 4%);
+  color: rgb(255 255 255 / 76%);
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.player-popup-button:hover,
+.player-popup-button:focus-visible { border-color: rgb(255 255 255 / 58%); background: rgb(255 255 255 / 11%); color: white; }
+.player-popup-button-primary { border-color: white; background: white; color: #090a0b; }
+.player-popup-button-primary:hover,
+.player-popup-button-primary:focus-visible { background: rgb(255 255 255 / 82%); color: #090a0b; }
+.player-popup-button:disabled { opacity: .4; }
 .player-eyebrow {
   color: rgb(255 255 255 / 44%);
   font-size: .6rem;
@@ -530,22 +596,99 @@ button:not(:disabled):active { transform: scale(.97); }
   color: rgb(255 255 255 / 85%);
 }
 .up-next-panel {
-  border: 1px solid color-mix(in srgb, var(--color-base-content) 20%, transparent);
-  background: color-mix(in srgb, var(--color-base-100) 94%, transparent);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid rgb(255 255 255 / 20%);
+  background: rgb(8 9 10 / 88%);
+  color: white;
   box-shadow: 0 24px 64px -24px rgb(0 0 0 / 100%);
+  backdrop-filter: blur(18px);
+  animation: popup-panel-in 420ms cubic-bezier(.22, 1, .36, 1) both;
 }
+.up-next-countdown { display: grid; width: 3.2rem; height: 3.2rem; flex: none; place-content: center; border: 1px solid rgb(255 255 255 / 18%); text-align: center; }
+.up-next-countdown span { font-family: var(--font-display); font-size: 1.35rem; line-height: .9; }
+.up-next-countdown small { margin-top: .2rem; color: rgb(255 255 255 / 42%); font-size: .45rem; letter-spacing: .16em; }
+.up-next-title { overflow: hidden; margin-top: .25rem; font-size: .88rem; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.up-next-detail { overflow: hidden; margin-top: .25rem; color: rgb(255 255 255 / 42%); font-size: .62rem; text-overflow: ellipsis; white-space: nowrap; }
+.up-next-actions { display: flex; flex: none; gap: .4rem; }
+.up-next-actions .player-popup-button { min-width: 2.6rem; padding-inline: .75rem; }
 .episode-title {
   font-family: var(--font-display);
   font-size: 1.8rem;
   font-weight: 400;
   letter-spacing: -.03em;
 }
-.episode-list { scrollbar-color: color-mix(in srgb, var(--color-base-content) 20%, transparent) transparent; scrollbar-width: thin; }
+.episode-guide-header {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem;
+}
+.episode-guide-controls { display: flex; align-items: center; gap: .45rem; }
+.episode-season-control { position: relative; display: block; }
+.episode-season-control::after {
+  position: absolute;
+  top: 50%;
+  right: .75rem;
+  content: '⌄';
+  color: color-mix(in srgb, var(--color-base-content) 55%, transparent);
+  font-size: .7rem;
+  pointer-events: none;
+  transform: translateY(-58%);
+}
+.episode-season-select {
+  height: 2.45rem;
+  min-width: 9.5rem;
+  appearance: none;
+  padding: 0 2rem 0 .8rem;
+  border: 1px solid color-mix(in srgb, var(--color-base-content) 18%, transparent);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--color-base-100) 84%, transparent);
+  color: rgb(255 255 255 / 78%);
+  font-size: .62rem;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  outline: 0;
+}
+.episode-season-select option { background: #101214; color: white; }
+.episode-season-select:hover,
+.episode-season-select:focus-visible { border-color: color-mix(in srgb, var(--color-base-content) 45%, transparent); }
+.episode-guide-icon {
+  display: grid;
+  width: 2.45rem;
+  height: 2.45rem;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-base-content) 18%, transparent);
+  color: color-mix(in srgb, var(--color-base-content) 62%, transparent);
+  cursor: pointer;
+  list-style: none;
+}
+.episode-guide-icon::-webkit-details-marker { display: none; }
+.episode-guide-icon:hover,
+.episode-guide-icon:focus-visible,
+.episode-bulk-menu[open] .episode-guide-icon { border-color: color-mix(in srgb, var(--color-base-content) 45%, transparent); color: var(--color-base-content); }
+.episode-guide-icon svg { width: 1rem; height: 1rem; }
+.episode-list {
+  min-height: 0;
+  flex: 1;
+  scrollbar-color: color-mix(in srgb, var(--color-base-content) 20%, transparent) transparent;
+  scrollbar-width: thin;
+}
 .episode-row.bg-base-200 {
   background: transparent;
   box-shadow: inset 2px 0 var(--color-primary);
 }
 .episode-row:hover { background: color-mix(in srgb, var(--color-base-content) 3%, transparent); }
+.episode-play-icon { display: none; }
+.episode-play:hover .episode-number,
+.episode-play:focus-visible .episode-number { display: none; }
+.episode-play:hover .episode-play-icon,
+.episode-play:focus-visible .episode-play-icon { display: block; }
+.episode-now { font-size: .52rem; letter-spacing: .08em; }
 .episode-marker,
 .episode-watched { border-radius: 0; }
 .editorial-menu {
@@ -596,6 +739,361 @@ button:not(:disabled):active { transform: scale(.97); }
 }
 .catalogue-skeleton { opacity: .46; }
 
+/* Immersive watch route */
+.watch-main {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+}
+.watchhouse-watch .app-header {
+  position: absolute;
+  width: 100%;
+  border-bottom-color: rgb(255 255 255 / 10%);
+  background: linear-gradient(to bottom, rgb(0 0 0 / 66%), transparent);
+  color: white;
+  backdrop-filter: none;
+}
+.watchhouse-watch .brand-link,
+.watchhouse-watch .nav-link-active,
+.watchhouse-watch .nav-link:hover,
+.watchhouse-watch .nav-link:focus-visible { color: white; }
+.watchhouse-watch .main-nav,
+.watchhouse-watch .nav-search { color: rgb(255 255 255 / 55%); }
+.watchhouse-watch .nav-search { border-bottom-color: rgb(255 255 255 / 22%); }
+.watchhouse-watch .app-footer { position: relative; z-index: 2; background: var(--color-base-200); }
+
+.watch-hero {
+  position: relative;
+  isolation: isolate;
+  display: block;
+  height: 100svh;
+  min-height: 100svh;
+  overflow: hidden;
+  overflow-anchor: none;
+  padding: clamp(8rem, 13vh, 10rem) clamp(1.5rem, 5vw, 5.5rem) clamp(2.5rem, 6vh, 5rem);
+  background: #050607;
+  color: white;
+}
+.watch-hero-art,
+.watch-hero-shade { position: absolute; z-index: -2; inset: 0; }
+.watch-hero-art {
+  background-image: var(--watch-artwork);
+  background-position: center 18%;
+  background-size: cover;
+  filter: saturate(.72) contrast(1.04);
+  transform: scale(1.025);
+}
+.watch-hero-shade {
+  z-index: -1;
+  background:
+    linear-gradient(90deg, rgb(3 4 5 / 94%) 0%, rgb(3 4 5 / 62%) 34%, rgb(3 4 5 / 16%) 72%, rgb(3 4 5 / 45%) 100%),
+    linear-gradient(to top, rgb(3 4 5 / 92%) 0%, transparent 48%, rgb(3 4 5 / 45%) 100%);
+}
+.watch-hero-playing {
+  display: flex;
+  align-items: flex-end;
+  padding: 6rem 0 0;
+}
+.watch-hero-playing .watch-stage { width: 100%; }
+.watch-hero-playing .player-shell {
+  width: 100%;
+  height: calc(100svh - 6rem);
+  margin: 0;
+  aspect-ratio: auto;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+}
+
+.watch-identity {
+  position: absolute;
+  z-index: 1;
+  right: clamp(1.5rem, 5vw, 5.5rem);
+  bottom: clamp(2.5rem, 6vh, 5rem);
+  left: clamp(1.5rem, 5vw, 5.5rem);
+  width: min(42rem, calc(100% - clamp(3rem, 10vw, 11rem)));
+  padding-bottom: clamp(.5rem, 3vw, 2.5rem);
+  text-shadow: 0 2px 26px rgb(0 0 0 / 70%);
+}
+.watch-identity-departing {
+  z-index: 3;
+  pointer-events: none;
+  animation: watch-identity-out 520ms cubic-bezier(.4, 0, .2, 1) both;
+}
+.watch-identity h1 {
+  margin-top: .75rem;
+  font-family: var(--font-display);
+  max-width: 16ch;
+  font-size: clamp(2.9rem, 4.2vw, 5rem);
+  font-weight: 400;
+  letter-spacing: -.055em;
+  line-height: .9;
+}
+.watch-episode-name { margin-top: 1rem; color: rgb(255 255 255 / 76%); font-size: clamp(.9rem, 1.4vw, 1.15rem); }
+.watch-overview {
+  display: -webkit-box;
+  max-width: 30rem;
+  margin-top: 1.25rem;
+  overflow: hidden;
+  color: rgb(255 255 255 / 58%);
+  font-size: .82rem;
+  line-height: 1.7;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+.watch-stage { z-index: 1; min-width: 0; grid-column: 1 / -1; }
+.watch-hero-alerts {
+  position: absolute;
+  z-index: 6;
+  top: 10.25rem;
+  right: clamp(1.5rem, 5vw, 5.5rem);
+  left: clamp(1.5rem, 5vw, 5.5rem);
+  display: grid;
+  gap: .5rem;
+}
+.hero-identity-play {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  min-height: 3.2rem;
+  align-items: center;
+  gap: .8rem;
+  padding-inline: 1.35rem;
+  border: 1px solid rgb(255 255 255 / 42%);
+  background: rgb(4 5 6 / 32%);
+  color: white;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  backdrop-filter: blur(12px);
+}
+.hero-identity-play > span:first-child { font-size: 1rem; }
+.hero-identity-play > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-identity-play:hover,
+.hero-identity-play:focus-visible { border-color: white; background: white; color: #08090a; }
+.hero-identity-play:active { transform: none; }
+.hero-action-slot { position: relative; width: min(25rem, 100%); height: 3.2rem; margin-top: 1.75rem; }
+.hero-preparation {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 0 1rem;
+  border: 1px solid rgb(255 255 255 / 28%);
+  background: rgb(4 5 6 / 40%);
+  text-shadow: none;
+  backdrop-filter: blur(12px);
+  animation: hero-control-swap 140ms ease-out both;
+}
+.hero-preparation-heading { display: flex; height: 100%; align-items: center; gap: .7rem; color: rgb(255 255 255 / 78%); }
+.hero-preparation-mark { display: grid; width: 1.7rem; height: 1.7rem; flex: none; place-items: center; border: 1px solid rgb(255 255 255 / 28%); border-radius: 50%; font-size: .55rem; animation: preparation-mark-pulse 1.8s ease-in-out infinite; }
+.hero-preparation-copy { min-width: 0; display: grid; gap: .2rem; }
+.hero-preparation-copy strong { overflow: hidden; font-size: .58rem; letter-spacing: .13em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.hero-preparation-copy small { overflow: hidden; color: rgb(255 255 255 / 48%); font-size: .65rem; font-weight: 400; letter-spacing: 0; text-overflow: ellipsis; text-transform: none; white-space: nowrap; }
+.hero-preparation-percent { margin-left: auto; color: rgb(255 255 255 / 45%); font-variant-numeric: tabular-nums; }
+.hero-preparation-track { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; overflow: hidden; background: rgb(255 255 255 / 15%); }
+.hero-preparation-track > span { display: block; height: 100%; background: white; transition: width 500ms ease; }
+.hero-preparation-track > .hero-preparation-indeterminate { width: 32% !important; animation: hero-preparation-slide 1.35s ease-in-out infinite; }
+.hero-preparation-error { border-color: color-mix(in srgb, var(--color-error) 48%, transparent); }
+.hero-preparation-error .hero-preparation-mark { border-color: color-mix(in srgb, var(--color-error) 68%, transparent); color: var(--color-error); animation: none; }
+.hero-preparation-retry { flex: none; margin-left: auto; color: white; font-size: .58rem; font-weight: 700; letter-spacing: .08em; text-decoration: underline; text-underline-offset: .2rem; text-transform: uppercase; }
+@keyframes preparation-mark-pulse { 50% { opacity: .45; } }
+@keyframes hero-preparation-slide { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
+@keyframes hero-control-swap { from { opacity: 0; } to { opacity: 1; } }
+.watch-stage-warming { position: absolute; z-index: 0; top: 6rem; right: 0; bottom: 0; left: 0; width: 100%; grid-column: auto; }
+.watch-stage-warming .player-shell { width: 100%; height: 100%; margin: 0; border: 0; aspect-ratio: auto; }
+.watch-stage-revealing { animation: watch-player-in 700ms cubic-bezier(.22, 1, .36, 1) both; }
+.watch-stage-revealing .player-controls { animation: watch-controls-in 560ms 120ms cubic-bezier(.22, 1, .36, 1) both; }
+.watch-stage .player-shell {
+  border-color: rgb(255 255 255 / 18%);
+  background: #000;
+}
+.watch-stage .player-shell.player-shell-warming { background: transparent; }
+.player-toolbar {
+  position: absolute;
+  z-index: 40;
+  top: .85rem;
+  right: .85rem;
+  left: .85rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgb(255 255 255 / 82%);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.watch-hero-playing .player-toolbar { top: 1.1rem; }
+.hero-player-toolbar {
+  top: 7.1rem;
+  right: clamp(1.5rem, 5vw, 5.5rem);
+  left: clamp(1.5rem, 5vw, 5.5rem);
+}
+.watch-toolbar-bridge {
+  top: 7.1rem;
+  transition:
+    top 620ms cubic-bezier(.22, 1, .36, 1),
+    right 620ms cubic-bezier(.22, 1, .36, 1),
+    left 620ms cubic-bezier(.22, 1, .36, 1),
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+.watch-hero-playing > .watch-toolbar-bridge {
+  top: 7.1rem;
+  right: 1.1rem;
+  left: 1.1rem;
+}
+.player-toolbar-hidden { pointer-events: none; opacity: 0; transform: translateY(-.35rem); }
+.player-toolbar-actions {
+  display: flex;
+  align-items: center;
+  border: 1px solid rgb(255 255 255 / 24%);
+  background: rgb(5 6 7 / 66%);
+  backdrop-filter: blur(14px);
+}
+.player-toolbar-button {
+  position: relative;
+  display: grid;
+  width: 2.55rem;
+  height: 2.55rem;
+  place-items: center;
+  border-right: 1px solid rgb(255 255 255 / 13%);
+  color: rgb(255 255 255 / 68%);
+  transition: background 160ms ease, color 160ms ease;
+}
+.player-toolbar-back {
+  border: 1px solid rgb(255 255 255 / 24%);
+  background: rgb(5 6 7 / 66%);
+  backdrop-filter: blur(14px);
+}
+.player-toolbar-button:last-child { border-right: 0; }
+.player-toolbar-button svg { width: 1.1rem; height: 1.1rem; }
+.player-toolbar-button:hover,
+.player-toolbar-button:focus-visible { background: rgb(255 255 255 / 13%); color: white; }
+.player-toolbar-button-active { color: white; }
+.player-toolbar-button:disabled { opacity: .35; }
+.player-toolbar-badge {
+  position: absolute;
+  top: .25rem;
+  right: .2rem;
+  display: grid;
+  min-width: .9rem;
+  height: .9rem;
+  place-items: center;
+  padding-inline: .15rem;
+  border-radius: 999px;
+  background: var(--color-primary);
+  color: var(--color-primary-content);
+  font-size: .5rem;
+  font-weight: 800;
+  line-height: 1;
+}
+@keyframes watch-identity-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(.65rem); }
+}
+@keyframes watch-player-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes watch-controls-in {
+  from { opacity: 0; transform: translateY(.8rem); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.hero-idle-player { border: 0 !important; background: transparent !important; box-shadow: none !important; }
+.hero-idle-player::after { display: none; }
+.hero-play-button {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  width: clamp(6rem, 9vw, 8rem);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid rgb(255 255 255 / 46%);
+  border-radius: 50%;
+  background: rgb(2 3 4 / 26%);
+  color: white;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 28%);
+  backdrop-filter: blur(12px);
+}
+.hero-play-button > span { margin-left: .35rem; font-size: clamp(1.8rem, 3vw, 2.5rem); }
+.hero-play-button small { position: absolute; bottom: 1.05rem; font-size: .55rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+.hero-play-button:hover,
+.hero-play-button:focus-visible { border-color: white; background: rgb(255 255 255 / 16%); transform: scale(1.045); }
+.player-diagnostics-panel {
+  position: absolute;
+  z-index: 35;
+  top: 4.35rem;
+  right: .85rem;
+  width: min(47rem, calc(100% - 1.7rem));
+  max-height: calc(100% - 8.7rem);
+  overflow: auto;
+  padding: 1.25rem;
+  border: 1px solid rgb(255 255 255 / 20%);
+  background: rgb(6 7 8 / 94%);
+  color: rgb(255 255 255 / 82%);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 55%);
+  backdrop-filter: blur(20px);
+  animation: fade-in 180ms ease both;
+}
+.player-diagnostics-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; padding-bottom: 1rem; border-bottom: 1px solid rgb(255 255 255 / 14%); }
+.player-diagnostics-header h2 { margin-top: .35rem; font-family: var(--font-display); font-size: clamp(1.4rem, 3vw, 2rem); font-weight: 400; letter-spacing: -.035em; line-height: 1; }
+.player-diagnostics-close { display: grid; width: 2rem; height: 2rem; flex: none; place-items: center; border: 1px solid rgb(255 255 255 / 18%); color: rgb(255 255 255 / 62%); font-size: 1.15rem; }
+.player-diagnostics-close:hover,
+.player-diagnostics-close:focus-visible { background: rgb(255 255 255 / 12%); color: white; }
+.player-diagnostics-panel dt { color: rgb(255 255 255 / 42%); }
+.player-diagnostics-panel h3 { color: rgb(255 255 255 / 52%); }
+
+.watch-drawer-scrim {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgb(0 0 0 / 58%);
+  backdrop-filter: blur(4px);
+}
+.watch-drawer {
+  position: absolute;
+  z-index: 50;
+  top: 6rem;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(31rem, 92vw);
+  overflow: hidden;
+  padding: 5rem 2rem 2rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-base-content) 15%, transparent);
+  background: color-mix(in srgb, var(--color-base-100) 94%, transparent);
+  backdrop-filter: blur(22px);
+  box-shadow: -30px 0 80px rgb(0 0 0 / 42%);
+  animation: drawer-in-right 420ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.watch-hero-playing .watch-drawer-scrim {
+  top: auto;
+  height: calc(100svh - 6rem);
+}
+.watch-hero-playing .watch-drawer {
+  top: auto;
+  width: min(31rem, 42vw);
+  height: calc(100svh - 6rem);
+  padding-top: 4.25rem;
+}
+.watch-drawer-close {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  display: grid;
+  width: 2.6rem;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-base-content) 18%, transparent);
+}
+.watch-drawer-close svg { width: 1.15rem; height: 1.15rem; }
+.watch-drawer-handle { display: none; }
+.watch-drawer .episode-list { max-height: none; margin-top: 1rem; }
+.watch-drawer .release-picker:first-of-type { margin-top: 0; border-top: 0; padding-top: 0; }
+
 @media (min-width: 40rem) {
   .poster-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap-inline: 1.25rem; }
 }
@@ -615,6 +1113,15 @@ button:not(:disabled):active { transform: scale(.97); }
   .poster-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
 
+@media (max-width: 63.99rem) {
+  .watch-hero {
+    padding-top: 9.5rem;
+  }
+  .watch-identity { max-width: 42rem; padding-bottom: 0; }
+  .watch-overview { -webkit-line-clamp: 2; }
+  .watch-stage { width: 100%; }
+}
+
 @media (max-width: 39.99rem) {
   .app-header-inner { gap-x: 1.2rem; }
   .brand-link { font-size: .95rem; letter-spacing: .18em; }
@@ -622,4 +1129,49 @@ button:not(:disabled):active { transform: scale(.97); }
   .main-nav .nav-link:first-child { display: none; }
   .page-heading { align-items: flex-start; flex-direction: column; }
   .page-heading-meta { width: 100%; justify-content: space-between; }
+  .page-tools { margin-bottom: 1.25rem; }
+  .watch-hero {
+    min-height: 100svh;
+    padding: 10.5rem 1rem 1.25rem;
+  }
+  .watch-identity { right: 1rem; bottom: 1.25rem; left: 1rem; width: auto; }
+  .watch-identity h1 { font-size: clamp(2.45rem, 13vw, 4.25rem); }
+  .watch-overview { display: none; }
+  .watch-stage .player-shell { width: calc(100% + 2rem); margin-left: -1rem; border-inline: 0; }
+  .watch-stage-warming { top: 7rem; }
+  .watch-hero-playing { padding: 7rem 0 0; }
+  .watch-hero-playing .watch-stage .player-shell { width: 100%; height: calc(100svh - 7rem); margin: 0; }
+  .watch-hero-playing .watch-stage { width: 100%; }
+  .player-toolbar { top: .6rem; right: .6rem; left: .6rem; }
+  .hero-player-toolbar { top: 8.75rem; right: 1rem; left: 1rem; }
+  .watch-toolbar-bridge { top: 8.75rem; }
+  .watch-hero-playing > .watch-toolbar-bridge { top: 7.6rem; right: .6rem; left: .6rem; }
+  .player-toolbar-button { width: 2.3rem; height: 2.3rem; }
+  .player-diagnostics-panel { top: 3.55rem; right: .6rem; width: calc(100% - 1.2rem); max-height: calc(100% - 7rem); padding: 1rem; }
+  .watch-drawer {
+    top: auto;
+    width: 100%;
+    height: min(70svh, 36rem);
+    max-height: none;
+    padding: 3.25rem 1rem 1.25rem;
+    border-top: 1px solid color-mix(in srgb, var(--color-base-content) 16%, transparent);
+    border-left: 0;
+    box-shadow: 0 -30px 80px rgb(0 0 0 / 48%);
+    animation-name: drawer-in-up;
+  }
+  .watch-hero-playing .watch-drawer {
+    width: 100%;
+    height: calc(100svh - 7rem);
+    padding-top: 3.25rem;
+  }
+  .watch-hero-playing .watch-drawer-scrim { height: calc(100svh - 7rem); }
+  .watch-drawer-handle { display: none; }
+  .watch-drawer-close { top: .65rem; right: .75rem; width: 2.25rem; border: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .watch-identity-departing,
+  .watch-stage-revealing,
+  .watch-stage-revealing .player-controls { animation-duration: 1ms; animation-delay: 0ms; }
+  .watch-toolbar-bridge { transition-duration: 1ms; }
 }

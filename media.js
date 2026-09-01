@@ -19,9 +19,23 @@ export function mapTmdbTitles(payload, forcedType) {
       title: item.title || item.name,
       year: String(item.release_date || item.first_air_date || '').slice(0, 4),
       overview: item.overview || '',
-      poster: tmdbImage(item.poster_path)
+      poster: tmdbImage(item.poster_path),
+      ...(item.backdrop_path ? { backdrop: tmdbImage(item.backdrop_path, 'w1280') } : {})
     }];
   });
+}
+
+export function mapTmdbTitleDetails(payload, forcedType) {
+  const type = forcedType || (payload?.title ? 'movie' : 'tv');
+  return {
+    id: payload?.id,
+    type,
+    title: payload?.title || payload?.name || '',
+    year: String(payload?.release_date || payload?.first_air_date || '').slice(0, 4),
+    overview: payload?.overview || '',
+    poster: tmdbImage(payload?.poster_path),
+    backdrop: tmdbImage(payload?.backdrop_path, 'w1280')
+  };
 }
 
 export function mapTmdbSeasons(payload) {

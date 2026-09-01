@@ -36,7 +36,7 @@
 <svelte:head><title>Settings · Watchhouse</title></svelte:head>
 
 <div class="settings-page mx-auto max-w-5xl">
-  <div class="page-heading"><div><p class="page-eyebrow">Private configuration</p><h1>Settings</h1><p class="page-intro mt-4">Personalise Watchhouse and configure catalogue search, indexer access, and playback.</p></div><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
+  <div class="page-tools"><span class="page-eyebrow">Private configuration</span><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
   {#if notice}<div class="alert alert-{noticeType} mb-6"><span>{notice}</span></div>{/if}
   {#if loading}
     <div class="editorial-loading grid place-items-center p-20"><span class="loading loading-spinner loading-lg"></span><p>Loading private settings</p></div>

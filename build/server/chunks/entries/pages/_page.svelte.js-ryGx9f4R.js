@@ -1,0 +1,45 @@
+import { a3 as head, a7 as ensure_array_like } from '../../chunks/index.js-BDRgBx0K.js';
+import '../../chunks/state.svelte.js-DFV3kIz4.js';
+import '../../chunks/exports.js-BZBK1HC9.js';
+import '../../chunks/utils2.js-BQzn9ikS.js';
+import '../../chunks/utils.js-DNDl--Fb.js';
+import '../../chunks/root.js-C4XJ2ICJ.js';
+
+function _page($$renderer, $$props) {
+  $$renderer.component(($$renderer2) => {
+    head("1uha8ag", $$renderer2, ($$renderer3) => {
+      $$renderer3.title(($$renderer4) => {
+        $$renderer4.push(`<title>Discover · Watchhouse</title>`);
+      });
+    });
+    {
+      $$renderer2.push("<!--[-1-->");
+      $$renderer2.push(`<section aria-label="Browse films and series" class="discover-page space-y-12">`);
+      {
+        $$renderer2.push("<!--[-1-->");
+      }
+      $$renderer2.push(`<!--]--> `);
+      {
+        $$renderer2.push("<!--[0-->");
+        $$renderer2.push(`<!--[-->`);
+        const each_array_1 = ensure_array_like(Array(3));
+        for (let $$index_2 = 0, $$length = each_array_1.length; $$index_2 < $$length; $$index_2++) {
+          each_array_1[$$index_2];
+          $$renderer2.push(`<div class="catalogue-skeleton"><div class="mb-4 h-6 w-40 animate-pulse bg-base-300"></div><div class="grid auto-cols-[8.75rem] grid-flow-col gap-4 overflow-hidden sm:auto-cols-[10.5rem]"><!--[-->`);
+          const each_array_2 = ensure_array_like(Array(6));
+          for (let $$index_1 = 0, $$length2 = each_array_2.length; $$index_1 < $$length2; $$index_1++) {
+            each_array_2[$$index_1];
+            $$renderer2.push(`<div><div class="aspect-[2/3] animate-pulse bg-base-300"></div><div class="mt-3 h-4 w-3/4 animate-pulse bg-base-300"></div></div>`);
+          }
+          $$renderer2.push(`<!--]--></div></div>`);
+        }
+        $$renderer2.push(`<!--]-->`);
+      }
+      $$renderer2.push(`<!--]--></section>`);
+    }
+    $$renderer2.push(`<!--]-->`);
+  });
+}
+
+export { _page as default };
+//# sourceMappingURL=_page.svelte.js-ryGx9f4R.js.map

@@ -1,5 +1,5 @@
 <script>
-  let { playback = null, nextJob = null, video = null, credits = null } = $props();
+  let { playback = null, nextJob = null, video = null, credits = null, embedded = false } = $props();
 
   function time(value) {
     return value ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value)) : '—';
@@ -20,9 +20,9 @@
   }
 </script>
 
-<details class="playback-diagnostics mt-5 border-y border-base-300">
-  <summary class="cursor-pointer py-4 text-xs font-semibold uppercase tracking-[0.16em] text-base-content/60">Playback diagnostics</summary>
-  <div class="grid gap-8 border-t border-base-300 py-5 text-xs lg:grid-cols-2">
+<details class="playback-diagnostics mt-5 border-y border-base-300" class:playback-diagnostics-embedded={embedded} open={embedded}>
+  <summary class="cursor-pointer py-4 text-xs font-semibold uppercase tracking-[0.16em] text-base-content/60" class:sr-only={embedded}>Playback diagnostics</summary>
+  <div class="playback-diagnostics-content grid gap-8 border-t border-base-300 py-5 text-xs lg:grid-cols-2">
     <section>
       <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Active playback</h3>
       <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2">
@@ -66,3 +66,8 @@
     </section>
   </div>
 </details>
+
+<style>
+  .playback-diagnostics-embedded { margin: 0; border: 0; }
+  .playback-diagnostics-embedded .playback-diagnostics-content { border: 0; padding: 0; }
+</style>

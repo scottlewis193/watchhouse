@@ -1,0 +1,16 @@
+function offlineMediaKey(media) {
+  if (!media || !["movie", "tv"].includes(media.type) || !Number.isInteger(Number(media.id))) return "";
+  if (media.type === "tv") {
+    if (!Number.isInteger(Number(media.season))) return `tv:${media.id}`;
+    if (!Number.isInteger(Number(media.episode))) return `tv:${media.id}:s${media.season}`;
+    return `tv:${media.id}:s${media.season}:e${media.episode}`;
+  }
+  return `movie:${media.id}`;
+}
+function offlineAvailability(item, downloads) {
+  const matches = downloads.filter((download) => download.status === "ready" && download.media?.type === item.type && Number(download.media?.id) === Number(item.id));
+  return { available: matches.length > 0, count: matches.length };
+}
+
+export { offlineAvailability as a, offlineMediaKey as o };
+//# sourceMappingURL=offline.js-BZ0Jbt3M.js.map

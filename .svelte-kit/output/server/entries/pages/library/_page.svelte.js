@@ -7,7 +7,7 @@ function _page($$renderer, $$props) {
         $$renderer4.push(`<title>Library · Watchhouse</title>`);
       });
     });
-    $$renderer2.push(`<section class="library-page"><div class="page-heading"><div><p class="page-eyebrow">Your collection</p><h1>Library</h1></div><div class="page-heading-meta"><span>${escape_html(library.length)} ${escape_html(library.length === 1 ? "title" : "titles")}</span><a href="/downloads">Manage downloads</a></div></div> `);
+    $$renderer2.push(`<section class="library-page"><div class="page-tools"><span class="page-eyebrow">${escape_html(library.length)} saved ${escape_html(library.length === 1 ? "title" : "titles")}</span><a class="btn btn-sm btn-ghost" href="/downloads">Manage downloads</a></div> `);
     {
       $$renderer2.push("<!--[-1-->");
     }

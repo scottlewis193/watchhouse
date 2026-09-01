@@ -58,7 +58,7 @@
 
 <IntroAnimation />
 
-<div class="watchhouse-shell min-h-screen bg-base-200 text-base-content">
+<div class="watchhouse-shell min-h-screen bg-base-200 text-base-content" class:watchhouse-watch={page.url.pathname.startsWith('/watch/')}>
   {#if offline}<div class="bg-warning px-4 py-2 text-center text-xs font-semibold tracking-wide text-warning-content">OFFLINE MODE · ONLY DOWNLOADED TITLES ARE AVAILABLE</div>{/if}
   <header class="app-header">
     <div class="app-header-inner mx-auto grid max-w-[90rem] items-center gap-x-8 gap-y-4 px-5 sm:px-8 lg:px-12">
@@ -75,7 +75,7 @@
       </form>
     </div>
   </header>
-  <main class="app-main mx-auto max-w-[90rem] px-5 py-10 sm:px-8 sm:py-14 lg:px-12 lg:py-16">{@render children()}</main>
+  <main class="app-main mx-auto max-w-[90rem] px-5 py-7 sm:px-8 sm:py-9 lg:px-12 lg:py-10" class:watch-main={page.url.pathname.startsWith('/watch/')}>{@render children()}</main>
   <footer class="app-footer mx-auto flex max-w-[90rem] flex-col gap-4 border-t border-base-300 px-5 py-8 text-xs text-base-content/45 sm:px-8 md:flex-row md:items-center md:justify-between lg:px-12">
     <p class="tracking-[0.18em]">WATCHHOUSE · PRIVATE SCREENING ROOM</p>
     <a class="flex items-center gap-3 hover:text-base-content/75" href="https://www.themoviedb.org" target="_blank" rel="noreferrer">

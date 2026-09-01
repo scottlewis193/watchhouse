@@ -14,7 +14,7 @@ function _page($$renderer, $$props) {
     });
     {
       $$renderer2.push("<!--[-1-->");
-      $$renderer2.push(`<section aria-label="Browse films and series" class="discover-page space-y-12"><div class="page-heading"><div><p class="page-eyebrow">Curated for your screen</p><h1>Discover</h1></div><p class="page-intro">Films and series, gathered in one quiet place.</p></div> `);
+      $$renderer2.push(`<section aria-label="Browse films and series" class="discover-page space-y-12">`);
       {
         $$renderer2.push("<!--[-1-->");
       }

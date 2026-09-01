@@ -9,14 +9,7 @@ function _page($$renderer, $$props) {
         $$renderer4.push(`<title>Downloads · Watchhouse</title>`);
       });
     });
-    $$renderer2.push(`<section class="downloads-page"><div class="page-heading"><div><p class="page-eyebrow">Offline viewing</p><h1>Downloads</h1></div><div class="page-heading-meta"><span>${escape_html(downloads.length)} saved</span>`);
-    if (activeCount()) {
-      $$renderer2.push("<!--[0-->");
-      $$renderer2.push(`<span>${escape_html(activeCount())} active</span>`);
-    } else {
-      $$renderer2.push("<!--[-1-->");
-    }
-    $$renderer2.push(`<!--]--></div></div> `);
+    $$renderer2.push(`<section class="downloads-page"><div class="page-tools"><span class="page-eyebrow">${escape_html(downloads.length)} saved${escape_html(activeCount() ? ` · ${activeCount()} active` : "")}</span><a class="btn btn-sm btn-ghost" href="/library">Open library</a></div> `);
     {
       $$renderer2.push("<!--[-1-->");
     }
