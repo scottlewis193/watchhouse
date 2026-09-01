@@ -421,7 +421,7 @@ test('normalizes browser byte ranges for cached and offline playback', () => {
   assert.equal(parseByteRange('bytes=0-1,4-5', 100), null);
 });
 
-test('polls preparation responsively and starts prepare-ahead only after playback begins', () => {
+test('polls preparation responsively and starts prepare-ahead as soon as playback begins', () => {
   assert.equal(playbackPollDelay(0), 200);
   assert.equal(playbackPollDelay(8), 500);
   assert.equal(playbackPollDelay(30), 900);
@@ -430,7 +430,7 @@ test('polls preparation responsively and starts prepare-ahead only after playbac
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'movie', manualReleaseSelection: false }), false);
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: true }), false);
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, autoPlayNextEpisode: false }), false);
-  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 12 }), false);
+  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 12 }), true);
   assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 30 }), true);
 });
 

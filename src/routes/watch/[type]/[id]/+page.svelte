@@ -199,16 +199,15 @@
   }
 
   async function prepareNextEpisode(selectedMedia, requestToken) {
-    if (nextEpisodePreparation.preparing || nextMedia || !shouldPrepareNextEpisode({ playing, mediaType: selectedMedia?.type, manualReleaseSelection, autoPlayNextEpisode, playbackMode: playback?.mode, bufferedAhead: bufferedPlaybackAhead() })) return;
+    if (nextEpisodePreparation.preparing || nextMedia || !shouldPrepareNextEpisode({ playing, mediaType: selectedMedia?.type, manualReleaseSelection, autoPlayNextEpisode })) return;
     const isCurrent = () => playbackRequests.isCurrent(requestToken) && itemKey(currentMedia) === itemKey(selectedMedia);
     const result = await nextEpisodePreparation.attempt({
       resolveCandidate: () => adjacentEpisodeMedia(selectedMedia, 1),
-      prepareCandidate: candidate => { nextMedia = candidate; return api.post('/api/play', { ...candidate, prepareAhead: true }); },
+      prepareCandidate: candidate => api.post('/api/play', { ...candidate, prepareAhead: true }),
       isCurrent
     });
     if (!isCurrent()) return;
-    if (result.status === 'prepared') { nextJob = result.job; void pollNextEpisode(result.job.id, requestToken); }
-    else if (result.status === 'error' && result.media) nextJob = { status: 'error' };
+    if (result.status === 'prepared') { nextMedia = result.media; nextJob = result.job; void pollNextEpisode(result.job.id, requestToken); }
   }
 
   async function pollNextEpisode(id, requestToken) {
@@ -392,13 +391,6 @@
     clearTimeout(interruptionTimer); showPlayerControls();
     if (!playbackSettled) settlePlaybackWarmup();
     void prepareNextEpisode(currentMedia, currentPlaybackRequestToken);
-  }
-  function bufferedPlaybackAhead() {
-    if (!player || !Number.isFinite(player.currentTime)) return 0;
-    for (let index = 0; index < player.buffered.length; index++) {
-      if (player.buffered.start(index) <= player.currentTime + 0.1 && player.buffered.end(index) >= player.currentTime) return Math.max(0, player.buffered.end(index) - player.currentTime);
-    }
-    return 0;
   }
   function handleStartupBuffering() {
     captureVideoDiagnostics('buffering');

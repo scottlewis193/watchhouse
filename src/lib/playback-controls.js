@@ -164,9 +164,9 @@ export function createNextEpisodePreparationController() {
   };
 }
 
-export function shouldPrepareNextEpisode({ playing, mediaType, manualReleaseSelection, autoPlayNextEpisode = true, playbackMode, bufferedAhead = 0 }, minimumBuffer = 30) {
+export function shouldPrepareNextEpisode({ playing, mediaType, manualReleaseSelection, autoPlayNextEpisode = true }) {
   if (!playing || mediaType !== 'tv' || manualReleaseSelection || !autoPlayNextEpisode) return false;
-  return playbackMode !== 'direct' || bufferedAhead >= minimumBuffer;
+  return true;
 }
 
 export function createPlaybackRequestGuard() {
