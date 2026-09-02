@@ -531,6 +531,24 @@ function creditFrameFixture({ background = [0, 0, 0], foreground = [245, 245, 24
   return { pixels, width, height };
 }
 
+function darkSceneFixture() {
+  const width = 160, height = 90, pixels = new Uint8ClampedArray(width * height * 4);
+  const paint = (x, y, color) => {
+    const offset = (y * width + x) * 4;
+    pixels[offset] = color[0]; pixels[offset + 1] = color[1]; pixels[offset + 2] = color[2]; pixels[offset + 3] = 255;
+  };
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) paint(x, y, [14 + Math.floor(y / 12), 18 + Math.floor(y / 10), 28 + Math.floor(y / 8)]);
+  }
+  for (let y = 18; y < 70; y++) {
+    for (let x = 50; x < 110; x++) {
+      const windowFrame = x === 79 || x === 80 || y === 43 || y === 44;
+      paint(x, y, windowFrame ? [20, 24, 32] : [190, 178, 142]);
+    }
+  }
+  return { pixels, width, height };
+}
+
 test('recognises varied credit designs without treating blank, subtitle, or detailed frames as credits', () => {
   assert.equal(shouldSampleForCredits(2_500, 3_000), true);
   assert.equal(shouldSampleForCredits(1_000, 3_000), false);
@@ -542,6 +560,7 @@ test('recognises varied credit designs without treating blank, subtitle, or deta
     ['text over imagery', creditFrameFixture({ gradient: true }), true],
     ['blank fade', creditFrameFixture({ rows: 0 }), false],
     ['subtitle only', creditFrameFixture({ rows: 1, placement: 'bottom' }), false],
+    ['dark scene with a lit window', darkSceneFixture(), false],
     ['high-detail scene', creditFrameFixture({ checker: true }), false]
   ];
   for (const [name, frame, expected] of cases) {

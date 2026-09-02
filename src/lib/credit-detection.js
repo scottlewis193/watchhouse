@@ -62,6 +62,35 @@ function regionMetrics(luminance, width, height, left, top, right, bottom) {
   };
 }
 
+function compactComponentFraction(luminance, width, height, matches) {
+  const visited = new Uint8Array(luminance.length);
+  const stack = new Int32Array(luminance.length);
+  const maximumCompactSize = Math.max(12, Math.floor(luminance.length * 0.02));
+  let matchingPixels = 0, compactPixels = 0;
+
+  for (let start = 0; start < luminance.length; start++) {
+    if (visited[start] || !matches(luminance[start])) continue;
+    let stackSize = 1, componentSize = 0;
+    stack[0] = start;
+    visited[start] = 1;
+    while (stackSize) {
+      const pixel = stack[--stackSize], x = pixel % width, y = Math.floor(pixel / width);
+      componentSize++;
+      const neighbours = [x > 0 ? pixel - 1 : -1, x + 1 < width ? pixel + 1 : -1, y > 0 ? pixel - width : -1, y + 1 < height ? pixel + width : -1];
+      for (const neighbour of neighbours) {
+        if (neighbour >= 0 && !visited[neighbour] && matches(luminance[neighbour])) {
+          visited[neighbour] = 1;
+          stack[stackSize++] = neighbour;
+        }
+      }
+    }
+    matchingPixels += componentSize;
+    if (componentSize <= maximumCompactSize) compactPixels += componentSize;
+  }
+
+  return matchingPixels ? compactPixels / matchingPixels : 0;
+}
+
 export function analyzeCreditFrame(pixels, width, height) {
   if (!pixels || !Number.isInteger(width) || !Number.isInteger(height) || width < 8 || height < 8 || pixels.length < width * height * 4) {
     return { likely: false, confidence: 0, profile: 'invalid', metrics: null };
@@ -82,12 +111,15 @@ export function analyzeCreditFrame(pixels, width, height) {
     Math.ceil(width * 0.75),
     Math.ceil(height * 0.75)
   );
+  const compactBrightFraction = compactComponentFraction(luminance, width, height, value => value > 170);
+  const compactDarkFraction = compactComponentFraction(luminance, width, height, value => value < 65);
   const edgeConcentration = center.softEdgeDensity / Math.max(whole.softEdgeDensity, 0.0001);
   const profiles = [
     {
       name: 'dark', confidence: 1,
       matches: whole.darkFraction >= 0.68 && whole.brightFraction >= 0.008 && whole.brightFraction <= 0.28
         && whole.edgeDensity >= 0.008 && whole.edgeDensity <= 0.28 && center.edgeDensity >= 0.003
+        && compactBrightFraction >= 0.5
     },
     {
       name: 'sparse-centered', confidence: 1,
@@ -99,6 +131,7 @@ export function analyzeCreditFrame(pixels, width, height) {
       name: 'light', confidence: 0.95,
       matches: whole.brightFraction >= 0.68 && whole.darkFraction >= 0.008 && whole.darkFraction <= 0.28
         && whole.edgeDensity >= 0.008 && whole.edgeDensity <= 0.28 && center.edgeDensity >= 0.003
+        && compactDarkFraction >= 0.5
     },
     {
       name: 'uniform-color', confidence: 0.9,
@@ -124,7 +157,9 @@ export function analyzeCreditFrame(pixels, width, height) {
     centerActiveRowFraction: center.activeRowFraction,
     centerDominantFraction: center.dominantFraction,
     centerContrast: center.contrast,
-    edgeConcentration
+    edgeConcentration,
+    compactBrightFraction,
+    compactDarkFraction
   };
   return {
     likely: Boolean(match),
