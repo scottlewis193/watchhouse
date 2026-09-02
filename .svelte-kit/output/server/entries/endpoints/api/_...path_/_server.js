@@ -144,6 +144,46 @@ function playbackStrategy(subject, releaseTitle = "") {
   if (extension === "mkv" && /h[ .]?264|x264|avc/.test(description)) return "remux";
   return "transcode";
 }
+class DownloadCancelledError extends Error {
+  constructor() {
+    super("Download cancelled.");
+    this.name = "DownloadCancelledError";
+    this.code = "DOWNLOAD_CANCELLED";
+  }
+}
+function handlers(job) {
+  if (!job.cancelHandlers) Object.defineProperty(job, "cancelHandlers", { value: /* @__PURE__ */ new Set(), configurable: true });
+  return job.cancelHandlers;
+}
+function onDownloadCancel(job, release) {
+  if (job.cancelled) {
+    release();
+    return () => {
+    };
+  }
+  handlers(job).add(release);
+  return () => job.cancelHandlers?.delete(release);
+}
+function cancelDownloadJob(job) {
+  if (!job || job.cancelled || ["ready", "error", "cancelled"].includes(job.status)) return false;
+  job.cancelled = true;
+  job.status = "cancelling";
+  job.message = "Cancelling download…";
+  for (const release of [...handlers(job)]) {
+    try {
+      release();
+    } catch {
+    }
+  }
+  job.cancelHandlers.clear();
+  return true;
+}
+function throwIfDownloadCancelled(job) {
+  if (job?.cancelled) throw new DownloadCancelledError();
+}
+function isDownloadCancelled(job, error) {
+  return Boolean(job?.cancelled || error?.code === "DOWNLOAD_CANCELLED");
+}
 const EMPTY_STATE = { version: 1, library: {}, progress: {} };
 function mediaKey(media) {
   const base = `${media.type}:${media.id}`;
@@ -629,13 +669,30 @@ function archiveFilenames(archives) {
     return part ? `${base}.part${String(Number(part[1])).padStart(2, "0")}.rar` : name;
   });
 }
-function run(command, args, cwd) {
+function run(command, args, cwd, job) {
   return new Promise((resolve, reject) => {
+    throwIfDownloadCancelled(job);
     const child = spawn(command, args, { cwd });
-    let stderr = "";
+    let stderr = "", settled = false;
+    const removeCancelHandler = job ? onDownloadCancel(job, () => child.kill("SIGTERM")) : () => {
+    };
+    const finish = (callback) => (value) => {
+      if (settled) return;
+      settled = true;
+      removeCancelHandler();
+      callback(value);
+    };
     child.stderr.on("data", (data) => stderr += data);
-    child.on("error", reject);
-    child.on("close", (code) => code === 0 ? resolve() : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`)));
+    child.on("error", finish(reject));
+    child.on("close", finish((code) => {
+      try {
+        throwIfDownloadCancelled(job);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      code === 0 ? resolve() : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`));
+    }));
   });
 }
 function runOutput(command, args, cwd) {
@@ -754,7 +811,7 @@ async function optimizeCachedVideo(job, path) {
   if (strategy === "raw") return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration };
   if (shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
-    await run("ffmpeg", ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration), job.directory || ROOT);
+    await run("ffmpeg", ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration), job.directory || ROOT, job);
     return { path: browserPath, mime: "video/mp4", strategy: "raw", videoAcceleration: job.videoAcceleration };
   }
   return { sourcePath: path, mime: "video/mp4", mode: "cached-convert", strategy, videoAcceleration: job.videoAcceleration };
@@ -928,12 +985,12 @@ async function streamCachedConversion(req, res, job, settings, start = 0) {
 function firstArchive(archives) {
   return archives.find((item) => /\.part0*1\.rar/i.test(item.subject)) || archives.find((item) => /\.rar/i.test(item.subject)) || archives.find((item) => /\.(?:7z|zip)\.0*1/i.test(item.subject)) || archives.find((item) => /\.(?:7z|zip)/i.test(item.subject));
 }
-async function extractPostedArchive(directory, archives, names = archiveFilenames(archives)) {
+async function extractPostedArchive(directory, archives, names = archiveFilenames(archives), job) {
   const first = firstArchive(archives);
   if (!first) throw new Error("No supported archive entry point was found.");
   const name = names[archives.indexOf(first)];
-  if (/\.(?:rar|r\d\d)$/i.test(name)) await run("unrar", ["x", "-o+", "-idq", name], directory);
-  else await run("7z", ["x", "-y", name, `-o${directory}`], directory);
+  if (/\.(?:rar|r\d\d)$/i.test(name)) await run("unrar", ["x", "-o+", "-idq", name], directory, job);
+  else await run("7z", ["x", "-y", name, `-o${directory}`], directory, job);
 }
 async function tmdbRequest(settings, path, params = {}) {
   if (!settings.tmdbToken) throw new Error("Add a TMDB read access token in settings before browsing.");
@@ -1127,6 +1184,7 @@ async function mergeParts(parts, target, count) {
   }
 }
 async function writePostedFile(posted, path, settings, job, state, maximum) {
+  throwIfDownloadCancelled(job);
   if (existsSync(path)) return;
   const parts = `${path}.parts`;
   await mkdir(parts, { recursive: true });
@@ -1142,20 +1200,25 @@ async function writePostedFile(posted, path, settings, job, state, maximum) {
   }
   updateDownload(job, state, maximum);
   const workers = Array.from({ length: Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, queue.length) }, async () => {
+    throwIfDownloadCancelled(job);
     const client = await connectNntp(settings);
+    const removeCancelHandler = onDownloadCancel(job, () => client.close());
     try {
       while (queue.length) {
+        throwIfDownloadCancelled(job);
         const next = queue.shift();
         if (!next) return;
         const pending = `${next.part}.pending`, writer = createWriteStream(pending);
         let bytes = 0;
         try {
           await client.body(next.segment.id, async (line) => {
+            throwIfDownloadCancelled(job);
             if (line.startsWith("=y")) return;
             const chunk = decodeYenc(line);
             bytes += chunk.length;
             if (!writer.write(chunk)) await once(writer, "drain");
           });
+          throwIfDownloadCancelled(job);
           writer.end();
           await once(writer, "finish");
           await rename(pending, next.part);
@@ -1169,11 +1232,14 @@ async function writePostedFile(posted, path, settings, job, state, maximum) {
         }
       }
     } finally {
+      removeCancelHandler();
       client.close();
     }
   });
   await Promise.all(workers);
+  throwIfDownloadCancelled(job);
   await mergeParts(parts, path, posted.segments.length);
+  throwIfDownloadCancelled(job);
   await rm(parts, { recursive: true, force: true });
 }
 async function cacheDirect(job, settings) {
@@ -1184,8 +1250,10 @@ async function cacheDirect(job, settings) {
   try {
     const path = join(directory, filename(job.file.subject, "video")), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() };
     await writePostedFile(job.file, path, preparationDownloadSettings(job, settings), job, state, 90);
+    throwIfDownloadCancelled(job);
     setJob(job, "optimizing", job.prepareAhead ? "Download complete. Preparing a browser-ready copy…" : "Download complete. Checking browser compatibility…", 95);
     const optimized = await optimizeCachedVideo(job, path);
+    throwIfDownloadCancelled(job);
     Object.assign(job, { status: "ready", message: job.prepareAhead ? "Next episode is ready to play." : optimized.mode === "cached-convert" ? "Video prepared. Opening the browser stream…" : "Video prepared. Opening playback…", progress: 100, mode: "cached", ...optimized });
     jobEvent(job, "ready", job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
   } catch (error) {
@@ -1204,12 +1272,15 @@ async function prepareArchive(job, settings, archives) {
   try {
     const downloadSettings = preparationDownloadSettings(job, settings);
     for (let index = 0; index < archives.length; index++) await writePostedFile(archives[index], join(directory, names[index]), downloadSettings, job, state, 85);
+    throwIfDownloadCancelled(job);
     setJob(job, "extracting", "Download complete. Extracting the video…", 90);
-    await extractPostedArchive(directory, archives, names);
+    await extractPostedArchive(directory, archives, names, job);
+    throwIfDownloadCancelled(job);
     const extracted = await extractedVideo(directory);
     if (!extracted) throw new Error("The archive did not contain a supported video file.");
     setJob(job, "optimizing", job.prepareAhead ? "Video extracted. Preparing a browser-ready copy…" : "Video extracted. Checking browser compatibility…", 95);
     const optimized = await optimizeCachedVideo(job, join(directory, extracted));
+    throwIfDownloadCancelled(job);
     Object.assign(job, { status: "ready", message: job.prepareAhead ? "Next episode is ready to play." : optimized.mode === "cached-convert" ? "Video prepared. Opening the browser stream…" : "Video prepared. Opening playback…", progress: 100, mode: "cached", ...optimized });
     jobEvent(job, "ready", job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
   } catch (error) {
@@ -1220,6 +1291,7 @@ async function prepareArchive(job, settings, archives) {
 }
 async function preparePlayback(job, settings) {
   try {
+    throwIfDownloadCancelled(job);
     if (!job.manualRelease) {
       const plan = playbackPlans.get(job.media, settings.playbackQuality);
       if (plan) {
@@ -1236,11 +1308,13 @@ async function preparePlayback(job, settings) {
     const archiveChoices = [];
     let obfuscatedProbes = 0;
     for (let i = 0; i < Math.min(releases.length, 10); i++) {
+      throwIfDownloadCancelled(job);
       const release = releases[i];
       setJob(job, "selecting", `Checking release ${i + 1} of ${Math.min(releases.length, 10)}…`, 5 + i * 4);
       jobEvent(job, "release-check", release.title, { candidate: i + 1 });
       try {
         const nzb = await loadNzb(release, settings);
+        throwIfDownloadCancelled(job);
         let direct = videoFile(nzb), archives = archiveFiles(nzb);
         if (!direct && !archives.length && obfuscatedProbes < 2) {
           obfuscatedProbes++;
@@ -1271,6 +1345,7 @@ async function preparePlayback(job, settings) {
           jobEvent(job, "archive-candidate", "Release requires download and extraction.", { release: release.title });
         } else jobEvent(job, "release-rejected", "No supported video or archive was found.", { release: release.title });
       } catch (error) {
+        if (isDownloadCancelled(job, error)) throw error;
         jobEvent(job, "release-rejected", error.message || "Release inspection failed.", { release: release.title });
       }
     }
@@ -1278,11 +1353,13 @@ async function preparePlayback(job, settings) {
     let lastError;
     for (const choice of archiveChoices) {
       try {
+        throwIfDownloadCancelled(job);
         job.release = choice.release;
         job.archives = choice.archives;
         await prepareArchive(job, settings, choice.archives);
         return;
       } catch (error) {
+        if (isDownloadCancelled(job, error)) throw error;
         lastError = error;
         jobEvent(job, "release-rejected", error.message || "Archive preparation failed.", { release: choice.release });
         setJob(job, "selecting", "That release failed. Trying another…", 5);
@@ -1290,6 +1367,11 @@ async function preparePlayback(job, settings) {
     }
     throw lastError || new Error("No release could be prepared.");
   } catch (error) {
+    if (isDownloadCancelled(job, error)) {
+      job.status = "cancelled";
+      job.message = "Download cancelled.";
+      return;
+    }
     setJob(job, "error", error.message || "Playback preparation failed.", 0);
   }
 }
@@ -1301,15 +1383,24 @@ async function startOfflineMediaDownload(media, settings) {
   if (existing) return existing;
   for (const [jobId, previous] of offlineJobs) if (previous.offlineKey === key && previous.status === "error") offlineJobs.delete(jobId);
   const id = randomUUID(), directory = join(OFFLINE_ROOT, id);
-  const job = { id, offlineKey: key, offlineDownload: true, directory, media: { ...media }, status: "selecting", message: "Queued for offline download…", progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), events: [] };
+  const job = { id, offlineKey: key, offlineDownload: true, directory, rootDirectory: directory, media: { ...media }, status: "selecting", message: "Queued for offline download…", progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), events: [] };
   offlineJobs.set(id, job);
   job.completion = (async () => {
-    await preparePlayback(job, settings);
-    if (job.status === "ready") {
-      records.set(key, { key, media: job.media, status: "ready", mode: job.mode, path: job.path, sourcePath: job.sourcePath, directory: job.directory, mime: job.mime, strategy: job.strategy, release: job.release || "", downloadedAt: Date.now() });
-      await writeOfflineRecords();
+    try {
+      await preparePlayback(job, settings);
+      if (job.status === "ready" && !job.cancelled) {
+        records.set(key, { key, media: job.media, status: "ready", mode: job.mode, path: job.path, sourcePath: job.sourcePath, directory: job.directory, mime: job.mime, strategy: job.strategy, release: job.release || "", downloadedAt: Date.now() });
+        await writeOfflineRecords();
+      }
+      return job;
+    } finally {
+      if (job.cancelled) {
+        job.status = "cancelled";
+        job.message = "Download cancelled.";
+        await rm(job.rootDirectory, { recursive: true, force: true });
+        offlineJobs.delete(job.id);
+      }
     }
-    return job;
   })();
   return job;
 }
@@ -1321,29 +1412,35 @@ async function startSeriesDownload(media, settings) {
   for (const [jobId, previous] of offlineSeriesJobs) if (previous.offlineKey === batchKey && previous.status === "error") offlineSeriesJobs.delete(jobId);
   const job = { id: randomUUID(), offlineKey: batchKey, media: { ...media, ...requestedSeason ? { season: requestedSeason } : {} }, status: "selecting", message: requestedSeason ? `Loading season ${requestedSeason} episodes…` : "Loading series episodes…", progress: 0, created: Date.now(), completed: 0, total: 0 };
   offlineSeriesJobs.set(job.id, job);
-  void (async () => {
+  job.completion = (async () => {
     try {
+      throwIfDownloadCancelled(job);
       const items = [];
       const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
       const seasons = await catalogueSeasons(settings, media.id);
       for (const season of seasons.filter((item) => requestedSeason === null || item.number === requestedSeason)) {
+        throwIfDownloadCancelled(job);
         for (const episode of await catalogueEpisodes(settings, media.id, season.number)) if (!episode.airDate || episode.airDate <= today) items.push({ ...media, season: season.number, episode: episode.number, episodeTitle: episode.name, ...episode.runtime ? { durationHint: episode.runtime * 60 } : {} });
       }
       job.total = items.length;
       if (!items.length) throw new Error("No episodes were found for this series.");
       let failures = 0, lastFailure = "";
       for (const item of items) {
+        throwIfDownloadCancelled(job);
         job.currentMedia = item;
         job.status = "downloading";
         job.message = `Downloading S${String(item.season).padStart(2, "0")}E${String(item.episode).padStart(2, "0")} · ${job.completed + 1}/${job.total}`;
         const child = await startOfflineMediaDownload(item, settings);
+        job.currentJobId = child?.id || null;
         if (child) {
           await child.completion;
+          throwIfDownloadCancelled(job);
           if (child.status === "error") {
             failures++;
             lastFailure = `${item.episodeTitle || `Episode ${item.episode}`}: ${child.message}`;
           }
         }
+        job.currentJobId = null;
         job.completed++;
         job.progress = Math.round(job.completed / job.total * 100);
       }
@@ -1351,9 +1448,19 @@ async function startSeriesDownload(media, settings) {
       job.status = failures ? "error" : "ready";
       job.message = failures ? `${job.total - failures} episodes downloaded; ${failures} failed. ${lastFailure}` : `${job.total} episodes available offline.`;
     } catch (error) {
-      job.status = "error";
-      job.message = error.message || "Series download failed.";
+      if (isDownloadCancelled(job, error)) {
+        job.status = "cancelled";
+        job.message = "Series download cancelled.";
+      } else {
+        job.status = "error";
+        job.message = error.message || "Series download failed.";
+      }
+    } finally {
+      job.currentMedia = null;
+      job.currentJobId = null;
+      if (job.cancelled) offlineSeriesJobs.delete(job.id);
     }
+    return job;
   })();
   return job;
 }
@@ -1444,6 +1551,18 @@ async function handleRequest(req, res) {
       const wholeSeries = media.type === "tv" && (!Number.isInteger(Number(media.season)) || !Number.isInteger(Number(media.episode)));
       const job = wholeSeries ? await startSeriesDownload(media, settings) : await startOfflineMediaDownload({ ...media, id: Number(media.id), season: media.season ? Number(media.season) : void 0, episode: media.episode ? Number(media.episode) : void 0 }, settings);
       if (!job) return json(res, 200, { alreadyDownloaded: true });
+      return json(res, 202, publicOfflineJob(job));
+    }
+    const offlineJobCancelMatch = url.pathname.match(/^\/api\/offline\/job\/([\w-]+)$/);
+    if (req.method === "DELETE" && offlineJobCancelMatch) {
+      const id = offlineJobCancelMatch[1];
+      const job = offlineSeriesJobs.get(id) || offlineJobs.get(id);
+      if (!job) return json(res, 404, { error: "Active download not found." });
+      if (!cancelDownloadJob(job)) return json(res, 409, { error: "This download can no longer be cancelled." });
+      if (job.currentJobId) {
+        const child = offlineJobs.get(job.currentJobId);
+        if (child) cancelDownloadJob(child);
+      }
       return json(res, 202, publicOfflineJob(job));
     }
     const offlineDeleteMatch = url.pathname.match(/^\/api\/offline\/(movie|tv)\/(\d+)$/);

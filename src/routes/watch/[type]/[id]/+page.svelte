@@ -3,7 +3,8 @@
   import { goto, replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
+  import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
+  import { analyzeCreditFrame, updateCreditEvidence } from '$lib/credit-detection.js';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
@@ -18,10 +19,11 @@
   let currentMedia = $state(null), nextMedia = $state(null), nextJob = $state(null), showUpNext = $state(false), autoPlayNextEpisode = $state(true), autoPlayNext = $state(true), smartAutoplay = $state(false), upNextSeconds = $state(30), upNextReason = $state('');
   let library = $state([]), progressEntries = $state([]);
   let offlineMode = $state(false), offlineDownloads = $state([]), offlineJobs = $state([]), downloadError = $state('');
-  let resumeStreamOffset = $state(0), resumeStarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
+  let resumeStreamOffset = $state(0), resumeStarting = $state(false), streamRestarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
   let videoDiagnostics = $state(null), creditDiagnostics = $state(null);
-  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, playerRevealTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
+  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, playerRevealTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, creditSampleCount = 0, creditEvidence = [], lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
+  let playbackUi = $derived(playbackPresentation({ ready: playback?.status === 'ready', warming: resumeStarting, restarting: streamRestarting, revealing: playerRevealing }));
   const playbackRequests = createPlaybackRequestGuard();
   const nextEpisodePreparation = createNextEpisodePreparationController();
 
@@ -131,7 +133,7 @@
     currentPlaybackRequestToken = requestToken;
     try {
       void savePlaybackProgress(true);
-      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; nextEpisodePreparation.reset(); continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
+      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; nextEpisodePreparation.reset(); continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; creditSampleCount = 0; creditEvidence = []; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
       if (selectedMedia.type === 'tv') {
         selectedSeason = String(selectedMedia.season);
         selectedEpisode = String(selectedMedia.episode);
@@ -140,7 +142,7 @@
       }
       currentMedia = selectedMedia;
       clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer);
-      restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; resumeStreamOffset = 0; resumeStarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; playerPosition = 0; playerDuration = 0; seekPreview = null;
+      restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; resumeStreamOffset = 0; resumeStarting = false; streamRestarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; playerPosition = 0; playerDuration = 0; seekPreview = null;
       clearTimeout(interruptionTimer); showPlayerControls();
       playback = preparedJob || { status: 'selecting', message: 'Finding the best available release…', progress: 3 };
       const job = preparedJob || await api.post('/api/play', selectedMedia);
@@ -368,13 +370,16 @@
   function currentPlaybackPosition() { return Math.max(0, Number(player?.currentTime) || 0) + (hasGrowingStreamDuration(playback?.mode) ? resumeStreamOffset : 0); }
   function playbackStreamUrl() { return resumeStreamUrl(playback?.streamUrl, playback?.mode, resumeStreamOffset); }
 
-  function beginPlaybackWarmup() {
+  function beginPlaybackWarmup(restarting = false) {
     clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(playerRevealTimer);
-    playbackSettled = false; resumeStarting = true; playerRevealing = false; playbackNeedsAction = false; playbackRecovery = null;
+    playbackSettled = false; resumeStarting = true; streamRestarting = restarting; playerRevealing = false; playbackNeedsAction = false; playbackRecovery = null;
   }
   function settlePlaybackWarmup() {
     clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer);
-    playbackSettled = true; playerRevealing = true; resumeStarting = false;
+    const restartedStream = streamRestarting;
+    playbackSettled = true; resumeStarting = false; streamRestarting = false;
+    if (restartedStream) { playerRevealing = false; return; }
+    playerRevealing = true;
     clearTimeout(playerRevealTimer);
     playerRevealTimer = setTimeout(() => { playerRevealing = false; }, 700);
   }
@@ -471,7 +476,7 @@
     void startPlayback(selectedMedia, job, false, true);
   }
   function sampleForEndCredits(timeline) {
-    const detectionInput = () => ({ enabled: smartAutoplay, autoPlayNext, playing, hasNextEpisode: Boolean(nextMedia), position: timeline.position, duration: timeline.duration, sample: lastCreditSample, consecutiveMatches: likelyCreditFrames, detected: showUpNext && upNextReason === 'End credits detected', error: creditSamplingError });
+    const detectionInput = () => ({ enabled: smartAutoplay, autoPlayNext, playing, hasNextEpisode: Boolean(nextMedia), position: timeline.position, duration: timeline.duration, sample: lastCreditSample, consecutiveMatches: likelyCreditFrames, sampleCount: creditSampleCount, detected: showUpNext && upNextReason === 'End credits detected', error: creditSamplingError });
     creditDiagnostics = creditDetectionStatus(detectionInput());
     if (!creditDiagnostics.eligible || showUpNext) return;
     const now = performance.now();
@@ -488,25 +493,18 @@
       creditCanvas.width = width; creditCanvas.height = height;
       context.drawImage(player, 0, 0, width, height);
       const pixels = context.getImageData(0, 0, width, height).data;
-      let dark = 0, bright = 0, edges = 0;
-      for (let pixel = 0; pixel < width * height; pixel++) {
-        const offset = pixel * 4, luminance = (pixels[offset] * 3 + pixels[offset + 1] * 6 + pixels[offset + 2]) / 10;
-        if (luminance < 65) dark++;
-        if (luminance > 170) bright++;
-        if (pixel % width) {
-          const previous = offset - 4, previousLuminance = (pixels[previous] * 3 + pixels[previous + 1] * 6 + pixels[previous + 2]) / 10;
-          if (Math.abs(luminance - previousLuminance) > 55) edges++;
-        }
-      }
-      const total = width * height;
-      const metrics = { darkFraction: dark / total, brightFraction: bright / total, edgeDensity: edges / total };
-      lastCreditSample = { ...metrics, likely: creditFrameLooksLikely(metrics), at: Date.now() };
+      const analysis = analyzeCreditFrame(pixels, width, height);
+      const sampledAt = Date.now();
+      lastCreditSample = { ...analysis.metrics, likely: analysis.likely, confidence: analysis.confidence, profile: analysis.profile, at: sampledAt };
       creditSamplingError = '';
-      likelyCreditFrames = lastCreditSample.likely ? likelyCreditFrames + 1 : 0;
-      if (likelyCreditFrames >= 2) beginUpNextCountdown('End credits detected');
+      const evidence = updateCreditEvidence(creditEvidence, analysis, sampledAt);
+      creditEvidence = evidence.samples;
+      likelyCreditFrames = evidence.matches;
+      creditSampleCount = evidence.sampleCount;
+      if (evidence.detected) beginUpNextCountdown('End credits detected');
       creditDiagnostics = creditDetectionStatus(detectionInput());
     } catch (error) {
-      likelyCreditFrames = 0;
+      likelyCreditFrames = 0; creditSampleCount = 0; creditEvidence = [];
       creditSamplingError = error?.message || 'Video frame sampling failed';
       creditDiagnostics = creditDetectionStatus(detectionInput());
     }
@@ -575,7 +573,7 @@
       resumeStreamOffset = target;
       playerPosition = 0;
       videoFrameSample = null; measuredVideoFps = null;
-      beginPlaybackWarmup();
+      beginPlaybackWarmup(true);
       setTimeout(() => player?.play().catch(() => {}), 0);
     } else player.currentTime = target;
   }
@@ -596,7 +594,7 @@
     clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer);
     nextEpisodePreparation.reset();
     clearTimeout(playerRevealTimer); playerRevealing = false;
-    playback = null; nextMedia = null; nextJob = null; showUpNext = false; playing = false; controlsVisible = true; guideOpen = false; diagnosticsOpen = false; playbackNeedsAction = false; playbackRecovery = null; resumeStarting = false; continuePlaybackOnReady = false; videoDiagnostics = null; creditDiagnostics = null;
+    playback = null; nextMedia = null; nextJob = null; showUpNext = false; playing = false; controlsVisible = true; guideOpen = false; diagnosticsOpen = false; playbackNeedsAction = false; playbackRecovery = null; resumeStarting = false; streamRestarting = false; continuePlaybackOnReady = false; videoDiagnostics = null; creditDiagnostics = null;
     const heroUrl = new URL(page.url);
     heroUrl.searchParams.delete('play');
     heroUrl.searchParams.delete('resume');
@@ -681,14 +679,14 @@
 {/snippet}
 
 <section class="watch-page">
-  <div class="watch-hero" class:watch-hero-playing={playback?.status === 'ready' && !resumeStarting} class:watch-hero-revealing={playerRevealing} style={`--watch-artwork: url("${titleDetails.backdrop || media.poster || ''}")`}>
+  <div class="watch-hero" class:watch-hero-playing={playbackUi.inPlayer} class:watch-hero-revealing={playerRevealing} style={`--watch-artwork: url("${titleDetails.backdrop || media.poster || ''}")`}>
     <div class="watch-hero-art" aria-hidden="true"></div>
     <div class="watch-hero-shade" aria-hidden="true"></div>
-    {@render watchToolbar(playback?.status === 'ready' && !resumeStarting)}
+    {@render watchToolbar(playbackUi.inPlayer)}
 
     {#if downloadError || bulkError}<div class="watch-hero-alerts">{#if downloadError}<div class="alert alert-error"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}{#if bulkError}<div class="alert alert-error"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}</div>{/if}
 
-    {#if playback?.status !== 'ready' || resumeStarting || playerRevealing}
+    {#if playbackUi.showIdentity}
       <div class="watch-identity" class:watch-identity-departing={playerRevealing}>
         <p class="page-eyebrow text-white/55">{media.type === 'tv' ? 'Series' : 'Film'}{media.year ? ` · ${media.year}` : ''}{#if media.type === 'tv' && selectedSeason && selectedEpisode} · S{String(selectedSeason).padStart(2, '0')}E{String(selectedEpisode).padStart(2, '0')}{/if}</p>
         <h1>{media.title || 'Watch'}</h1>
@@ -704,9 +702,9 @@
       </div>
     {/if}
     {#if playback?.status === 'ready'}
-      <div class="watch-stage" class:watch-stage-warming={resumeStarting} class:watch-stage-revealing={playerRevealing}>
+      <div class="watch-stage" class:watch-stage-warming={playbackUi.warming} class:watch-stage-revealing={playerRevealing}>
       {#if currentMedia}
-        <div class="player-shell cinema-player group/player relative aspect-video overflow-hidden bg-black" class:player-shell-warming={resumeStarting} bind:this={playerShell} role="group" aria-label="Video player" onpointermove={showPlayerControls} onpointerleave={schedulePlayerControlsHide} onfocusin={showPlayerControls} onfocusout={schedulePlayerControlsHide}>
+        <div class="player-shell cinema-player group/player relative aspect-video overflow-hidden bg-black" class:player-shell-warming={playbackUi.warming} bind:this={playerShell} role="group" aria-label="Video player" onpointermove={showPlayerControls} onpointerleave={schedulePlayerControlsHide} onfocusin={showPlayerControls} onfocusout={schedulePlayerControlsHide}>
           {#if playbackDiagnostics && diagnosticsOpen}
             <aside id="player-diagnostics" class="player-diagnostics-panel" aria-label="Playback diagnostics">
               <div class="player-diagnostics-header"><div><p class="player-eyebrow">Live technical data</p><h2>Playback diagnostics</h2></div><button class="player-diagnostics-close" onclick={() => { diagnosticsOpen = false; }} aria-label="Close playback diagnostics">×</button></div>
@@ -717,8 +715,13 @@
             {@const timeline = controlTimeline()}
             {#key streamAttempt}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={resumeStarting} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={resumeStarting ? -1 : 0} aria-hidden={resumeStarting} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); offerPlaybackRecovery('The direct stream encountered a playback error.'); }} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
+              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" src={playbackStreamUrl()} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); offerPlaybackRecovery('The direct stream encountered a playback error.'); }} onloadedmetadata={() => { restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
             {/key}
+            {#if playbackUi.showSeekStatus}
+              <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/30 text-white" role="status">
+                <div class="flex items-center gap-3 rounded-full border border-white/15 bg-black/70 px-5 py-3 text-sm shadow-2xl backdrop-blur-md"><span class="loading loading-spinner loading-sm"></span><span>Seeking to {formatPosition(resumeStreamOffset)}…</span></div>
+              </div>
+            {/if}
             {#if playbackRecovery}
               <div class="player-modal absolute inset-0 z-30 text-white">
                 <div class="player-modal-panel player-modal-panel-alert"><p class="player-eyebrow">Stream interrupted</p><h2>How would you like to continue?</h2><p>{playbackRecovery.message}</p><div class="player-modal-actions"><button class="player-popup-button player-popup-button-primary" onclick={retryDirectStream}>Retry stream</button><button class="player-popup-button" onclick={() => void fallback()}>Download &amp; resume</button></div></div>
@@ -727,11 +730,11 @@
               <div class="player-modal absolute inset-0 z-30 text-white">
                 <div class="player-modal-panel"><p class="player-eyebrow">Stream ready</p><h2>{currentMedia?.episodeTitle || media.title}</h2><p>The player is prepared and waiting for you.</p><div class="player-modal-actions"><button class="player-popup-button player-popup-button-primary" onclick={() => void playPreparedVideo()}><span aria-hidden="true">▶</span> Start watching</button></div></div>
               </div>
-            {:else if resumeStarting}
+            {:else if !playbackUi.showControls}
               <div class="absolute inset-0" aria-hidden="true"></div>
             {:else}<div class="player-controls absolute inset-x-0 bottom-0 px-3 pb-3 pt-12 text-white transition-opacity duration-200 sm:px-5 sm:pb-5" class:pointer-events-none={!controlsVisible} class:opacity-0={!controlsVisible}>
             <label class="sr-only" for="playback-position">Playback position</label>
-            <input id="playback-position" class="range range-primary range-xs block w-full" type="range" min="0" max={timeline.duration || 0} step="0.1" value={timeline.position} disabled={!timeline.duration} oninput={previewSeek} onchange={commitSeek} aria-valuetext={`${formatPosition(timeline.position)} of ${formatPosition(timeline.duration)}`} />
+            <input id="playback-position" class="range range-primary range-xs block w-full focus:outline-none focus-visible:outline-none focus-visible:ring-0" type="range" min="0" max={timeline.duration || 0} step="0.1" value={timeline.position} disabled={!timeline.duration} oninput={previewSeek} onchange={commitSeek} aria-valuetext={`${formatPosition(timeline.position)} of ${formatPosition(timeline.duration)}`} />
             <div class="mt-3 flex items-center gap-2 sm:gap-3">
               {#if media.type === 'tv'}<button class="player-control grid size-9 place-items-center transition focus-visible:outline-2 focus-visible:outline-white disabled:opacity-35" onclick={() => void playAdjacentEpisode(-1)} disabled={!canNavigateEpisode(-1)} aria-label="Previous episode"><svg class="size-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M4 4h2v12H4zm12.2.3a1 1 0 0 1 1.55.83v9.74a1 1 0 0 1-1.55.83L9.4 10.83a1 1 0 0 1 0-1.66z" /></svg></button>{/if}
               <button class="player-control player-control-primary grid size-9 place-items-center transition focus-visible:outline-2 focus-visible:outline-white" onclick={togglePlayback} aria-label={playing ? 'Pause' : 'Play'}>

@@ -62,6 +62,19 @@ export function shouldContinuePlayback(autoAdvance, playback) {
   return Boolean(autoAdvance) && playback?.status === 'ready';
 }
 
+export function playbackPresentation({ ready, warming, restarting, revealing }) {
+  const initialWarmup = Boolean(ready && warming && !restarting);
+  const inPlayer = Boolean(ready && !initialWarmup);
+  return {
+    inPlayer,
+    showIdentity: !ready || initialWarmup || Boolean(revealing),
+    warming: initialWarmup,
+    hideVideo: initialWarmup,
+    showControls: Boolean(ready && (!warming || restarting)),
+    showSeekStatus: Boolean(ready && warming && restarting)
+  };
+}
+
 export function nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob) {
   if (!autoPlayNext) return 'none';
   if (!nextMedia) return 'resolve';
@@ -80,19 +93,13 @@ export function shouldSampleForCredits(position, duration, maximumLead = 15 * 60
   return position >= Math.max(duration * 0.65, duration - maximumLead) && position < duration;
 }
 
-export function creditFrameLooksLikely({ darkFraction, brightFraction, edgeDensity }) {
-  return Number.isFinite(darkFraction) && Number.isFinite(brightFraction) && Number.isFinite(edgeDensity)
-    && darkFraction >= 0.72 && brightFraction >= 0.012 && brightFraction <= 0.18
-    && edgeDensity >= 0.025 && edgeDensity <= 0.3;
-}
-
 export function canAttemptCreditFrameSample(video) {
   return Boolean(video);
 }
 
-export function creditDetectionStatus({ enabled, autoPlayNext, playing, hasNextEpisode, position, duration, sample = null, consecutiveMatches = 0, detected = false, error = '' }) {
+export function creditDetectionStatus({ enabled, autoPlayNext, playing, hasNextEpisode, position, duration, sample = null, consecutiveMatches = 0, sampleCount = 0, detected = false, error = '' }) {
   const sampleFrom = Number.isFinite(duration) && duration > 0 ? Math.max(duration * 0.65, duration - 15 * 60) : 0;
-  const result = { sample, consecutiveMatches, detected, sampleFrom, eligible: false };
+  const result = { sample, consecutiveMatches, sampleCount, detected, sampleFrom, eligible: false };
   if (!enabled) return { ...result, state: 'disabled', label: 'Disabled in settings' };
   if (!autoPlayNext) return { ...result, state: 'autoplay-off', label: 'Auto-play next episode is off' };
   if (!playing) return { ...result, state: 'paused', label: 'Waiting for playback' };
@@ -100,7 +107,7 @@ export function creditDetectionStatus({ enabled, autoPlayNext, playing, hasNextE
   if (!shouldSampleForCredits(position, duration)) return { ...result, state: 'waiting-window', label: sampleFrom ? `Waiting until ${Math.round(sampleFrom)}s` : 'Waiting for a reliable duration' };
   if (error) return { ...result, eligible: true, state: 'unavailable', label: error };
   if (detected) return { ...result, eligible: true, state: 'detected', label: 'Credits detected — countdown triggered' };
-  if (sample?.likely) return { ...result, eligible: true, state: 'matching', label: `Likely credits (${consecutiveMatches}/2 matching frames)` };
+  if (sample?.likely || consecutiveMatches) return { ...result, eligible: true, state: 'matching', label: `Credit evidence (${consecutiveMatches}/${sampleCount || 3} recent frames)` };
   if (sample) return { ...result, eligible: true, state: 'rejected', label: 'Latest frame did not look like credits' };
   return { ...result, eligible: true, state: 'eligible', label: 'Sampling frames for credits' };
 }

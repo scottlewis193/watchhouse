@@ -50,7 +50,9 @@
         <dt class="text-base-content/50">Buffered</dt><dd>{video?.buffered || '—'}</dd>
         <dt class="text-base-content/50">Smart credits</dt><dd>{credits?.label || 'Waiting for playback data'}</dd>
         <dt class="text-base-content/50">Credit sample</dt><dd>{credits?.sample ? `dark ${percent(credits.sample.darkFraction)} · bright ${percent(credits.sample.brightFraction)} · edges ${percent(credits.sample.edgeDensity)}` : 'No frame sampled yet'}</dd>
-        <dt class="text-base-content/50">Credit matches</dt><dd>{credits?.detected ? 'Detected' : `${credits?.consecutiveMatches || 0} / 2 consecutive frames`}</dd>
+        <dt class="text-base-content/50">Credit center</dt><dd>{credits?.sample ? `dark ${percent(credits.sample.centerDarkFraction)} · bright ${percent(credits.sample.centerBrightFraction)} · edges ${percent(credits.sample.centerEdgeDensity)}` : 'No frame sampled yet'}</dd>
+        <dt class="text-base-content/50">Credit profile</dt><dd>{credits?.sample ? `${credits.sample.profile} · ${percent(credits.sample.confidence)} confidence` : 'No frame sampled yet'}</dd>
+        <dt class="text-base-content/50">Credit evidence</dt><dd>{credits?.detected ? 'Detected' : `${credits?.consecutiveMatches || 0} / ${credits?.sampleCount || 0} recent frames`}</dd>
         <dt class="text-base-content/50">Error</dt><dd>{video?.error || 'None'}</dd>
       </dl>
     </section>

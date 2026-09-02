@@ -1,4 +1,4 @@
-import { h as head, a as attr_class, f as attr_style, e as escape_html, b as attr } from "../../../../../chunks/index.js";
+import { h as head, a as attr_class, f as attr_style, e as escape_html, b as attr, d as derived } from "../../../../../chunks/index.js";
 import "@sveltejs/kit/internal";
 import "../../../../../chunks/exports.js";
 import "../../../../../chunks/utils2.js";
@@ -20,6 +20,18 @@ function episodePlaybackMedia(show, season, episodeNumber, episodes) {
     episode: selectedEpisode,
     episodeTitle: episode.name,
     ...episode.runtime ? { durationHint: episode.runtime * 60 } : {}
+  };
+}
+function playbackPresentation({ ready, warming, restarting, revealing }) {
+  const initialWarmup = Boolean(ready);
+  const inPlayer = Boolean(ready);
+  return {
+    inPlayer,
+    showIdentity: !ready || initialWarmup || Boolean(revealing),
+    warming: initialWarmup,
+    hideVideo: initialWarmup,
+    showControls: Boolean(ready),
+    showSeekStatus: Boolean(ready)
   };
 }
 function _page($$renderer, $$props) {
@@ -48,6 +60,14 @@ function _page($$renderer, $$props) {
     let progressEntries = [];
     let offlineDownloads = [];
     let offlineJobs = [];
+    let resumeStarting = false;
+    let streamRestarting = false;
+    let playbackUi = derived(() => playbackPresentation({
+      ready: playback?.status === "ready",
+      warming: resumeStarting,
+      restarting: streamRestarting,
+      revealing: playerRevealing
+    }));
     function activeDownload(item = media) {
       const key = offlineMediaKey(item);
       return offlineJobs.find((job) => job.key === key && !["ready", "error"].includes(job.status));
@@ -74,9 +94,12 @@ function _page($$renderer, $$props) {
     function watchToolbar($$renderer3, inPlayer) {
       $$renderer3.push(`<div${attr_class("player-toolbar watch-toolbar-bridge", void 0, {
         "hero-player-toolbar": !inPlayer,
-        "player-toolbar-hidden": inPlayer
+        "player-toolbar-hidden": inPlayer && playback?.status === "ready"
       })} aria-label="Watch actions">`);
-      {
+      if (inPlayer) {
+        $$renderer3.push("<!--[0-->");
+        $$renderer3.push(`<button class="player-toolbar-button player-toolbar-back" aria-label="Back to title" title="Back to title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button>`);
+      } else {
         $$renderer3.push("<!--[-1-->");
         $$renderer3.push(`<a class="player-toolbar-button player-toolbar-back" href="/" aria-label="Back to discover" title="Back to discover"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></a>`);
       }
@@ -139,16 +162,16 @@ function _page($$renderer, $$props) {
       });
     });
     $$renderer2.push(`<section class="watch-page"><div${attr_class("watch-hero", void 0, {
-      "watch-hero-playing": playback?.status === "ready",
+      "watch-hero-playing": playbackUi().inPlayer,
       "watch-hero-revealing": playerRevealing
     })}${attr_style(`--watch-artwork: url("${titleDetails.backdrop || media.poster || ""}")`)}><div class="watch-hero-art" aria-hidden="true"></div> <div class="watch-hero-shade" aria-hidden="true"></div> `);
-    watchToolbar($$renderer2, playback?.status === "ready");
+    watchToolbar($$renderer2, playbackUi().inPlayer);
     $$renderer2.push(`<!----> `);
     {
       $$renderer2.push("<!--[-1-->");
     }
     $$renderer2.push(`<!--]--> `);
-    {
+    if (playbackUi().showIdentity) {
       $$renderer2.push("<!--[0-->");
       $$renderer2.push(`<div${attr_class("watch-identity", void 0, { "watch-identity-departing": playerRevealing })}><p class="page-eyebrow text-white/55">${escape_html(media.type === "tv" ? "Series" : "Film")}${escape_html(media.year ? ` · ${media.year}` : "")}`);
       if (media.type === "tv" && selectedSeason && selectedEpisode) {
@@ -171,6 +194,8 @@ function _page($$renderer, $$props) {
         $$renderer2.push(`<button class="hero-identity-play"${attr("aria-label", `Play ${media.type === "tv" ? episodes.find((episode) => String(episode.number) === selectedEpisode)?.name || media.title : media.title}`)}><span aria-hidden="true">▶</span><span>Play${escape_html("")}</span></button>`);
       }
       $$renderer2.push(`<!--]--></div></div>`);
+    } else {
+      $$renderer2.push("<!--[-1-->");
     }
     $$renderer2.push(`<!--]--> `);
     {

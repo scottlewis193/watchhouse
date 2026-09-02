@@ -5,11 +5,29 @@ import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, creditFrameLooksLikely, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
+import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
+import { analyzeCreditFrame, updateCreditEvidence } from '../src/lib/credit-detection.js';
+import { DownloadCancelledError, cancelDownloadJob, onDownloadCancel, throwIfDownloadCancelled } from '../src/lib/server/download-cancellation.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
 
 test('adds the Newznab API path when given an indexer host', () => {
   assert.equal(indexerEndpoint('https://api.nzbgeek.info').href, 'https://api.nzbgeek.info/api');
+});
+
+test('cancels a background download and releases its active resources once', () => {
+  const job = { status: 'downloading', message: 'Downloading…' };
+  let releases = 0;
+  const remove = onDownloadCancel(job, () => { releases++; });
+
+  assert.equal(cancelDownloadJob(job), true);
+  assert.equal(job.status, 'cancelling');
+  assert.equal(job.message, 'Cancelling download…');
+  assert.equal(releases, 1);
+  assert.equal(cancelDownloadJob(job), false);
+  assert.equal(releases, 1);
+  assert.throws(() => throwIfDownloadCancelled(job), DownloadCancelledError);
+
+  remove();
 });
 
 test('uses entered connection values for a test without overwriting saved secrets', () => {
@@ -474,12 +492,91 @@ test('keeps playback running when handing off to a prepared next episode', () =>
   assert.equal(shouldContinuePlayback(true, null), false);
 });
 
-test('recognises conservative end-credit frames only near the expected episode end', () => {
+test('keeps an established player visible while a growing stream restarts after seeking', () => {
+  assert.deepEqual(
+    playbackPresentation({ ready: true, warming: true, restarting: true, revealing: false }),
+    { inPlayer: true, showIdentity: false, warming: false, hideVideo: false, showControls: true, showSeekStatus: true }
+  );
+  assert.deepEqual(
+    playbackPresentation({ ready: true, warming: true, restarting: false, revealing: false }),
+    { inPlayer: false, showIdentity: true, warming: true, hideVideo: true, showControls: false, showSeekStatus: false }
+  );
+});
+
+function creditFrameFixture({ background = [0, 0, 0], foreground = [245, 245, 245], rows = 2, placement = 'center', gradient = false, checker = false } = {}) {
+  const width = 160, height = 90, pixels = new Uint8ClampedArray(width * height * 4);
+  const paint = (x, y, color) => {
+    const offset = (y * width + x) * 4;
+    pixels[offset] = color[0]; pixels[offset + 1] = color[1]; pixels[offset + 2] = color[2]; pixels[offset + 3] = 255;
+  };
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const color = checker
+        ? ((Math.floor(x / 2) + Math.floor(y / 2)) % 2 ? [225, 210, 190] : [20, 35, 55])
+        : gradient ? [30 + Math.floor(x * 0.7), 25 + Math.floor(y * 1.3), 65 + Math.floor(x * 0.4)] : background;
+      paint(x, y, color);
+    }
+  }
+  if (!checker && rows) {
+    const startY = placement === 'bottom' ? 78 : 34 - (rows - 1) * 6;
+    for (let row = 0; row < rows; row++) {
+      for (let glyph = 0; glyph < 8; glyph++) {
+        const left = 42 + glyph * 10, top = startY + row * 12;
+        for (let y = top; y < Math.min(height, top + 7); y++) {
+          for (let x = left; x < left + 3; x++) paint(x, y, foreground);
+        }
+      }
+    }
+  }
+  return { pixels, width, height };
+}
+
+test('recognises varied credit designs without treating blank, subtitle, or detailed frames as credits', () => {
   assert.equal(shouldSampleForCredits(2_500, 3_000), true);
   assert.equal(shouldSampleForCredits(1_000, 3_000), false);
-  assert.equal(creditFrameLooksLikely({ darkFraction: 0.82, brightFraction: 0.06, edgeDensity: 0.12 }), true);
-  assert.equal(creditFrameLooksLikely({ darkFraction: 0.95, brightFraction: 0.001, edgeDensity: 0.002 }), false);
-  assert.equal(creditFrameLooksLikely({ darkFraction: 0.25, brightFraction: 0.4, edgeDensity: 0.3 }), false);
+  const cases = [
+    ['white on black', creditFrameFixture(), true],
+    ['sparse title card', creditFrameFixture({ rows: 1 }), true],
+    ['black on white', creditFrameFixture({ background: [245, 245, 245], foreground: [15, 15, 15] }), true],
+    ['gold on navy', creditFrameFixture({ background: [20, 30, 75], foreground: [220, 155, 35] }), true],
+    ['text over imagery', creditFrameFixture({ gradient: true }), true],
+    ['blank fade', creditFrameFixture({ rows: 0 }), false],
+    ['subtitle only', creditFrameFixture({ rows: 1, placement: 'bottom' }), false],
+    ['high-detail scene', creditFrameFixture({ checker: true }), false]
+  ];
+  for (const [name, frame, expected] of cases) {
+    const analysis = analyzeCreditFrame(frame.pixels, frame.width, frame.height);
+    assert.equal(analysis.likely, expected, `${name} classified as ${analysis.profile}`);
+  }
+});
+
+test('smart credit evidence tolerates noise while requiring more support for overlays', () => {
+  const analyzeFixture = (frame) => analyzeCreditFrame(frame.pixels, frame.width, frame.height);
+  const strong = analyzeFixture(creditFrameFixture());
+  const noise = analyzeFixture(creditFrameFixture({ rows: 0 }));
+  const overlay = analyzeFixture(creditFrameFixture({ gradient: true }));
+  const detected = (samples) => {
+    let evidence = [];
+    for (const [index, sample] of samples.entries()) {
+      const result = updateCreditEvidence(evidence, sample, index * 2_000);
+      evidence = result.samples;
+      if (result.detected) return true;
+    }
+    return false;
+  };
+
+  assert.equal(detected([strong, noise, strong]), true, 'one noisy sample should not erase strong credit evidence');
+  assert.equal(detected([strong, strong]), false, 'two frames are too brief to trigger credits');
+  assert.equal(detected([overlay, overlay, overlay]), false, 'lower-confidence overlays need a longer observation');
+  assert.equal(detected([overlay, overlay, overlay, overlay]), true, 'persistent overlays should trigger credits');
+
+  const oldEvidence = updateCreditEvidence([], strong, 0);
+  const expiredEvidence = updateCreditEvidence(oldEvidence.samples, strong, 11_000);
+  assert.deepEqual(
+    { sampleCount: expiredEvidence.sampleCount, detected: expiredEvidence.detected },
+    { sampleCount: 1, detected: false },
+    'stale frames must not combine with evidence sampled after a pause'
+  );
 });
 
 test('reports why smart credit detection has or has not triggered', () => {
