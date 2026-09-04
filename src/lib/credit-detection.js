@@ -2,26 +2,21 @@ const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, v
 
 function regionMetrics(luminance, width, height, left, top, right, bottom) {
   const histogram = new Uint32Array(256);
-  const rowEdges = new Uint16Array(bottom - top);
-  let dark = 0, bright = 0, strongEdges = 0, softEdges = 0, sum = 0, squaredSum = 0, total = 0;
-  const regionWidth = right - left;
+  let dark = 0, bright = 0, strongEdges = 0, sum = 0, total = 0;
 
   for (let y = top; y < bottom; y++) {
     for (let x = left; x < right; x++) {
       const value = luminance[y * width + x];
       histogram[value]++;
       sum += value;
-      squaredSum += value * value;
       if (value < 65) dark++;
       if (value > 170) bright++;
       if (x > left) {
         const difference = Math.abs(value - luminance[y * width + x - 1]);
-        if (difference > 24) { softEdges++; rowEdges[y - top]++; }
         if (difference > 55) strongEdges++;
       }
       if (y > top) {
         const difference = Math.abs(value - luminance[(y - 1) * width + x]);
-        if (difference > 24) { softEdges++; rowEdges[y - top]++; }
         if (difference > 55) strongEdges++;
       }
       total++;
@@ -37,58 +32,69 @@ function regionMetrics(luminance, width, height, left, top, right, bottom) {
     }
     return 255;
   };
-  let dominant = 0;
-  for (let start = 0; start < 256; start += 16) {
-    let bucket = 0;
-    for (let value = start; value < start + 16; value++) bucket += histogram[value];
-    dominant = Math.max(dominant, bucket);
-  }
-  const mean = sum / total;
-  const variance = Math.max(0, squaredSum / total - mean * mean);
-  const activeRowThreshold = Math.max(2, Math.ceil(regionWidth * 0.025));
-  let activeRows = 0;
-  for (const count of rowEdges) if (count >= activeRowThreshold) activeRows++;
 
   return {
     darkFraction: dark / total,
     brightFraction: bright / total,
     edgeDensity: strongEdges / (total * 2),
-    softEdgeDensity: softEdges / (total * 2),
-    activeRowFraction: activeRows / rowEdges.length,
-    dominantFraction: dominant / total,
-    contrast: percentile(0.98) - percentile(0.02),
-    meanLuminance: mean,
-    luminanceDeviation: Math.sqrt(variance)
+    meanLuminance: sum / total,
+    medianLuminance: percentile(0.5)
   };
 }
 
-function compactComponentFraction(luminance, width, height, matches) {
+function textComponentMetrics(luminance, width, height, threshold) {
   const visited = new Uint8Array(luminance.length);
   const stack = new Int32Array(luminance.length);
   const maximumCompactSize = Math.max(12, Math.floor(luminance.length * 0.02));
-  let matchingPixels = 0, compactPixels = 0;
+  const maximumCompactWidth = Math.max(3, Math.floor(width * 0.22));
+  const maximumCompactHeight = Math.max(3, Math.floor(height * 0.22));
+  const componentRows = new Uint16Array(height);
+  let matchingPixels = 0, compactPixels = 0, compactComponentCount = 0;
+  let compactLeft = width, compactTop = height, compactRight = -1, compactBottom = -1;
 
   for (let start = 0; start < luminance.length; start++) {
-    if (visited[start] || !matches(luminance[start])) continue;
+    if (visited[start] || luminance[start] < threshold) continue;
     let stackSize = 1, componentSize = 0;
+    let left = width, top = height, right = -1, bottom = -1;
     stack[0] = start;
     visited[start] = 1;
     while (stackSize) {
       const pixel = stack[--stackSize], x = pixel % width, y = Math.floor(pixel / width);
       componentSize++;
+      left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y);
       const neighbours = [x > 0 ? pixel - 1 : -1, x + 1 < width ? pixel + 1 : -1, y > 0 ? pixel - width : -1, y + 1 < height ? pixel + width : -1];
       for (const neighbour of neighbours) {
-        if (neighbour >= 0 && !visited[neighbour] && matches(luminance[neighbour])) {
+        if (neighbour >= 0 && !visited[neighbour] && luminance[neighbour] >= threshold) {
           visited[neighbour] = 1;
           stack[stackSize++] = neighbour;
         }
       }
     }
     matchingPixels += componentSize;
-    if (componentSize <= maximumCompactSize) compactPixels += componentSize;
+    const componentWidth = right - left + 1, componentHeight = bottom - top + 1;
+    if (componentSize >= 2 && componentSize <= maximumCompactSize && componentWidth <= maximumCompactWidth && componentHeight <= maximumCompactHeight) {
+      compactPixels += componentSize;
+      compactComponentCount++;
+      compactLeft = Math.min(compactLeft, left); compactTop = Math.min(compactTop, top);
+      compactRight = Math.max(compactRight, right); compactBottom = Math.max(compactBottom, bottom);
+      componentRows[Math.round((top + bottom) / 2)]++;
+    }
   }
 
-  return matchingPixels ? compactPixels / matchingPixels : 0;
+  let alignedComponentCount = 0;
+  for (let row = 0; row < height; row++) {
+    let aligned = 0;
+    for (let nearby = Math.max(0, row - 2); nearby <= Math.min(height - 1, row + 2); nearby++) aligned += componentRows[nearby];
+    alignedComponentCount = Math.max(alignedComponentCount, aligned);
+  }
+  return {
+    foregroundFraction: matchingPixels / luminance.length,
+    compactForegroundFraction: matchingPixels ? compactPixels / matchingPixels : 0,
+    compactComponentCount,
+    alignedComponentCount,
+    compactHorizontalSpan: compactRight >= compactLeft ? (compactRight - compactLeft + 1) / width : 0,
+    compactTopFraction: compactBottom >= compactTop ? compactTop / height : 1
+  };
 }
 
 export function analyzeCreditFrame(pixels, width, height) {
@@ -111,60 +117,26 @@ export function analyzeCreditFrame(pixels, width, height) {
     Math.ceil(width * 0.75),
     Math.ceil(height * 0.75)
   );
-  const compactBrightFraction = compactComponentFraction(luminance, width, height, value => value > 170);
-  const compactDarkFraction = compactComponentFraction(luminance, width, height, value => value < 65);
-  const edgeConcentration = center.softEdgeDensity / Math.max(whole.softEdgeDensity, 0.0001);
-  const profiles = [
-    {
-      name: 'dark', confidence: 1,
-      matches: whole.darkFraction >= 0.68 && whole.brightFraction >= 0.008 && whole.brightFraction <= 0.28
-        && whole.edgeDensity >= 0.008 && whole.edgeDensity <= 0.28 && center.edgeDensity >= 0.003
-        && compactBrightFraction >= 0.5
-    },
-    {
-      name: 'sparse-centered', confidence: 1,
-      matches: whole.darkFraction >= 0.9 && center.darkFraction >= 0.82
-        && center.brightFraction >= 0.01 && center.brightFraction <= 0.22
-        && center.edgeDensity >= 0.004 && center.edgeDensity <= 0.25
-    },
-    {
-      name: 'light', confidence: 0.95,
-      matches: whole.brightFraction >= 0.68 && whole.darkFraction >= 0.008 && whole.darkFraction <= 0.28
-        && whole.edgeDensity >= 0.008 && whole.edgeDensity <= 0.28 && center.edgeDensity >= 0.003
-        && compactDarkFraction >= 0.5
-    },
-    {
-      name: 'uniform-color', confidence: 0.9,
-      matches: whole.dominantFraction >= 0.52 && center.contrast >= 32
-        && center.softEdgeDensity >= 0.006 && center.softEdgeDensity <= 0.28
-        && center.activeRowFraction >= 0.04 && center.activeRowFraction <= 0.72
-    },
-    {
-      name: 'text-overlay', confidence: 0.68,
-      matches: whole.dominantFraction < 0.52 && center.contrast >= 52
-        && center.softEdgeDensity >= 0.012 && center.softEdgeDensity <= 0.22
-        && center.activeRowFraction >= 0.08 && center.activeRowFraction <= 0.52
-        && edgeConcentration >= 1.25
-    }
-  ];
-  const match = profiles.find(profile => profile.matches);
+  const foregroundThreshold = Math.max(110, whole.medianLuminance + 70);
+  const text = textComponentMetrics(luminance, width, height, foregroundThreshold);
+  const darkBackground = whole.darkFraction >= 0.75 && whole.meanLuminance <= 72;
+  const textShape = text.foregroundFraction >= 0.003 && text.foregroundFraction <= 0.16
+    && text.compactForegroundFraction >= 0.65 && text.compactComponentCount >= 4
+    && text.alignedComponentCount >= 4 && text.compactHorizontalSpan >= 0.12
+    && text.compactTopFraction < 0.72;
+  const likely = darkBackground && textShape;
   const metrics = {
     ...whole,
     centerDarkFraction: center.darkFraction,
     centerBrightFraction: center.brightFraction,
     centerEdgeDensity: center.edgeDensity,
-    centerSoftEdgeDensity: center.softEdgeDensity,
-    centerActiveRowFraction: center.activeRowFraction,
-    centerDominantFraction: center.dominantFraction,
-    centerContrast: center.contrast,
-    edgeConcentration,
-    compactBrightFraction,
-    compactDarkFraction
+    foregroundThreshold,
+    ...text
   };
   return {
-    likely: Boolean(match),
-    confidence: match?.confidence || 0,
-    profile: match?.name || 'none',
+    likely,
+    confidence: likely ? 1 : 0,
+    profile: likely ? 'dark-text' : 'none',
     metrics
   };
 }
@@ -179,13 +151,9 @@ export function updateCreditEvidence(evidence, analysis, now = Date.now(), maxim
     : clamp(Number(analysis?.confidence) || 0, 0, 1);
   const samples = [...recent, { confidence, likely: confidence >= 0.6, at: now }];
   const matches = samples.reduce((total, sample) => total + Number(sample.likely), 0);
-  const strongMatches = samples.reduce((total, sample) => total + Number(sample.confidence >= 0.9), 0);
   const confidenceTotal = samples.reduce((total, sample) => total + sample.confidence, 0);
   const evidenceSpan = samples.length > 1 ? now - samples[0].at : 0;
   const sustainedEvidence = samples.length >= 5 && evidenceSpan >= 8_000;
-  const detected = sustainedEvidence && (
-    (matches >= 4 && strongMatches >= 3 && confidenceTotal >= 3.4)
-    || (matches >= 5 && confidenceTotal >= 3.2)
-  );
+  const detected = sustainedEvidence && matches >= 4;
   return { samples, matches, sampleCount: samples.length, confidenceTotal, detected };
 }

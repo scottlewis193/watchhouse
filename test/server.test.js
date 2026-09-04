@@ -549,16 +549,17 @@ function darkSceneFixture() {
   return { pixels, width, height };
 }
 
-test('recognises varied credit designs without treating blank, subtitle, or detailed frames as credits', () => {
+test('recognises sustained text on a dark background without accepting broader credit-like designs', () => {
   assert.equal(shouldSampleForCredits(2_500, 3_000), true);
   assert.equal(shouldSampleForCredits(1_000, 3_000), false);
   const cases = [
     ['white on black', creditFrameFixture(), true],
     ['sparse title card', creditFrameFixture({ rows: 1 }), true],
-    ['black on white', creditFrameFixture({ background: [245, 245, 245], foreground: [15, 15, 15] }), true],
+    ['black on white', creditFrameFixture({ background: [245, 245, 245], foreground: [15, 15, 15] }), false],
     ['gold on navy', creditFrameFixture({ background: [20, 30, 75], foreground: [220, 155, 35] }), true],
-    ['text over imagery', creditFrameFixture({ gradient: true }), true],
+    ['text over imagery', creditFrameFixture({ gradient: true }), false],
     ['blank fade', creditFrameFixture({ rows: 0 }), false],
+    ['near-black transition', creditFrameFixture({ background: [2, 2, 3], foreground: [55, 55, 55], rows: 1 }), false],
     ['subtitle only', creditFrameFixture({ rows: 1, placement: 'bottom' }), false],
     ['dark scene with a lit window', darkSceneFixture(), false],
     ['high-detail scene', creditFrameFixture({ checker: true }), false]
@@ -569,11 +570,10 @@ test('recognises varied credit designs without treating blank, subtitle, or deta
   }
 });
 
-test('smart credit evidence tolerates noise while requiring more support for overlays', () => {
+test('smart credit evidence requires a sustained dark-text pattern', () => {
   const analyzeFixture = (frame) => analyzeCreditFrame(frame.pixels, frame.width, frame.height);
   const strong = analyzeFixture(creditFrameFixture());
   const noise = analyzeFixture(creditFrameFixture({ rows: 0 }));
-  const overlay = analyzeFixture(creditFrameFixture({ gradient: true }));
   const detected = (samples) => {
     let evidence = [];
     for (const [index, sample] of samples.entries()) {
@@ -587,8 +587,6 @@ test('smart credit evidence tolerates noise while requiring more support for ove
   assert.equal(detected([strong, noise, strong]), false, 'a brief scene transition must not trigger credits');
   assert.equal(detected([strong, strong]), false, 'two frames are too brief to trigger credits');
   assert.equal(detected([strong, noise, strong, strong, strong]), true, 'sustained strong evidence may tolerate one blank frame');
-  assert.equal(detected([overlay, overlay, overlay, overlay]), false, 'lower-confidence overlays need a longer observation');
-  assert.equal(detected([overlay, overlay, overlay, overlay, overlay]), true, 'persistent overlays should trigger credits');
 
   const oldEvidence = updateCreditEvidence([], strong, 0);
   const expiredEvidence = updateCreditEvidence(oldEvidence.samples, strong, 11_000);
