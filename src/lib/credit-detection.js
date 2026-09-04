@@ -173,7 +173,7 @@ export function updateCreditEvidence(evidence, analysis, now = Date.now(), maxim
   const previous = Array.isArray(evidence) ? evidence : [];
   const recent = previous
     .filter(sample => Number.isFinite(sample?.at) && now - sample.at <= maximumAge)
-    .slice(-3);
+    .slice(-5);
   const confidence = typeof analysis === 'boolean'
     ? Number(analysis)
     : clamp(Number(analysis?.confidence) || 0, 0, 1);
@@ -181,7 +181,11 @@ export function updateCreditEvidence(evidence, analysis, now = Date.now(), maxim
   const matches = samples.reduce((total, sample) => total + Number(sample.likely), 0);
   const strongMatches = samples.reduce((total, sample) => total + Number(sample.confidence >= 0.9), 0);
   const confidenceTotal = samples.reduce((total, sample) => total + sample.confidence, 0);
-  const detected = (samples.length >= 3 && strongMatches >= 2 && confidenceTotal >= 1.8)
-    || (samples.length >= 4 && matches >= 3 && confidenceTotal >= 2);
+  const evidenceSpan = samples.length > 1 ? now - samples[0].at : 0;
+  const sustainedEvidence = samples.length >= 5 && evidenceSpan >= 8_000;
+  const detected = sustainedEvidence && (
+    (matches >= 4 && strongMatches >= 3 && confidenceTotal >= 3.4)
+    || (matches >= 5 && confidenceTotal >= 3.2)
+  );
   return { samples, matches, sampleCount: samples.length, confidenceTotal, detected };
 }

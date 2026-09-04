@@ -584,10 +584,11 @@ test('smart credit evidence tolerates noise while requiring more support for ove
     return false;
   };
 
-  assert.equal(detected([strong, noise, strong]), true, 'one noisy sample should not erase strong credit evidence');
+  assert.equal(detected([strong, noise, strong]), false, 'a brief scene transition must not trigger credits');
   assert.equal(detected([strong, strong]), false, 'two frames are too brief to trigger credits');
-  assert.equal(detected([overlay, overlay, overlay]), false, 'lower-confidence overlays need a longer observation');
-  assert.equal(detected([overlay, overlay, overlay, overlay]), true, 'persistent overlays should trigger credits');
+  assert.equal(detected([strong, noise, strong, strong, strong]), true, 'sustained strong evidence may tolerate one blank frame');
+  assert.equal(detected([overlay, overlay, overlay, overlay]), false, 'lower-confidence overlays need a longer observation');
+  assert.equal(detected([overlay, overlay, overlay, overlay, overlay]), true, 'persistent overlays should trigger credits');
 
   const oldEvidence = updateCreditEvidence([], strong, 0);
   const expiredEvidence = updateCreditEvidence(oldEvidence.samples, strong, 11_000);
