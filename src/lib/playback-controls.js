@@ -2,6 +2,11 @@ export function canUseFallback(playback) {
   return playback?.mode === 'direct' && playback.status === 'ready';
 }
 
+export function streamInterruptionAction(playback, automaticRetries = 0, retryLimit = 3) {
+  if (!canUseFallback(playback)) return 'error';
+  return Math.max(0, Number(automaticRetries) || 0) < Math.max(0, Number(retryLimit) || 0) ? 'retry' : 'offer';
+}
+
 export function episodePlaybackMedia(show, season, episodeNumber, episodes) {
   const episode = episodes.find((item) => String(item.number) === String(episodeNumber));
   const selectedSeason = Number(season);
@@ -123,6 +128,19 @@ export function videoPlaybackStats(current, previous = null, minimumSampleMs = 2
   if (elapsed < minimumSampleMs) return { fps: null, total, dropped, droppedPercent, sample: previous };
   const renderedFrames = Math.max(0, (total - dropped) - (previous.total - previous.dropped));
   return { fps: renderedFrames * 1000 / elapsed, total, dropped, droppedPercent, sample };
+}
+
+export function audioPlaybackHealth(current, previous = null, minimumSampleMs = 8000) {
+  const at = Number(current?.at) || 0;
+  const position = Math.max(0, Number(current?.position) || 0);
+  const audioBytes = Number.isFinite(current?.audioBytes) ? Math.max(0, current.audioBytes) : null;
+  const videoFrames = Number.isFinite(current?.videoFrames) ? Math.max(0, current.videoFrames) : null;
+  const sample = { at, position, audioBytes, videoFrames };
+  if (!current?.playing || current?.muted || !(Number(current?.volume) > 0) || audioBytes === null) return { stalled: false, sample };
+  if (!previous || previous.audioBytes === null || previous.audioBytes <= 0 || at <= previous.at || position < previous.position) return { stalled: false, sample };
+  if (at - previous.at < minimumSampleMs) return { stalled: false, sample: previous };
+  const videoAdvanced = position - previous.position >= 4 && (videoFrames === null || previous.videoFrames === null || videoFrames > previous.videoFrames);
+  return { stalled: videoAdvanced && audioBytes <= previous.audioBytes, sample };
 }
 
 export function resumeStreamUrl(url, playbackMode, position) {

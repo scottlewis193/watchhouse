@@ -5,7 +5,7 @@ import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
 import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
+import { audioPlaybackHealth, canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { analyzeCreditFrame, updateCreditEvidence } from '../src/lib/credit-detection.js';
 import { DownloadCancelledError, cancelDownloadJob, onDownloadCancel, throwIfDownloadCancelled } from '../src/lib/server/download-cancellation.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
@@ -651,6 +651,15 @@ test('reports rendered FPS and dropped-frame totals from browser playback counte
   assert.equal(Math.round(measured.droppedPercent * 100) / 100, 6.15);
 });
 
+test('detects audio decoding stopping while video playback keeps advancing', () => {
+  const initial = audioPlaybackHealth({ at: 1_000, position: 60, audioBytes: 48_000, videoFrames: 1_500, playing: true, muted: false, volume: 1 });
+  const healthy = audioPlaybackHealth({ at: 10_000, position: 69, audioBytes: 96_000, videoFrames: 1_725, playing: true, muted: false, volume: 1 }, initial.sample);
+  assert.equal(healthy.stalled, false);
+  const stalled = audioPlaybackHealth({ at: 19_000, position: 78, audioBytes: 96_000, videoFrames: 1_950, playing: true, muted: false, volume: 1 }, healthy.sample);
+  assert.equal(stalled.stalled, true);
+  assert.equal(audioPlaybackHealth({ at: 28_000, position: 87, audioBytes: 96_000, videoFrames: 2_175, playing: true, muted: true, volume: 1 }, stalled.sample).stalled, false);
+});
+
 test('writes a media stream to the SvelteKit response interface without pipe()', async () => {
   const chunks = [];
   const response = {
@@ -873,6 +882,15 @@ test('can favour a quick-start release and explains release readiness', () => {
 test('only requests a download fallback for a direct stream', () => {
   assert.equal(canUseFallback({ mode: 'direct', status: 'ready' }), true);
   assert.equal(canUseFallback({ mode: 'cached', status: 'ready' }), false);
+});
+
+test('retries an interrupted direct stream three times before offering recovery choices', () => {
+  const playback = { mode: 'direct', status: 'ready' };
+  assert.equal(streamInterruptionAction(playback, 0), 'retry');
+  assert.equal(streamInterruptionAction(playback, 1), 'retry');
+  assert.equal(streamInterruptionAction(playback, 2), 'retry');
+  assert.equal(streamInterruptionAction(playback, 3), 'offer');
+  assert.equal(streamInterruptionAction({ mode: 'cached', status: 'ready' }, 0), 'error');
 });
 
 test('chooses browser conversion strategies from container and codec', () => {
