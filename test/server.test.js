@@ -549,8 +549,25 @@ function darkSceneFixture() {
   return { pixels, width, height };
 }
 
+test('smart credits only samples within the final five minutes', () => {
+  assert.equal(shouldSampleForCredits(2_500, 3_000), false);
+  assert.equal(shouldSampleForCredits(2_699, 3_000), false);
+  assert.equal(shouldSampleForCredits(2_700, 3_000), true);
+  assert.equal(shouldSampleForCredits(2_999, 3_000), true);
+  assert.equal(shouldSampleForCredits(3_000, 3_000), false);
+  assert.equal(shouldSampleForCredits(77, 120), false);
+  assert.equal(shouldSampleForCredits(78, 120), true);
+  for (const duration of [0, -1, NaN, Infinity]) {
+    assert.equal(shouldSampleForCredits(100, duration), false);
+  }
+  const status = creditDetectionStatus({ enabled: true, autoPlayNext: true, playing: true, hasNextEpisode: true, position: 2_500, duration: 3_000, sample: { likely: true }, consecutiveMatches: 5 });
+  assert.equal(status.eligible, false);
+  assert.equal(status.state, 'waiting-window');
+  assert.equal(status.sampleFrom, 2_700);
+});
+
 test('recognises sustained text on a dark background without accepting broader credit-like designs', () => {
-  assert.equal(shouldSampleForCredits(2_500, 3_000), true);
+  assert.equal(shouldSampleForCredits(2_900, 3_000), true);
   assert.equal(shouldSampleForCredits(1_000, 3_000), false);
   const cases = [
     ['white on black', creditFrameFixture(), true],
@@ -598,7 +615,7 @@ test('smart credit evidence requires a sustained dark-text pattern', () => {
 });
 
 test('reports why smart credit detection has or has not triggered', () => {
-  const active = { enabled: true, autoPlayNext: true, playing: true, hasNextEpisode: true, position: 2_500, duration: 3_000 };
+  const active = { enabled: true, autoPlayNext: true, playing: true, hasNextEpisode: true, position: 2_900, duration: 3_000 };
   assert.equal(creditDetectionStatus({ ...active, hasNextEpisode: false }).state, 'waiting-next');
   assert.equal(creditDetectionStatus({ ...active, position: 1_000 }).state, 'waiting-window');
   assert.equal(creditDetectionStatus({ ...active, sample: { darkFraction: 0.82, brightFraction: 0.06, edgeDensity: 0.12, likely: true }, consecutiveMatches: 1 }).state, 'matching');

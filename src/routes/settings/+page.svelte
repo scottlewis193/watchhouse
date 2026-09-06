@@ -125,7 +125,7 @@
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.smartAutoplay} />
-            <span><span class="block text-sm font-medium">Smart next episode</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Look for end-credit frames on this device and start the next-episode countdown early.</span></span>
+            <span><span class="block text-sm font-medium">Smart next episode</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Look for end-credit frames on this device during the final 5 minutes and start the next-episode countdown early.</span></span>
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">

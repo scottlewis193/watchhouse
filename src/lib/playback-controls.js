@@ -55,6 +55,17 @@ export function playbackTimeline(playbackMode, position, mediaDuration, streamDu
   return { position: Math.min(positionOffset + relativePosition, duration || positionOffset + relativePosition), duration };
 }
 
+export function bufferedPlaybackRanges(mode, ranges, duration, streamOffset = 0) {
+  if (!Number.isFinite(duration) || duration <= 0) return [];
+  const offset = hasGrowingStreamDuration(mode) && Number.isFinite(streamOffset) ? Math.max(0, streamOffset) : 0;
+  return ranges.flatMap(({ start, end }) => {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+    const from = Math.max(0, Math.min(duration, start + offset));
+    const to = Math.max(0, Math.min(duration, end + offset));
+    return to > from ? [{ left: from / duration * 100, width: (to - from) / duration * 100 }] : [];
+  });
+}
+
 export function shouldShowUpNext(eligible, position, duration, threshold = 30) {
   return Boolean(eligible) && Number.isFinite(position) && position >= 0 && Number.isFinite(duration) && duration > threshold && duration - position <= threshold;
 }
@@ -93,9 +104,15 @@ export function upNextCountdown(startedAt, now = Date.now(), delaySeconds = 30) 
   return { seconds: Math.ceil(remaining / 1000), elapsed: remaining === 0 };
 }
 
-export function shouldSampleForCredits(position, duration, maximumLead = 15 * 60) {
+const CREDIT_MAXIMUM_LEAD = 5 * 60;
+
+function creditSamplingStart(duration, maximumLead = CREDIT_MAXIMUM_LEAD) {
+  return Math.max(duration * 0.65, duration - maximumLead);
+}
+
+export function shouldSampleForCredits(position, duration, maximumLead = CREDIT_MAXIMUM_LEAD) {
   if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return false;
-  return position >= Math.max(duration * 0.65, duration - maximumLead) && position < duration;
+  return position >= creditSamplingStart(duration, maximumLead) && position < duration;
 }
 
 export function canAttemptCreditFrameSample(video) {
@@ -103,7 +120,7 @@ export function canAttemptCreditFrameSample(video) {
 }
 
 export function creditDetectionStatus({ enabled, autoPlayNext, playing, hasNextEpisode, position, duration, sample = null, consecutiveMatches = 0, sampleCount = 0, detected = false, error = '' }) {
-  const sampleFrom = Number.isFinite(duration) && duration > 0 ? Math.max(duration * 0.65, duration - 15 * 60) : 0;
+  const sampleFrom = Number.isFinite(duration) && duration > 0 ? creditSamplingStart(duration) : 0;
   const result = { sample, consecutiveMatches, sampleCount, detected, sampleFrom, eligible: false };
   if (!enabled) return { ...result, state: 'disabled', label: 'Disabled in settings' };
   if (!autoPlayNext) return { ...result, state: 'autoplay-off', label: 'Auto-play next episode is off' };
