@@ -11,6 +11,8 @@ import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTit
 import { offlineMediaKey } from '../offline.js';
 import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownloadCancelled } from './download-cancellation.js';
 import { createMediaStateStore } from './media-state.js';
+import { stopConversion } from './conversion-process.js';
+import { waitForDrain } from './stream-drain.js';
 
 const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, 'data', 'settings.json');
@@ -484,7 +486,7 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
       });
       if (req.method === 'HEAD') return res.end();
       let aborted = false; res.on('close', () => { aborted = true; });
-      await writePostedFileRange(job.file, start, end, loader.load, async chunk => { if (!res.write(chunk)) await once(res, 'drain'); }, { shouldContinue: () => !aborted, concurrency: settings.maxConnections });
+      await writePostedFileRange(job.file, start, end, loader.load, async chunk => { if (!res.write(chunk)) await waitForDrain(res); }, { shouldContinue: () => !aborted, concurrency: settings.maxConnections });
       if (!aborted) res.end();
     })().catch(error => { if (res.headersSent) res.destroy(error); else { res.writeHead(500); res.end(); } });
   });
@@ -505,26 +507,28 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
   const child = spawn('ffmpeg', ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource), toneMap, acceleration)); let stderr = '';
+  const exited = once(child, 'close'); void exited.catch(() => {});
   let closed = false;
-  child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; child.stdin.destroy(); child.kill(); });
+  child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; stopConversion(child); });
   try {
     if (!rangeSource) {
-      await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await once(child.stdin, 'drain'); }, connectNntp, job.prefetchedSegments);
+      await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await waitForDrain(child.stdin); }, connectNntp, job.prefetchedSegments);
       child.stdin.end();
     }
-    const [code] = await once(child, 'close'); const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end();
+    const [code] = await exited; const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end();
   }
-  catch (error) { child.kill(); await output.catch(() => {}); if (!closed) throw error; }
+  catch (error) { stopConversion(child); await output.catch(() => {}); if (!closed) throw error; }
   finally { await rangeSource?.close(); }
 }
 async function streamCachedConversion(req, res, job, settings, start = 0) {
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   const acceleration = await configurePlaybackAcceleration(job, job.strategy, toneMap);
   const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration)); let stderr = '';
+  const exited = once(child, 'close'); void exited.catch(() => {});
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {});
-  req.on('close', () => { closed = true; child.kill(); });
-  const [code] = await once(child, 'close');
+  req.on('close', () => { closed = true; stopConversion(child); });
+  const [code] = await exited;
   const bytes = await output;
   if (closed) return;
   if (!conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`);
