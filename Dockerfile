@@ -3,6 +3,11 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 
+# The HLS integration test converts real media during the build.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json ./
 RUN npm ci
 
