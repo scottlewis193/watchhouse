@@ -1,0 +1,12 @@
+.git
+.github
+.agents
+.codex
+.playwright*
+.svelte-kit
+build
+node_modules
+data
+.env
+.env.*
+*.log
