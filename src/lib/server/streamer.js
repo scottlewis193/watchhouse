@@ -13,6 +13,7 @@ import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownlo
 import { createMediaStateStore } from './media-state.js';
 import { stopConversion } from './conversion-process.js';
 import { waitForDrain } from './stream-drain.js';
+import { createHlsSession, hlsOutputArgs } from './hls-session.js';
 
 const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, 'data', 'settings.json');
@@ -24,6 +25,7 @@ const OFFLINE_ROOT = join(ROOT, 'data', 'offline');
 const OFFLINE_STATE_PATH = join(ROOT, 'data', 'offline-downloads.json');
 const downloads = new Map();
 const playbackJobs = new Map();
+const hlsSessions = new Map();
 const manualReleases = new Map();
 const offlineJobs = new Map();
 const offlineSeriesJobs = new Map();
@@ -72,9 +74,10 @@ function publicOfflineJob(job) {
 async function clearExpiredPlaybackCache() {
   const settings = await readSettings(), retentionHours = Math.min(168, Math.max(1, Number(settings.cacheRetentionHours) || 24));
   const activeDirectories = new Set([...playbackJobs.values()].map(job => job.directory).filter(Boolean));
+  for (const { session } of hlsSessions.values()) activeDirectories.add(session.directory);
   const cutoff = Date.now() - retentionHours * 60 * 60 * 1000;
   const entries = await readdir(PLAYBACK_CACHE_ROOT, { withFileTypes: true }).catch(() => []);
-  await Promise.all(entries.filter(entry => entry.isDirectory() && entry.name.startsWith('playback-')).map(async entry => {
+  await Promise.all(entries.filter(entry => entry.isDirectory() && (entry.name.startsWith('playback-') || entry.name.startsWith('hls-'))).map(async entry => {
     const directory = join(PLAYBACK_CACHE_ROOT, entry.name);
     if (activeDirectories.has(directory)) return;
     if ((await stat(directory)).mtimeMs < cutoff) await rm(directory, { recursive: true, force: true });
@@ -501,6 +504,55 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
   };
 }
 
+export function preferredAudioStream(streams, untaggedAudioTrack = 2) {
+  const audio = streams.filter(stream => stream.codec_type === 'audio');
+  const english = audio.find(stream => /^(eng|en|en-us|en-gb)$/i.test(stream.tags?.language || ''))
+    || audio.find(stream => /\b(english|eng)\b/i.test(`${stream.tags?.title || ''} ${stream.tags?.handler_name || ''}`));
+  return (english || audio[Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1))] || audio[0])?.index ?? null;
+}
+
+async function startHlsConversion(job, settings, start, directory, onProgress = () => {}) {
+  const cached = job.mode === 'cached-convert';
+  const rangeSource = !cached ? await openPostedRangeServer(job, settings) : null;
+  const strategy = seekPlaybackStrategy(job.strategy === 'raw' ? 'remux' : job.strategy, start);
+  const toneMap = releaseDynamicRange(job.release) !== 'sdr';
+  let child, closed = false;
+  try {
+    const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
+    if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
+    const input = cached ? job.sourcePath : rangeSource.url;
+    const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
+    const audioIndex = preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack);
+    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration);
+    // HLS exposes one audio track per rendition. Optional maps can select the
+    // same English track repeatedly, which browsers reject in an MSE buffer.
+    for (let i = mapped.length - 2; i >= 0; i--) {
+      if (mapped[i] === '-map' && mapped[i + 1] !== '0:v:0') mapped.splice(i, 2);
+    }
+    if (audioIndex !== null) mapped.splice(mapped.indexOf('-movflags'), 0, '-map', `0:${audioIndex}`);
+    // Browser MSE rejects AAC program-config-element layouts emitted for some surround sources.
+    mapped.splice(mapped.indexOf('-movflags'), 0, '-ac', '2');
+    const args = hlsOutputArgs(mapped, directory);
+    // Bound conversion speed while retaining some headroom to fill the buffer.
+    args.splice(args.indexOf('-i'), 0, '-readrate', '1.5');
+    if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', 'expr:gte(t,n_forced*4)');
+    child = spawn('ffmpeg', args);
+    onProgress(1);
+  } catch (error) { await rangeSource?.close(); throw error; }
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
+  child.stdin.on('error', () => {});
+  const exited = once(child, 'close'); void exited.catch(() => {});
+  const completion = (async () => {
+    try {
+      const [code] = await exited;
+      if (!closed && !conversionSucceeded(code, stderr)) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
+    } finally { stopConversion(child); await rangeSource?.close(); }
+  })();
+  void completion.catch(() => {});
+  return { completion, async stop() { closed = true; stopConversion(child); await completion.catch(() => {}); } };
+}
+
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
   const rangeSource = start > 0 ? await openPostedRangeServer(job, settings) : null;
   const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
@@ -869,7 +921,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
   }
 }
-function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job; return { ...safe, title: media.title, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };
@@ -884,6 +936,18 @@ export function parseByteRange(range, size) {
   const requestedEnd = match[2] ? Number(match[2]) : size - 1;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= size || requestedEnd < start) return null;
   return { start, end: Math.min(requestedEnd, size - 1), partial: true };
+}
+export async function serveHlsAsset(req, res, session, asset) {
+  let data;
+  try { data = await session.read(asset); }
+  catch (error) { if (error.code === 'ENOENT') return json(res, 404, { error: 'Segment not found.' }); throw error; }
+  const playlist = asset === 'index.m3u8';
+  if (playlist) data = Buffer.from(data.toString().replace('#EXTM3U', '#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES'));
+  const selected = parseByteRange(req.headers.range, data.length);
+  if (!selected) { res.writeHead(416, { 'content-range': `bytes */${data.length}` }); return res.end(); }
+  const { start, end, partial } = selected;
+  res.writeHead(partial ? 206 : 200, { 'content-type': playlist ? 'application/vnd.apple.mpegurl' : 'video/mp4', 'content-length': end - start + 1, 'accept-ranges': 'bytes', 'cache-control': playlist ? 'no-store' : 'private, max-age=3600, immutable', ...(partial ? { 'content-range': `bytes ${start}-${end}/${data.length}` } : {}) });
+  return res.end(req.method === 'HEAD' ? undefined : data.subarray(start, end + 1));
 }
 async function serveLocalVideo(req, res, job) {
   const info = await stat(job.path), selected = parseByteRange(req.headers.range, info.size);
@@ -1009,6 +1073,46 @@ export async function handleRequest(req, res) {
       const choice = media.releaseId ? manualReleases.get(media.releaseId) : undefined;
       if (media.releaseId && (!choice || choice.expires < Date.now())) return json(res, 404, { error: 'That release selection expired. Search again.' });
       const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, prepareAhead: Boolean(media.prepareAhead), ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] }; jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, settings); return json(res, 202, publicJob(job));
+    }
+    const hlsMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/hls(?:\/([\w-]+)\/(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s|stop|heartbeat))?$/);
+    if (hlsMatch) {
+      const [, jobId, sessionId, asset] = hlsMatch;
+      const job = playbackJobs.get(jobId);
+      if (!job) return json(res, 404, { error: 'Playback session not found.' });
+      if (req.method === 'POST' && !sessionId) {
+        if (job.status !== 'ready' || !['direct', 'cached-convert'].includes(job.mode)) return json(res, 409, { error: 'Conversion is not ready.' });
+        const input = await body(req), start = Number(input.start || 0);
+        if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid playback position.' });
+        const id = randomUUID(), settings = await readSettings();
+        let session, cancelled = false, delivered = false;
+        const streaming = req.headers.accept?.includes('application/x-ndjson');
+        const report = completed => { if (streaming && !cancelled) res.write(JSON.stringify({ type: 'progress', completed }) + '\n'); };
+        req.on('close', () => { if (!delivered) { cancelled = true; void session?.close().catch(() => {}); } });
+        if (streaming) { res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store', 'x-accel-buffering': 'no' }); report(0); }
+        try {
+          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report), onClose: () => hlsSessions.delete(id) });
+          hlsSessions.set(id, { jobId, session });
+          if (cancelled) { await session.close(); return; }
+          await session.ready();
+          if (cancelled) return;
+          delivered = true;
+          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}` };
+          if (streaming) { report(2); return res.end(JSON.stringify({ type: 'ready', session: result }) + '\n'); }
+          return json(res, 200, result);
+        } catch (error) {
+          await session?.close();
+          if (streaming) { if (!cancelled) res.end(JSON.stringify({ type: 'error', error: error.message }) + '\n'); return; }
+          throw error;
+        }
+      }
+      const entry = hlsSessions.get(sessionId);
+      if (!entry || entry.jobId !== jobId) return json(res, 404, { error: 'Playback segments have expired.' });
+      if (req.method === 'POST' && asset === 'stop') { await entry.session.close(); return json(res, 200, { stopped: true }); }
+      if (req.method === 'POST' && asset === 'heartbeat') { entry.session.touch(); return json(res, 200, {}); }
+      if (['GET', 'HEAD'].includes(req.method) && /\.(m3u8|mp4|m4s)$/.test(asset)) {
+        return await serveHlsAsset(req, res, entry.session, asset);
+      }
+      return json(res, 405, { error: 'Method not allowed.' });
     }
     const playMatch = url.pathname.match(/^\/api\/play\/([\w-]+)(?:\/(stream|fallback|retry))?$/);
     if (playMatch) {

@@ -49,3 +49,53 @@ test('response bridge preserves complete streaming output', async () => {
   assert.equal(response.headers.get('content-type'), 'video/mp4');
   assert.equal(await response.text(), 'firstlast');
 });
+
+test('cancelling buffered output before its scheduled data callback does not crash Node', async () => {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const request = new Request('http://localhost/api/play/test/stream');
+    let stopped = 0;
+    const response = await respond(request, new URL(request.url), async (req, res) => {
+      req.on('close', () => stopped++);
+      res.writeHead(200);
+      res.write(Buffer.alloc(1024));
+      res.end(Buffer.alloc(1024));
+    });
+    await response.body.cancel();
+    await setImmediate();
+    assert.equal(stopped, 1);
+  }
+});
+
+test('failure before headers rejects the response instead of hanging or emitting an uncaught error', async () => {
+  const request = new Request('http://localhost/api/play/test/stream');
+  await assert.rejects(respond(request, new URL(request.url), async () => {
+    throw new Error('producer failed before headers');
+  }), /producer failed before headers/);
+});
+
+test('abort before headers settles the pending response and closes the producer once', async () => {
+  const controller = new AbortController();
+  const request = new Request('http://localhost/api/play/test/stream', { signal: controller.signal });
+  let stopped = 0;
+  const pending = respond(request, new URL(request.url), async (req) => {
+    req.on('close', () => stopped++);
+    controller.abort();
+  });
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(stopped, 1);
+});
+
+test('bodyless responses release their producer', async () => {
+  for (const [method, status] of [['GET', 204], ['HEAD', 200]]) {
+    const request = new Request('http://localhost/api/play/test/stream', { method });
+    let stopped = 0;
+    const response = await respond(request, new URL(request.url), async (req, res) => {
+      req.on('close', () => stopped++);
+      res.writeHead(status);
+      res.end();
+    });
+    assert.equal(response.body, null);
+    await setImmediate();
+    assert.equal(stopped, 1);
+  }
+});
