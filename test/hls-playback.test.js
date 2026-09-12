@@ -52,7 +52,7 @@ test('leaving during startup releases a session even if its response arrives aft
   });
   const oldWindow = globalThis.window;
   globalThis.window = { addEventListener() {}, removeEventListener() {} };
-  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 0, onError: assert.fail }, () => assert.fail('Cancelled playback must not attach HLS'));
+  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 0, onError: assert.fail }, async () => ({ default: class { constructor() { assert.fail('Cancelled playback must not attach HLS'); } } }));
   try {
     source.destroy();
     assert.equal(requests[0].options.signal.aborted, true);
@@ -67,9 +67,30 @@ test('a terminal source rejection reaches recovery with its error code', async t
   const oldWindow = globalThis.window;
   globalThis.window = { addEventListener() {}, removeEventListener() {} };
   const errors = [];
-  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 27, onError: (...args) => errors.push(args) }, () => assert.fail('Rejected sources must not create a player'));
+  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 27, onError: (...args) => errors.push(args) }, async () => ({ default: class { constructor() { assert.fail('Rejected sources must not create a player'); } } }));
   try {
     await setImmediate();
     assert.deepEqual(errors, [['No usable source', { code: 'SOURCE_UNAVAILABLE' }]]);
   } finally { source.destroy(); globalThis.window = oldWindow; }
+});
+
+
+test('loads the player library while the server is still preparing playback', async t => {
+  let deliver, loaded = false;
+  const pending = new Promise(resolve => { deliver = resolve; });
+  t.mock.method(globalThis, 'fetch', url => url === '/hls' ? pending : Promise.resolve({ ok: true }));
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  const source = playbackSource({ removeAttribute() {}, load() {} },
+    { hlsUrl: '/hls', start: 0, onError: assert.fail },
+    async () => { loaded = true; return {}; });
+  try {
+    await setImmediate();
+    assert.equal(loaded, true, 'library download must overlap server preparation');
+  } finally {
+    source.destroy();
+    deliver({ ok: true, json: async () => ({ sessionUrl: '/session', playlistUrl: '/playlist' }) });
+    await setImmediate();
+    globalThis.window = oldWindow;
+  }
 });

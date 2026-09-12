@@ -21,6 +21,8 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     window.addEventListener('pagehide', stop);
     options.onProgress?.(options.hlsUrl ? playbackSetupProgress(0) : null);
     if (!options.hlsUrl) { video.src = options.url; return; }
+    // Resolve failures as data until the session response can be cleaned up.
+    const library = Promise.resolve().then(loadHls).then(value => ({ value }), error => ({ error }));
     void (async () => {
       const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start }), signal: controller.signal });
       const session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
@@ -28,8 +30,10 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       sessionUrl = session.sessionUrl;
       if (closed) { void post(`${sessionUrl}/stop`); return; }
       heartbeat = setInterval(() => void post(`${sessionUrl}/heartbeat`), 15000);
-      const { default: Hls } = await loadHls();
+      const loaded = await library;
       if (closed) return;
+      if (loaded.error) throw loaded.error;
+      const { default: Hls } = loaded.value;
       // Prefer MSE: Chromium may advertise native HLS yet reject its segments.
       if (!Hls.isSupported()) {
         if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = session.playlistUrl; return; }

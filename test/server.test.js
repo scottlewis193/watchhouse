@@ -329,13 +329,14 @@ test('prefetches resumed byte ranges concurrently while preserving output order'
   assert.equal(Buffer.concat(chunks).toString(), '012345');
 });
 
-test('releases decoded range segments after consumers finish with them', async () => {
+test('releases decoded range segments when caching is disabled', async () => {
   let reads = 0;
   const loader = createPostedSegmentLoader(
     { segments: [{ id: 'one', decodedBytes: 1 }] },
     { maxConnections: 1 },
     new Map(),
-    async () => ({ async body(_id, onLine) { reads++; await onLine('k'); }, close() {} })
+    async () => ({ async body(_id, onLine) { reads++; await onLine('k'); }, close() {} }),
+    0
   );
   try {
     assert.equal((await loader.load({ id: 'one' }, 0)).toString(), 'A');

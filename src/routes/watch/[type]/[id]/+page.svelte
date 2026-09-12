@@ -47,6 +47,10 @@
 
   async function initialise() {
     if (!offlineMode) void loadTitleDetails();
+    // Start independent catalogue work while settings and resume history load.
+    const catalogue = offlineMode ? null : api.get(media.type === 'movie'
+      ? `/api/catalog/movies/${media.id}/runtime`
+      : `/api/catalog/shows/${media.id}/seasons`).then(value => ({ value }), error => ({ error }));
     const [settingsResult, stateResult, offlineResult] = await Promise.allSettled([api.get('/api/settings'), api.get('/api/state'), api.get('/api/offline')]);
     try { if (settingsResult.status === 'rejected') throw settingsResult.reason; const settings = settingsResult.value; manualReleaseSelection = Boolean(settings.manualReleaseSelection); autoPlayNextEpisode = settings.autoPlayNextEpisode !== false; autoPlayNext = autoPlayNextEpisode; smartAutoplay = Boolean(settings.smartAutoplay); detailedPlaybackProgress = Boolean(settings.detailedPlaybackProgress); playbackDiagnostics = Boolean(settings.playbackDiagnostics); } catch { manualReleaseSelection = false; autoPlayNextEpisode = true; autoPlayNext = true; smartAutoplay = false; detailedPlaybackProgress = false; playbackDiagnostics = false; }
     if (stateResult.status === 'fulfilled') { library = stateResult.value.library; progressEntries = stateResult.value.progress; }
@@ -55,7 +59,7 @@
       if (offlineMode && !offlineAvailability(media, offlineDownloads).available) { playback = { status: 'error', message: 'This movie has not been downloaded for offline viewing.', progress: 0 }; return; }
       const savedDuration = progressFor(media)?.duration;
       if (savedDuration) media.durationHint = savedDuration;
-      else try { media.durationHint = (await api.get(`/api/catalog/movies/${media.id}/runtime`)).duration; } catch {}
+      else if (catalogue) { const result = await catalogue; if (result.value) media.durationHint = result.value.duration; }
       currentMedia = media;
       if (!shouldStartImmediately) { playback = null; return; }
       return startPlayback(media, null, shouldResume && Boolean(progressFor(media)?.position), true);
@@ -63,7 +67,9 @@
     playback = { status: 'selecting', message: 'Loading seasons…', progress: 3 };
     try {
       if (offlineMode) return await initialiseOfflineSeries();
-      seasons = (await api.get(`/api/catalog/shows/${media.id}/seasons`)).seasons;
+      const result = await catalogue;
+      if (result.error) throw result.error;
+      seasons = result.value.seasons;
       if (!seasons.length) throw new Error('No selectable seasons were found for this show.');
       if (!requestedSeason && !requestedEpisode) return await playNextUnwatchedEpisode(shouldStartImmediately);
       selectedSeason = seasons.some(season => String(season.number) === requestedSeason) ? requestedSeason : String(seasons[0].number);
