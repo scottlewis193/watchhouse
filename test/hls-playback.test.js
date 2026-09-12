@@ -94,3 +94,23 @@ test('loads the player library while the server is still preparing playback', as
     globalThis.window = oldWindow;
   }
 });
+
+test('delivers the full source duration before attaching a growing HLS stream', async t => {
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ sessionUrl: '/duration-session', playlistUrl: '/playlist', duration: 1407.018 }) }));
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  let duration;
+  class Hls {
+    static isSupported = () => true;
+    static Events = {};
+    on() {}
+    attachMedia() { assert.equal(duration, 1407.018); }
+    loadSource() {}
+    destroy() {}
+  }
+  const source = playbackSource({ removeAttribute() {}, load() {} },
+    { hlsUrl: '/hls', start: 1200, onError: assert.fail, onDuration: value => { duration = value; } },
+    async () => ({ default: Hls }));
+  try { await setImmediate(); assert.equal(duration, 1407.018); }
+  finally { source.destroy(); globalThis.window = oldWindow; }
+});

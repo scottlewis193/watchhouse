@@ -29,6 +29,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code });
       sessionUrl = session.sessionUrl;
       if (closed) { void post(`${sessionUrl}/stop`); return; }
+      if (Number.isFinite(session.duration) && session.duration > 0) options.onDuration?.(session.duration);
       heartbeat = setInterval(() => void post(`${sessionUrl}/heartbeat`), 15000);
       const loaded = await library;
       if (closed) return;

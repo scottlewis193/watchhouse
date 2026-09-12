@@ -621,10 +621,13 @@ async function startHlsConversion(job, settings, start, directory, onProgress = 
     const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
     const input = cached ? job.sourcePath : rangeSource.url;
-    const audioIndex = await cachedAudioProbe(cached ? job : job.file, settings.untaggedAudioTrack, async () => {
-      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
-      return preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack);
+    const metadata = await cachedAudioProbe(cached ? job : job.file, settings.untaggedAudioTrack, async () => {
+      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
+      const duration = Number(probe.format?.duration);
+      return { audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(duration) && duration > 0 ? duration : 0 };
     });
+    const { audioIndex } = metadata;
+    job.sourceDuration = metadata.duration;
     const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration);
     // HLS exposes one audio track per rendition. Optional maps can select the
     // same English track repeatedly, which browsers reject in an MSE buffer.
@@ -1201,7 +1204,7 @@ export async function handleRequest(req, res) {
           await session.ready();
           if (cancelled) return;
           delivered = true;
-          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}` };
+          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}`, duration: job.sourceDuration || 0 };
           if (streaming) { report(2); return res.end(JSON.stringify({ type: 'ready', session: result }) + '\n'); }
           return json(res, 200, result);
         } catch (error) {

@@ -29,6 +29,7 @@
   let videoDiagnostics = $state(null), creditDiagnostics = $state(null);
   let interruptionHistory = $state([]);
   let setupProgress = $state(null);
+  let sourceDuration = $state(0);
   const playbackTrace = createPlaybackTrace();
   let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, playerRevealTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, audioFrameSample = null, automaticStreamRetries = 0, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, creditSampleCount = 0, creditEvidence = [], lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
   let playbackUi = $derived(playbackPresentation({ ready: playback?.status === 'ready', warming: resumeStarting, restarting: streamRestarting, revealing: playerRevealing }));
@@ -158,6 +159,7 @@
         if (!playbackRequests.isCurrent(requestToken)) return;
       }
       currentMedia = selectedMedia;
+      sourceDuration = 0;
       clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer);
       restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; resumeStreamOffset = 0; resumeStarting = false; streamRestarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; playerPosition = 0; bufferedRanges = []; playerDuration = 0; seekPreview = null; audioFrameSample = null; automaticStreamRetries = 0;
       clearTimeout(interruptionTimer); showPlayerControls();
@@ -194,7 +196,7 @@
       playback = job;
       if (job.status === 'ready') {
         const entry = progressFor(currentMedia);
-        const duration = progressDuration(job.mode, player?.duration) || currentMedia?.durationHint || entry?.duration || 0;
+        const duration = progressDuration(job.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
         resumeStreamOffset = resumePlayback && hasGrowingStreamDuration(job.mode) ? resumePosition(entry, duration) : 0;
         beginPlaybackWarmup();
         if (shouldContinuePlayback(continuePlaybackOnReady, job)) {
@@ -354,7 +356,7 @@
     const key = itemKey(item), sameAsPlaying = key === itemKey(currentMedia);
     if (watched) autoMarkedMediaKey = key;
     else if (autoMarkedMediaKey === key) autoMarkedMediaKey = '';
-    const state = await api.put('/api/state/progress', { media: item, watched, reset: !watched, ...(sameAsPlaying && player ? { position: currentPlaybackPosition(), duration: progressDuration(playback?.mode, player.duration) || currentMedia.durationHint || progressFor(currentMedia)?.duration || 0 } : {}) });
+    const state = await api.put('/api/state/progress', { media: item, watched, reset: !watched, ...(sameAsPlaying && player ? { position: currentPlaybackPosition(), duration: progressDuration(playback?.mode, player.duration) || sourceDuration || currentMedia.durationHint || progressFor(currentMedia)?.duration || 0 } : {}) });
     progressEntries = state.progress;
   }
 
@@ -373,7 +375,7 @@
     if (position < 1 || (!force && now - lastProgressSave < 10000)) return;
     progressWritePending = true; lastProgressSave = now;
     try {
-      const duration = reliableDuration || currentMedia.durationHint || progressFor(currentMedia)?.duration || 0;
+      const duration = reliableDuration || sourceDuration || currentMedia.durationHint || progressFor(currentMedia)?.duration || 0;
       const state = await api.put('/api/state/progress', { media: currentMedia, position, duration, watched: false });
       progressEntries = state.progress;
     } finally { progressWritePending = false; }
@@ -382,7 +384,7 @@
   function restorePlaybackProgress() {
     const key = itemKey(currentMedia), entry = progressFor(currentMedia);
     if (hasGrowingStreamDuration(playback?.mode)) { restoredMediaKey = key; return; }
-    const duration = progressDuration(playback?.mode, player?.duration) || currentMedia?.durationHint || entry?.duration || 0;
+    const duration = progressDuration(playback?.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
     const position = recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0);
     if (!position || restoredMediaKey === key) return;
     player.currentTime = Math.min(position, Math.max(0, duration - 31)); recoveryPosition = 0; restoredMediaKey = key;
@@ -607,7 +609,7 @@
 
   function controlTimeline() {
     const entry = progressFor(currentMedia);
-    const timeline = playbackTimeline(playback?.mode, playerPosition, currentMedia?.durationHint || entry?.duration || 0, playerDuration, resumeStreamOffset);
+    const timeline = playbackTimeline(playback?.mode, playerPosition, sourceDuration || currentMedia?.durationHint || entry?.duration || 0, playerDuration, resumeStreamOffset);
     return { ...timeline, position: seekPreview ?? timeline.position };
   }
   function captureVideoDiagnostics(event) {
@@ -793,7 +795,7 @@
             {@const timeline = controlTimeline()}
             {#key streamAttempt}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" use:playbackSource={{ url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: value => { setupProgress = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
+              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" use:playbackSource={{ url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: value => { setupProgress = value; }, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
             {/key}
             {#if playbackUi.showSeekStatus}
               <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/30 text-white" role="status">
