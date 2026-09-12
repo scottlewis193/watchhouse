@@ -349,7 +349,21 @@ export async function writeStreamToResponse(stream, res, { end = true } = {}) {
   if (end) res.end();
   return bytes;
 }
-export function conversionSucceeded(code, stderr = '', bytes = 1) { return code === 0 && !String(stderr).trim() && bytes > 0; }
+export function conversionSucceeded(code, stderr = '', bytes = 1, { httpReconnect = false } = {}) {
+  let recoveredRead = false;
+  const errors = String(stderr).split('\n').filter(line => {
+    if (httpReconnect && /^\[http @ 0x[\da-f]+\] Stream ends prematurely at \d+, should be \d+\s*$/i.test(line)) {
+      recoveredRead = true;
+      return false;
+    }
+    if (recoveredRead && /^\s*Last message repeated \d+ times?\s*$/.test(line)) return false;
+    recoveredRead = false;
+    return line.trim();
+  });
+  // With HTTP reconnect enabled, the disconnect itself is recoverable. Exhausted
+  // retries still emit a demuxer read/I/O error, which must fail the conversion.
+  return code === 0 && errors.length === 0 && bytes > 0;
+}
 async function extractedVideo(directory) { const names = await readdir(directory, { recursive: true }); return names.find(name => /\.(mkv|mp4|m4v|mov|webm)$/i.test(name)); }
 export function seekPlaybackStrategy(strategy, start = 0) {
   return start > 0 ? 'transcode' : strategy;
@@ -377,6 +391,10 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
   ];
   const audioMaps = [...englishMetadataMaps, ...(fallbackIndex ? [`0:a:${fallbackIndex}?`] : []), '0:a:0?'];
   const seek = start > 0 ? ['-ss', String(start)] : [];
+  // Resume an interrupted range response before the demuxer sees a short packet.
+  // Without this, a transient source disconnect can corrupt otherwise valid HLS.
+  const reconnect = /^https?:\/\//i.test(input)
+    ? ['-reconnect', '1', '-reconnect_delay_max', '2', '-rw_timeout', '15000000'] : [];
   const transcodeVideo = strategy !== 'remux' || toneMap;
   const vaapi = transcodeVideo && acceleration?.kind === 'vaapi';
   const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi'] : [];
@@ -386,7 +404,7 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
   const filterArgs = filter ? ['-vf', filter] : [];
   const colorArgs = toneMap ? ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] : [];
   const videoCodecArgs = !transcodeVideo ? ['-c:v', 'copy'] : vaapi ? ['-c:v', 'h264_vaapi', '-rc_mode', 'CQP', '-qp', '22'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p'];
-  return ['-y', '-loglevel', 'error', ...hardwareInputArgs, ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), ...filterArgs, ...colorArgs, ...videoCodecArgs, '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
+  return ['-y', '-loglevel', 'error', ...hardwareInputArgs, ...reconnect, ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), ...filterArgs, ...colorArgs, ...videoCodecArgs, '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
 }
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
@@ -567,7 +585,7 @@ async function startHlsConversion(job, settings, start, directory, onProgress = 
   const completion = (async () => {
     try {
       const [code] = await exited;
-      if (!closed && !conversionSucceeded(code, stderr)) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
+      if (!closed && !conversionSucceeded(code, stderr, 1, { httpReconnect: Boolean(rangeSource) })) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
     } finally { stopConversion(child); await rangeSource?.close(); }
   })();
   void completion.catch(() => {});
@@ -588,7 +606,7 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
       await streamPostedFile(job.file, settings, async chunk => { if (closed) throw new Error('Playback connection closed.'); if (!child.stdin.write(chunk)) await waitForDrain(child.stdin); }, connectNntp, job.prefetchedSegments);
       child.stdin.end();
     }
-    const [code] = await exited; const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end();
+    const [code] = await exited; const bytes = await output; if (!closed && !conversionSucceeded(code, stderr, bytes, { httpReconnect: Boolean(rangeSource) })) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : 'ffmpeg produced no video')}`); if (!closed) res.end();
   }
   catch (error) { stopConversion(child); await output.catch(() => {}); if (!closed) throw error; }
   finally { await rangeSource?.close(); }
