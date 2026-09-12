@@ -47,9 +47,10 @@
 
   async function initialise() {
     if (!offlineMode) void loadTitleDetails();
-    try { const settings = await api.get('/api/settings'); manualReleaseSelection = Boolean(settings.manualReleaseSelection); autoPlayNextEpisode = settings.autoPlayNextEpisode !== false; autoPlayNext = autoPlayNextEpisode; smartAutoplay = Boolean(settings.smartAutoplay); detailedPlaybackProgress = Boolean(settings.detailedPlaybackProgress); playbackDiagnostics = Boolean(settings.playbackDiagnostics); } catch { manualReleaseSelection = false; autoPlayNextEpisode = true; autoPlayNext = true; smartAutoplay = false; detailedPlaybackProgress = false; playbackDiagnostics = false; }
-    try { const state = await api.get('/api/state'); library = state.library; progressEntries = state.progress; } catch {}
-    try { const state = await api.get('/api/offline'); offlineDownloads = state.downloads; offlineJobs = state.jobs; scheduleDownloadPoll(); } catch {}
+    const [settingsResult, stateResult, offlineResult] = await Promise.allSettled([api.get('/api/settings'), api.get('/api/state'), api.get('/api/offline')]);
+    try { if (settingsResult.status === 'rejected') throw settingsResult.reason; const settings = settingsResult.value; manualReleaseSelection = Boolean(settings.manualReleaseSelection); autoPlayNextEpisode = settings.autoPlayNextEpisode !== false; autoPlayNext = autoPlayNextEpisode; smartAutoplay = Boolean(settings.smartAutoplay); detailedPlaybackProgress = Boolean(settings.detailedPlaybackProgress); playbackDiagnostics = Boolean(settings.playbackDiagnostics); } catch { manualReleaseSelection = false; autoPlayNextEpisode = true; autoPlayNext = true; smartAutoplay = false; detailedPlaybackProgress = false; playbackDiagnostics = false; }
+    if (stateResult.status === 'fulfilled') { library = stateResult.value.library; progressEntries = stateResult.value.progress; }
+    if (offlineResult.status === 'fulfilled') { offlineDownloads = offlineResult.value.downloads; offlineJobs = offlineResult.value.jobs; scheduleDownloadPoll(); }
     if (media.type === 'movie') {
       if (offlineMode && !offlineAvailability(media, offlineDownloads).available) { playback = { status: 'error', message: 'This movie has not been downloaded for offline viewing.', progress: 0 }; return; }
       const savedDuration = progressFor(media)?.duration;

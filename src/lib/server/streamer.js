@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, titleVariants } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownloadCancelled } from './download-cancellation.js';
+import { createReleaseHealthStore } from './release-health.js';
 import { createMediaStateStore } from './media-state.js';
 import { stopConversion } from './conversion-process.js';
 import { waitForDrain } from './stream-drain.js';
@@ -30,6 +31,7 @@ const manualReleases = new Map();
 const offlineJobs = new Map();
 const offlineSeriesJobs = new Map();
 const playbackPlans = createPlaybackPlanCache();
+const releaseHealth = createReleaseHealthStore(join(ROOT, 'data', 'release-health.json'));
 const mediaState = createMediaStateStore(MEDIA_STATE_PATH);
 let discoveryCache = null;
 let runtimeCache = null;
@@ -144,8 +146,9 @@ async function connectNntp(settings) {
   const pass = await client.command(`AUTHINFO PASS ${settings.usenetPass}`); if (!/^281/.test(pass)) throw new Error('Provider server rejected the password.');
   return client;
 }
-async function postedFileAvailable(file, settings) {
-  const client = await connectNntp(settings);
+export async function postedFileAvailable(file, settings, connect = connectNntp) {
+  const client = await connect(settings);
+  let clientClosed = false;
   try {
     let header = Buffer.alloc(0), decodedSize = 0, partBegin = 0, partEnd = 0; const chunks = [];
     await client.body(file.segments[0].id, line => {
@@ -157,11 +160,18 @@ async function postedFileAvailable(file, settings) {
     });
     if (!playableMediaHeader(file.subject, header)) return null;
     const first = Buffer.concat(chunks);
-    applyYencByteLayout(file, { decodedSize, partBegin, partEnd, firstBytes: first.length });
-    const indexes = [...new Set([Math.floor(file.segments.length / 2), file.segments.length - 1])];
-    for (const index of indexes) if (!await client.has(file.segments[index].id)) return null;
+    if ((partBegin && partBegin !== 1) || !applyYencByteLayout(file, { decodedSize, partBegin, partEnd, firstBytes: first.length }) || file.segments[0].decodedBytes !== first.length) return null;
+    // STAT only proves existence. Read real bodies at startup and across the file.
+    const indexes = [...new Set([1, Math.floor(file.segments.length / 4), Math.floor(file.segments.length / 2), Math.floor(file.segments.length * 3 / 4), file.segments.length - 1])].filter(index => index > 0 && index < file.segments.length);
+    client.close(); clientClosed = true;
+    const loader = createPostedSegmentLoader(file, settings, new Map([[0, first]]), connect);
+    try {
+      const checks = await Promise.allSettled(indexes.map(index => loader.load(file.segments[index], index)));
+      const failed = checks.find(check => check.status === 'rejected');
+      if (failed) throw failed.reason;
+    } finally { await loader.close(); }
     return first;
-  } finally { client.close(); }
+  } finally { if (!clientClosed) client.close(); }
 }
 
 export function applyYencByteLayout(posted, { decodedSize, partBegin = 0, partEnd = 0, firstBytes = 0 }) {
@@ -447,12 +457,21 @@ export async function audioSafeOfflineRecord(record, inspectStrategy = cachedPla
   return strategy === 'raw' ? record : { ...record, mode: 'cached-convert', sourcePath: record.path, mime: 'video/mp4', strategy };
 }
 
-export function createPostedSegmentLoader(posted, settings, prefetchedSegments = new Map(), connect = connectNntp) {
+export function createPostedSegmentLoader(posted, settings, prefetchedSegments = new Map(), connect = connectNntp, maximumCacheBytes = 16 * 1024 * 1024) {
   const layout = postedFileByteLayout(posted);
   const maxArticleAttempts = 6;
   const width = Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, posted.segments.length);
   const lanes = Array.from({ length: width }, () => ({ client: null, tail: Promise.resolve() }));
   const prefetched = new Map(prefetchedSegments);
+  let cachedBytes = [...prefetched.values()].reduce((total, bytes) => total + bytes.length, 0);
+  const remember = (index, bytes) => {
+    if (bytes.length > maximumCacheBytes) return;
+    prefetched.set(index, bytes); cachedBytes += bytes.length;
+    while (cachedBytes > maximumCacheBytes && prefetched.size) {
+      const oldest = prefetched.keys().next().value;
+      cachedBytes -= prefetched.get(oldest).length; prefetched.delete(oldest);
+    }
+  };
   const inflight = new Map();
   let nextLane = 0;
   const load = (segment, index) => {
@@ -482,6 +501,7 @@ export function createPostedSegmentLoader(posted, settings, prefetchedSegments =
               || (partEnd !== null && partEnd !== layout.offsets[index + 1])))) {
             throw Object.assign(new Error('Usenet segment did not match its yEnc byte metadata.'), { code: 'INVALID_USENET_ARTICLE' });
           }
+          remember(index, decoded);
           return decoded;
         } catch (error) {
           lane.client?.close(); lane.client = null;
@@ -536,6 +556,7 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
         job.rejectedReleases ||= new Set();
         if (!job.rejectedReleases.has(release)) {
           job.rejectedReleases.add(release);
+          if (settings.usenetHost) void releaseHealth.reject(settings, job.media, release).catch(() => {});
           playbackPlans.delete(job.media);
           jobEvent(job, 'source-rejected', 'The provider repeatedly returned invalid video data. Trying another release on recovery.', { release });
         }
@@ -571,6 +592,18 @@ export async function recoverPlaybackSource(job, settings, prepare = preparePlay
   finally { delete job.sourceRecovery; }
 }
 
+const audioProbes = new WeakMap();
+export async function cachedAudioProbe(source, audioPolicy, inspect) {
+  let variants = audioProbes.get(source);
+  if (!variants) { variants = new Map(); audioProbes.set(source, variants); }
+  if (!variants.has(audioPolicy)) {
+    const pending = Promise.resolve().then(inspect);
+    variants.set(audioPolicy, pending);
+    void pending.catch(() => { if (variants.get(audioPolicy) === pending) variants.delete(audioPolicy); });
+  }
+  return variants.get(audioPolicy);
+}
+
 export function preferredAudioStream(streams, untaggedAudioTrack = 2) {
   const audio = streams.filter(stream => stream.codec_type === 'audio');
   const english = audio.find(stream => /^(eng|en|en-us|en-gb)$/i.test(stream.tags?.language || ''))
@@ -588,8 +621,10 @@ async function startHlsConversion(job, settings, start, directory, onProgress = 
     const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
     const input = cached ? job.sourcePath : rangeSource.url;
-    const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
-    const audioIndex = preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack);
+    const audioIndex = await cachedAudioProbe(cached ? job : job.file, settings.untaggedAudioTrack, async () => {
+      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
+      return preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack);
+    });
     const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration);
     // HLS exposes one audio track per rendition. Optional maps can select the
     // same English track repeatedly, which browsers reject in an MSE buffer.
@@ -855,7 +890,7 @@ async function preparePlayback(job, settings) {
     throwIfDownloadCancelled(job);
     if (!job.manualRelease) {
       const plan = playbackPlans.get(job.media, settings.playbackQuality);
-      if (plan && !job.rejectedReleases?.has(plan.release)) {
+      if (plan && !job.rejectedReleases?.has(plan.release) && !await releaseHealth.has(settings, job.media, plan.release)) {
         Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments), status: 'ready', message: plan.strategy === 'raw' ? 'Reusing the direct stream selected earlier.' : 'Reusing the browser-compatible stream selected earlier.', progress: 100, mode: 'direct' });
         jobEvent(job, 'plan-cache-hit', job.message, { release: plan.release, strategy: plan.strategy, mode: 'direct' });
         return;
@@ -863,7 +898,8 @@ async function preparePlayback(job, settings) {
     }
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await findReleases(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await findReleases(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
-    releases = releases.filter(release => !job.rejectedReleases?.has(release.title));
+    const rejected = await Promise.all(releases.map(release => releaseHealth.has(settings, job.media, release.title)));
+    releases = releases.filter((release, index) => !job.rejectedReleases?.has(release.title) && !rejected[index]);
     for (let i = 0; i < Math.min(releases.length, 10); i++) {
       throwIfDownloadCancelled(job);
       const release = releases[i];
@@ -897,7 +933,7 @@ async function preparePlayback(job, settings) {
           archiveChoices.push({ archives, release: release.title });
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
         } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
-      } catch (error) { if (isDownloadCancelled(job, error)) throw error; jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
+      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (error.code === 'INVALID_USENET_ARTICLE') await releaseHealth.reject(settings, job.media, release.title); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
     if (!archiveChoices.length) throw new Error('No compatible video release was found.'); let lastError; for (const choice of archiveChoices) { try { throwIfDownloadCancelled(job); job.release = choice.release; job.archives = choice.archives; await prepareArchive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { if (isDownloadCancelled(job, error)) { job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }

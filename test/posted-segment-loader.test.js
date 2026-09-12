@@ -78,3 +78,24 @@ test('does not extend retries for provider connection failures', async () => {
     assert.equal(connections, 2);
   } finally { await loader.close(); }
 });
+
+test('probe and converter reads reuse validated bytes within a bounded cache', async () => {
+  let reads=0;
+  const loader=createPostedSegmentLoader(posted,{maxConnections:1},new Map(),async()=>({body:async(_id,onLine)=>{reads++;await article(onLine,Buffer.from('EFGH'),5);},close(){}}));
+  try {
+    await loader.load(posted.segments[1],1);
+    await loader.load(posted.segments[1],1);
+    assert.equal(reads,1,'sequential reads should not fetch the same article twice');
+  } finally {await loader.close();}
+});
+
+test('validated article cache evicts bytes at its memory limit', async () => {
+  let reads=0;
+  const loader=createPostedSegmentLoader(posted,{maxConnections:1},new Map(),async()=>({
+    body:async(id,onLine)=>{reads++;await article(onLine,Buffer.from(id==='part-1'?'ABCD':'EFGH'),id==='part-1'?1:5);},close(){}
+  }),4);
+  try {
+    for(const index of [0,1,0]) await loader.load(posted.segments[index],index);
+    assert.equal(reads,3,'the evicted first part must be fetched again');
+  } finally {await loader.close();}
+});

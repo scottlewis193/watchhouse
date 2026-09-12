@@ -1,4 +1,6 @@
 data/settings.json
+data/release-health.json
+data/release-health.json.tmp
 data/media-state.json
 data/cache/
 data/offline/
