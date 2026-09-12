@@ -611,6 +611,38 @@ export function preferredAudioStream(streams, untaggedAudioTrack = 2) {
   return (english || audio[Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1))] || audio[0])?.index ?? null;
 }
 
+export function playbackTimelineHasGap(packets, videoIndex, audioIndex) {
+  const gaps = index => {
+    const result = [];
+    let end;
+    for (const packet of packets) {
+      if (packet.stream_index !== index) continue;
+      const time = Number(packet.dts_time);
+      if (!Number.isFinite(time)) continue;
+      if (end !== undefined && time - end > 3) result.push({ start: end, end: time });
+      // Demuxers can stretch a frame's reported duration across the hole.
+      // Measure arrival of new frames, not that inferred duration.
+      end = Math.max(end ?? time, time);
+    }
+    return result;
+  };
+  // A shared hole is a discontinuity, not an audio lead-in or reordered video.
+  // HLS/MSE cannot reliably bridge it: audio may advance while video stalls.
+  const audioGaps = gaps(audioIndex);
+  return gaps(videoIndex).some(video => audioGaps.some(audio => Math.min(video.end, audio.end) - Math.max(video.start, audio.start) > 3));
+}
+
+export async function inspectPlaybackSource(input, untaggedAudioTrack = 2) {
+  const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-read_intervals', '0%+20', '-show_packets', '-show_entries', 'packet=stream_index,dts_time:format=duration:stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
+  const audioIndex = preferredAudioStream(probe.streams || [], untaggedAudioTrack);
+  const videoIndex = probe.streams?.find(stream => stream.codec_type === 'video')?.index;
+  if (playbackTimelineHasGap(probe.packets || [], videoIndex, audioIndex)) {
+    throw Object.assign(new Error('This release has a gap in its opening audio and video timeline. Trying another release.'), { code: 'INVALID_MEDIA_TIMELINE' });
+  }
+  const duration = Number(probe.format?.duration);
+  return { audioIndex, duration: Number.isFinite(duration) && duration > 0 ? duration : 0 };
+}
+
 async function startHlsConversion(job, settings, start, directory, onProgress = () => {}) {
   const cached = job.mode === 'cached-convert';
   const rangeSource = !cached ? await openPostedRangeServer(job, settings) : null;
@@ -621,11 +653,7 @@ async function startHlsConversion(job, settings, start, directory, onProgress = 
     const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
     const input = cached ? job.sourcePath : rangeSource.url;
-    const metadata = await cachedAudioProbe(cached ? job : job.file, settings.untaggedAudioTrack, async () => {
-      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
-      const duration = Number(probe.format?.duration);
-      return { audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(duration) && duration > 0 ? duration : 0 };
-    });
+    const metadata = await cachedAudioProbe(cached ? job : job.file, settings.untaggedAudioTrack, () => inspectPlaybackSource(input, settings.untaggedAudioTrack));
     const { audioIndex } = metadata;
     job.sourceDuration = metadata.duration;
     const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration);
@@ -643,7 +671,19 @@ async function startHlsConversion(job, settings, start, directory, onProgress = 
     if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', 'expr:gte(t,n_forced*4)');
     child = spawn('ffmpeg', args);
     onProgress(1);
-  } catch (error) { await rangeSource?.close(); throw error; }
+  } catch (error) {
+    await rangeSource?.close();
+    if (error.code === 'INVALID_MEDIA_TIMELINE' && !cached) {
+      job.rejectedReleases ||= new Set();
+      job.rejectedReleases.add(job.release);
+      await releaseHealth.reject(settings, job.media, job.release);
+      playbackPlans.delete(job.media);
+      jobEvent(job, 'source-rejected', error.message, { release: job.release });
+      await recoverPlaybackSource(job, settings);
+      return startHlsConversion(job, settings, start, directory, onProgress);
+    }
+    throw error;
+  }
   let stderr = '';
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
   child.stdin.on('error', () => {});
