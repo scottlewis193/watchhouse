@@ -7,6 +7,7 @@
   let { children } = $props();
   let offline = $state(false);
   let searchInput;
+  let headerHeight = $state();
 
   onMount(() => {
     const update = () => {
@@ -58,9 +59,9 @@
 
 <IntroAnimation />
 
-<div class="watchhouse-shell min-h-screen bg-base-200 text-base-content" class:watchhouse-watch={page.url.pathname.startsWith('/watch/')}>
+<div class="watchhouse-shell min-h-screen bg-base-200 text-base-content" class:watchhouse-watch={page.url.pathname.startsWith('/watch/')} style:--watch-header-height={headerHeight ? `${headerHeight}px` : undefined}>
   {#if offline}<div class="bg-warning px-4 py-2 text-center text-xs font-semibold tracking-wide text-warning-content">OFFLINE MODE · ONLY DOWNLOADED TITLES ARE AVAILABLE</div>{/if}
-  <header class="app-header">
+  <header class="app-header" bind:offsetHeight={headerHeight}>
     <div class="app-header-inner mx-auto grid max-w-[90rem] items-center gap-x-8 gap-y-4 px-5 sm:px-8 lg:px-12">
       <a class="brand-link" href={offline ? '/library?offline=1' : '/'}>Watchhouse</a>
       <nav class="main-nav" aria-label="Main navigation">

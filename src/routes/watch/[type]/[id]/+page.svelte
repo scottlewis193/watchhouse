@@ -748,8 +748,10 @@
 {/snippet}
 
 <section class="watch-page">
-  <div class="watch-hero" class:watch-hero-playing={playbackUi.inPlayer} class:watch-hero-revealing={playerRevealing} style={`--watch-artwork: url("${titleDetails.backdrop || media.poster || ''}")`}>
-    <div class="watch-hero-art" aria-hidden="true"></div>
+  <div class="watch-hero" class:watch-hero-playing={playbackUi.inPlayer} class:watch-hero-revealing={playerRevealing}>
+    <div class="watch-hero-art" aria-hidden="true">
+      {#if titleDetails.backdrop || media.poster}<img src={titleDetails.backdrop || media.poster} alt="" />{/if}
+    </div>
     <div class="watch-hero-shade" aria-hidden="true"></div>
     {@render watchToolbar(playbackUi.inPlayer)}
 

@@ -749,7 +749,7 @@ button:not(:disabled):active { transform: scale(.97); }
   position: absolute;
   width: 100%;
   border-bottom-color: rgb(255 255 255 / 10%);
-  background: linear-gradient(to bottom, rgb(0 0 0 / 66%), transparent);
+  background: #050607;
   color: white;
   backdrop-filter: none;
 }
@@ -775,13 +775,24 @@ button:not(:disabled):active { transform: scale(.97); }
   color: white;
 }
 .watch-hero-art,
-.watch-hero-shade { position: absolute; z-index: -2; inset: 0; }
+.watch-hero-shade { position: absolute; z-index: -2; inset: var(--watch-header-height, 6rem) 0 0; }
 .watch-hero-art {
-  background-image: var(--watch-artwork);
-  background-position: center 18%;
-  background-size: cover;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.watch-hero-art img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  object-fit: contain;
   filter: saturate(.72) contrast(1.04);
-  transform: scale(1.025);
+  mask-image:
+    linear-gradient(to right, transparent, black 5%, black 95%, transparent),
+    linear-gradient(to bottom, transparent, black 3%, black 78%, transparent);
+  mask-composite: intersect;
 }
 .watch-hero-shade {
   z-index: -1;
