@@ -24,7 +24,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     void (async () => {
       const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start }), signal: controller.signal });
       const session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
-      if (!response.ok) throw new Error(session.error || 'Unable to prepare playback.');
+      if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code });
       sessionUrl = session.sessionUrl;
       if (closed) { void post(`${sessionUrl}/stop`); return; }
       heartbeat = setInterval(() => void post(`${sessionUrl}/heartbeat`), 15000);
@@ -40,7 +40,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       hls.on(Hls.Events.FRAG_BUFFERED, () => { if (!closed && !buffered) { buffered = true; options.onProgress?.(playbackSetupProgress(3)); } });
       hls.attachMedia(video);
       hls.loadSource(session.playlistUrl);
-    })().catch(error => { if (!closed) options.onError(error.message); });
+    })().catch(error => { if (!closed) options.onError(error.message, { code: error.code }); });
   }
   update(initial);
   return { update, destroy: () => dispose() };

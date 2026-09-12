@@ -61,3 +61,15 @@ test('leaving during startup releases a session even if its response arrives aft
     assert.ok(requests.some(request => request.url === '/late-session/stop'));
   } finally { source.destroy(); globalThis.window = oldWindow; }
 });
+
+test('a terminal source rejection reaches recovery with its error code', async t => {
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: false, json: async () => ({ error: 'No usable source', code: 'SOURCE_UNAVAILABLE' }) }));
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  const errors = [];
+  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 27, onError: (...args) => errors.push(args) }, () => assert.fail('Rejected sources must not create a player'));
+  try {
+    await setImmediate();
+    assert.deepEqual(errors, [['No usable source', { code: 'SOURCE_UNAVAILABLE' }]]);
+  } finally { source.destroy(); globalThis.window = oldWindow; }
+});

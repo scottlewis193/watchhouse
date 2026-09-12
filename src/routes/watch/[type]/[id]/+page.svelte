@@ -455,10 +455,10 @@
     try { await player.play(); }
     catch { playbackNeedsAction = true; }
   }
-  function offerPlaybackRecovery(message) {
+  function offerPlaybackRecovery(message, sourceUnavailable = false) {
     if (!canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. Try a different release or check this browser’s codec support.' }; return; }
     clearTimeout(interruptionTimer); settlePlaybackWarmup(); playing = false;
-    playbackRecovery = { message, position: currentPlaybackPosition() };
+    playbackRecovery = { message, sourceUnavailable, position: currentPlaybackPosition() };
     void savePlaybackProgress(true);
   }
   function restartStream(position) {
@@ -474,7 +474,7 @@
     return playbackTraceSample(player, hasGrowingStreamDuration(playback?.mode) ? resumeStreamOffset : 0);
   }
   function handlePlaybackInterruption(reason, message, evidence = {}) {
-    const action = streamInterruptionAction(playback, automaticStreamRetries);
+    const action = evidence.code === 'SOURCE_UNAVAILABLE' ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries);
     if (playbackDiagnostics) {
       interruptionHistory = playbackTrace.interrupt(traceSource(), {
         reason, message, evidence, action, retriesBefore: automaticStreamRetries,
@@ -484,7 +484,7 @@
         browser: navigator.userAgent
       }, traceSample());
     }
-    if (action !== 'retry') { offerPlaybackRecovery(message); return; }
+    if (action !== 'retry') { offerPlaybackRecovery(message, evidence.code === 'SOURCE_UNAVAILABLE'); return; }
     automaticStreamRetries++;
     restartStream(currentPlaybackPosition());
   }
@@ -786,7 +786,7 @@
             {@const timeline = controlTimeline()}
             {#key streamAttempt}
               <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" use:playbackSource={{ url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, onError: message => handlePlaybackInterruption('media-error', message), onProgress: value => { setupProgress = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
+              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" use:playbackSource={{ url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: value => { setupProgress = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
             {/key}
             {#if playbackUi.showSeekStatus}
               <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/30 text-white" role="status">
@@ -795,7 +795,7 @@
             {/if}
             {#if playbackRecovery}
               <div class="player-modal absolute inset-0 z-30 text-white">
-                <div class="player-modal-panel player-modal-panel-alert"><p class="player-eyebrow">Stream interrupted</p><h2>How would you like to continue?</h2><p>{playbackRecovery.message}</p><div class="player-modal-actions"><button class="player-popup-button player-popup-button-primary" onclick={retryDirectStream}>Retry stream</button><button class="player-popup-button" onclick={() => void fallback()}>Download &amp; resume</button></div></div>
+                <div class="player-modal-panel player-modal-panel-alert"><p class="player-eyebrow">Stream interrupted</p><h2>How would you like to continue?</h2><p>{playbackRecovery.message}</p><div class="player-modal-actions"><!-- A rejected source cannot be repaired by retrying or downloading the same file. -->{#if !playbackRecovery.sourceUnavailable}<button class="player-popup-button player-popup-button-primary" onclick={retryDirectStream}>Retry stream</button>{/if}<button class="player-popup-button" onclick={() => void fallback()}>{playbackRecovery.sourceUnavailable ? 'Download another release' : 'Download & resume'}</button></div></div>
               </div>
             {:else if playbackNeedsAction}
               <div class="player-modal absolute inset-0 z-30 text-white">

@@ -506,9 +506,10 @@ export function createPostedSegmentLoader(posted, settings, prefetchedSegments =
 }
 
 export async function openPostedRangeServer(job, settings, connect = connectNntp) {
-  const layout = postedFileByteLayout(job.file);
+  const posted = job.file, release = job.release;
+  const layout = postedFileByteLayout(posted);
   if (!layout) return null;
-  const loader = createPostedSegmentLoader(job.file, settings, job.prefetchedSegments, connect);
+  const loader = createPostedSegmentLoader(posted, settings, job.prefetchedSegments, connect);
   const server = createServer((req, res) => {
     void (async () => {
       if (!['GET', 'HEAD'].includes(req.method)) { res.writeHead(405, { allow: 'GET, HEAD' }); return res.end(); }
@@ -528,9 +529,19 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
       });
       if (req.method === 'HEAD') return res.end();
       let aborted = false; res.on('close', () => { aborted = true; });
-      await writePostedFileRange(job.file, start, end, loader.load, async chunk => { if (!res.write(chunk)) await waitForDrain(res); }, { shouldContinue: () => !aborted, concurrency: settings.maxConnections });
+      await writePostedFileRange(posted, start, end, loader.load, async chunk => { if (!res.write(chunk)) await waitForDrain(res); }, { shouldContinue: () => !aborted, concurrency: settings.maxConnections });
       if (!aborted) res.end();
-    })().catch(error => { if (res.headersSent) res.destroy(error); else { res.writeHead(500); res.end(); } });
+    })().catch(error => {
+      if (error.code === 'INVALID_USENET_ARTICLE' && job.file === posted) {
+        job.rejectedReleases ||= new Set();
+        if (!job.rejectedReleases.has(release)) {
+          job.rejectedReleases.add(release);
+          playbackPlans.delete(job.media);
+          jobEvent(job, 'source-rejected', 'The provider repeatedly returned invalid video data. Trying another release on recovery.', { release });
+        }
+      }
+      if (res.headersSent) res.destroy(error); else { res.writeHead(500); res.end(); }
+    });
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const address = server.address();
@@ -541,6 +552,23 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
       await loader.close();
     }
   };
+}
+
+export async function recoverPlaybackSource(job, settings, prepare = preparePlayback) {
+  if (job.sourceRecovery) return job.sourceRecovery;
+  const unavailable = message => Object.assign(new Error(message), { code: 'SOURCE_UNAVAILABLE' });
+  if (job.sourceRecoveryError) throw unavailable(job.sourceRecoveryError);
+  if (!job.rejectedReleases?.has(job.release)) return;
+  if (job.manualRelease || job.rejectedReleases.size >= 3) throw unavailable('This source is invalid. Try downloading another release.');
+  job.sourceRecovery = (async () => {
+    await prepare(job, settings);
+    if (job.status !== 'ready' || job.mode !== 'direct' || job.rejectedReleases.has(job.release)) {
+      throw unavailable('This release contains invalid video data, and no replacement streaming source is available. Try downloading another release.');
+    }
+  })();
+  try { await job.sourceRecovery; }
+  catch (error) { job.sourceRecoveryError = error.message; throw unavailable(error.message); }
+  finally { delete job.sourceRecovery; }
 }
 
 export function preferredAudioStream(streams, untaggedAudioTrack = 2) {
@@ -827,7 +855,7 @@ async function preparePlayback(job, settings) {
     throwIfDownloadCancelled(job);
     if (!job.manualRelease) {
       const plan = playbackPlans.get(job.media, settings.playbackQuality);
-      if (plan) {
+      if (plan && !job.rejectedReleases?.has(plan.release)) {
         Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments), status: 'ready', message: plan.strategy === 'raw' ? 'Reusing the direct stream selected earlier.' : 'Reusing the browser-compatible stream selected earlier.', progress: 100, mode: 'direct' });
         jobEvent(job, 'plan-cache-hit', job.message, { release: plan.release, strategy: plan.strategy, mode: 'direct' });
         return;
@@ -835,6 +863,7 @@ async function preparePlayback(job, settings) {
     }
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await findReleases(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await findReleases(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
+    releases = releases.filter(release => !job.rejectedReleases?.has(release.title));
     for (let i = 0; i < Math.min(releases.length, 10); i++) {
       throwIfDownloadCancelled(job);
       const release = releases[i];
@@ -858,13 +887,13 @@ async function preparePlayback(job, settings) {
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
           await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== 'sdr');
-          if (shouldCacheDirectPlayback(job)) { await cacheDirect(job, settings); return; }
+          if (shouldCacheDirectPlayback(job) || job.downloadReplacement) { await cacheDirect(job, settings); return; }
           playbackPlans.set(job.media, { file: direct, release: release.title, strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, settings.playbackQuality);
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;
         }
-        if (archives.length) {
+        if (archives.length && (!job.rejectedReleases?.size || job.downloadReplacement)) {
           archiveChoices.push({ archives, release: release.title });
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
         } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
@@ -960,7 +989,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
   }
 }
-function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };
@@ -1119,6 +1148,7 @@ export async function handleRequest(req, res) {
       const job = playbackJobs.get(jobId);
       if (!job) return json(res, 404, { error: 'Playback session not found.' });
       if (req.method === 'POST' && !sessionId) {
+        await recoverPlaybackSource(job, await readSettings());
         if (job.status !== 'ready' || !['direct', 'cached-convert'].includes(job.mode)) return json(res, 409, { error: 'Conversion is not ready.' });
         const input = await body(req), start = Number(input.start || 0);
         if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid playback position.' });
@@ -1157,7 +1187,7 @@ export async function handleRequest(req, res) {
     if (playMatch) {
       const job = playbackJobs.get(playMatch[1]); if (!job) return json(res, 404, { error: 'Playback session not found.' });
       if (req.method === 'GET' && !playMatch[2]) return json(res, 200, publicJob(job));
-      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || job.status === 'downloading') return json(res, 409, { error: 'Fallback download is not available.' }); cacheDirect(job, await readSettings()).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
+      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || job.status === 'downloading') return json(res, 409, { error: 'Fallback download is not available.' }); const settings = await readSettings(); if (job.rejectedReleases?.has(job.release)) { job.downloadReplacement = true; delete job.file; delete job.prefetchedSegments; delete job.manualRelease; delete job.sourceRecoveryError; void preparePlayback(job, settings); } else cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
       if (req.method === 'POST' && playMatch[2] === 'retry') { if (job.status !== 'error') return json(res, 409, { error: 'This playback job cannot be retried yet.' }); const settings = await readSettings(); if (job.file) cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); else if (job.archives) prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); else return json(res, 409, { error: 'This release cannot be resumed.' }); return json(res, 202, publicJob(job)); }
       if (['GET', 'HEAD'].includes(req.method) && playMatch[2] === 'stream') {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get('start')) || 0));
@@ -1226,6 +1256,6 @@ export async function handleRequest(req, res) {
     json(res, 404, { error: 'Not found.' });
   } catch (error) {
     if (res.headersSent) res.destroy(error);
-    else json(res, error.status === 429 ? 429 : 500, { error: error.message || 'Unexpected server error.' });
+    else json(res, error.status === 429 ? 429 : 500, { error: error.message || 'Unexpected server error.', ...(error.code === 'SOURCE_UNAVAILABLE' ? { code: error.code } : {}) });
   }
 }

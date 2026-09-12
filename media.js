@@ -82,7 +82,12 @@ function titleTokens(value) {
 export function releaseTitleMatches(release, media) {
   const expected = titleTokens(media?.title);
   if (!expected.length) return true;
-  const actual = titleTokens(release?.title);
+  // For episodes, the series name precedes the episode tag. Text after it can
+  // be an episode title belonging to an entirely different show.
+  const seriesTitle = media?.type === 'tv'
+    ? String(release?.title || '').split(/\b(?:s\d{1,2}[ ._-]*e\d{1,3}|\d{1,2}x\d{1,3})\b/i)[0]
+    : release?.title;
+  const actual = titleTokens(seriesTitle);
   return actual.some((_, start) => expected.every((token, offset) => actual[start + offset] === token));
 }
 
