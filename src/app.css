@@ -771,13 +771,17 @@ button:not(:disabled):active { transform: scale(.97); }
   filter: saturate(.72) contrast(1.04);
 }
 .watch-hero:not(.watch-hero-playing) {
-  height: auto;
-  padding: var(--watch-header-height, 6rem) 0 0;
+  height: 100svh;
+  padding: 0;
 }
 .watch-hero:not(.watch-hero-playing) .watch-hero-art {
-  position: relative;
-  inset: auto;
-  min-height: calc(100svh - var(--watch-header-height, 6rem));
+  position: absolute;
+  inset: 0;
+}
+.watch-hero:not(.watch-hero-playing) .watch-hero-art img {
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
 }
 .watch-hero-shade {
   z-index: -1;
