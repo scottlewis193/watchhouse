@@ -117,7 +117,10 @@ export function analyzeCreditFrame(pixels, width, height) {
     Math.ceil(width * 0.75),
     Math.ceil(height * 0.75)
   );
-  const foregroundThreshold = Math.max(110, whole.medianLuminance + 70);
+  // Dim highlights in night scenes can form small, aligned components too.
+  // Require stronger contrast against the background before advancing an episode,
+  // while preserving fine lettering on black after the frame is downscaled.
+  const foregroundThreshold = Math.max(110, whole.medianLuminance + 110);
   const text = textComponentMetrics(luminance, width, height, foregroundThreshold);
   const darkBackground = whole.darkFraction >= 0.75 && whole.meanLuminance <= 72;
   const textShape = text.foregroundFraction >= 0.003 && text.foregroundFraction <= 0.16

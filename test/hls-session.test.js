@@ -56,6 +56,7 @@ test('real converted segments support identical full and resumed HTTP responses'
   const { respond } = await import('../src/lib/server/response.js');
   const root = await mkdtemp(join(tmpdir(), 'hls-http-'));
   let starts = 0;
+  let conversionDone;
   const session = await createHlsSession({ root, async produce(directory) {
     starts++;
     const args = ffmpegArgs('transcode', 'testsrc2=size=160x90:rate=25:duration=5', 'unused', true);
@@ -63,6 +64,7 @@ test('real converted segments support identical full and resumed HTTP responses'
     const child = spawn('ffmpeg', hlsOutputArgs(args, directory));
     let error = ''; child.stderr.on('data', data => { error += data; });
     const completion = once(child, 'close').then(([code]) => { assert.equal(code, 0, error); });
+    conversionDone = completion;
     return { completion, stop: () => completion };
   }});
   const request = async (asset, headers = {}, method = 'GET') => {
@@ -71,6 +73,7 @@ test('real converted segments support identical full and resumed HTTP responses'
   };
   try {
     await session.ready();
+    await conversionDone;
     const playlist = await (await request('index.m3u8')).text();
     assert.match(playlist, /#EXT-X-MAP:URI="init.mp4"/);
     assert.match(playlist, /#EXT-X-ENDLIST/);
@@ -96,4 +99,36 @@ test('segmented playback selects one English track ahead of configured fallback'
   assert.equal(preferredAudioStream(streams.map(stream => ({ ...stream, tags: {} })), 2), 2);
   assert.equal(preferredAudioStream(streams.slice(0, 2), 2), 1);
   assert.equal(preferredAudioStream(streams.slice(0, 1)), null);
+});
+
+test('does not advertise end of playback before conversion succeeds', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-pending-end-'));
+  let finish;
+  const completion = new Promise(resolve => { finish = resolve; });
+  const session = await createHlsSession({ root, async produce(directory) {
+    await writeFile(join(directory, 'index.m3u8'), '#EXTM3U\n#EXTINF:4,\nsegment-000000.m4s\n#EXT-X-ENDLIST\n');
+    return { completion, stop() {} };
+  }});
+  try {
+    await session.ready();
+    assert.doesNotMatch((await session.read('index.m3u8')).toString(), /#EXT-X-ENDLIST/);
+    finish(); await completion;
+    assert.match((await session.read('index.m3u8')).toString(), /#EXT-X-ENDLIST/);
+  } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a failed converter cannot turn truncated playback into a completed episode', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-failed-end-'));
+  let fail;
+  const completion = new Promise((_, reject) => { fail = reject; });
+  const session = await createHlsSession({ root, async produce(directory) {
+    await writeFile(join(directory, 'index.m3u8'), '#EXTM3U\n#EXTINF:4,\nsegment-000000.m4s\n#EXT-X-ENDLIST\n');
+    return { completion, stop() {} };
+  }});
+  try {
+    assert.doesNotMatch((await session.read('index.m3u8')).toString(), /#EXT-X-ENDLIST/);
+    fail(new Error('input ended prematurely'));
+    await assert.rejects(completion);
+    await assert.rejects(session.read('index.m3u8'), /input ended prematurely/);
+  } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
 });

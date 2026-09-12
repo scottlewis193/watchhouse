@@ -572,11 +572,13 @@ test('recognises sustained text on a dark background without accepting broader c
   const cases = [
     ['white on black', creditFrameFixture(), true],
     ['sparse title card', creditFrameFixture({ rows: 1 }), true],
+    ['fine downscaled lettering on black', creditFrameFixture({ foreground: [115, 115, 115], rows: 1 }), true],
     ['black on white', creditFrameFixture({ background: [245, 245, 245], foreground: [15, 15, 15] }), false],
     ['gold on navy', creditFrameFixture({ background: [20, 30, 75], foreground: [220, 155, 35] }), true],
     ['text over imagery', creditFrameFixture({ gradient: true }), false],
     ['blank fade', creditFrameFixture({ rows: 0 }), false],
     ['near-black transition', creditFrameFixture({ background: [2, 2, 3], foreground: [55, 55, 55], rows: 1 }), false],
+    ['dim scene highlights', creditFrameFixture({ background: [25, 25, 25], foreground: [130, 130, 130], rows: 1 }), false],
     ['subtitle only', creditFrameFixture({ rows: 1, placement: 'bottom' }), false],
     ['dark scene with a lit window', darkSceneFixture(), false],
     ['high-detail scene', creditFrameFixture({ checker: true }), false]
@@ -612,6 +614,19 @@ test('smart credit evidence requires a sustained dark-text pattern', () => {
     { sampleCount: 1, detected: false },
     'stale frames must not combine with evidence sampled after a pause'
   );
+});
+
+test('sustained dim highlights do not start the next-episode countdown', () => {
+  // The S01E02 outdoor scene has a dark background and small aligned highlights,
+  // but none of the bright lettering needed to confidently skip story content.
+  const frame = creditFrameFixture({ background: [25, 25, 25], foreground: [130, 130, 130], rows: 1 });
+  let evidence = [];
+  for (let index = 0; index < 8; index++) {
+    const analysis = analyzeCreditFrame(frame.pixels, frame.width, frame.height);
+    const result = updateCreditEvidence(evidence, analysis, index * 2_000);
+    assert.equal(result.detected, false, 'dim scenery must not trigger automatic episode advance');
+    evidence = result.samples;
+  }
 });
 
 test('reports why smart credit detection has or has not triggered', () => {

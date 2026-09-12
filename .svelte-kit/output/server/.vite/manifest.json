@@ -121,7 +121,7 @@
       "_index2.js"
     ],
     "css": [
-      "_app/immutable/assets/_layout.B2Bxltoh.css"
+      "_app/immutable/assets/_layout.BuTatS6D.css"
     ]
   },
   "src/routes/+page.svelte": {
@@ -191,7 +191,7 @@
       "_offline.js"
     ],
     "css": [
-      "_app/immutable/assets/_page.Cl9Jpcbi.css"
+      "_app/immutable/assets/_page.Bni5U8Qy.css"
     ]
   },
   "virtual:__sveltekit/env": {

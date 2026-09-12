@@ -430,6 +430,8 @@ export async function audioSafeOfflineRecord(record, inspectStrategy = cachedPla
 }
 
 export function createPostedSegmentLoader(posted, settings, prefetchedSegments = new Map(), connect = connectNntp) {
+  const layout = postedFileByteLayout(posted);
+  const maxArticleAttempts = 6;
   const width = Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, posted.segments.length);
   const lanes = Array.from({ length: width }, () => ({ client: null, tail: Promise.resolve() }));
   const prefetched = new Map(prefetchedSegments);
@@ -440,15 +442,34 @@ export function createPostedSegmentLoader(posted, settings, prefetchedSegments =
     if (inflight.has(index)) return inflight.get(index);
     const lane = lanes[nextLane++ % lanes.length];
     const pending = lane.tail.then(async () => {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < maxArticleAttempts; attempt++) {
         const chunks = [];
         try {
           lane.client ||= await connect(settings);
-          await lane.client.body(segment.id, line => { if (!line.startsWith('=y')) chunks.push(decodeYenc(line)); });
-          return Buffer.concat(chunks);
+          let fileSize = null, partBegin = null, partEnd = null, partSize = null;
+          const number = (line, key) => Number(line.match(new RegExp(`\\b${key}=(\\d+)`))?.[1]);
+          await lane.client.body(segment.id, line => {
+            if (line.startsWith('=ybegin ')) fileSize = number(line, 'size');
+            else if (line.startsWith('=ypart ')) { partBegin = number(line, 'begin'); partEnd = number(line, 'end'); }
+            else if (line.startsWith('=yend ')) partSize = number(line, 'size');
+            else chunks.push(decodeYenc(line));
+          });
+          const decoded = Buffer.concat(chunks);
+          // A successful BODY response can still contain the wrong article.
+          // Validate inside the retry boundary, before any bytes reach FFmpeg.
+          if ((segment.decodedBytes != null && decoded.length !== segment.decodedBytes)
+            || (partSize !== null && partSize !== decoded.length)
+            || (layout && ((fileSize !== null && fileSize !== layout.total)
+              || (partBegin !== null && partBegin !== layout.offsets[index] + 1)
+              || (partEnd !== null && partEnd !== layout.offsets[index + 1])))) {
+            throw Object.assign(new Error('Usenet segment did not match its yEnc byte metadata.'), { code: 'INVALID_USENET_ARTICLE' });
+          }
+          return decoded;
         } catch (error) {
           lane.client?.close(); lane.client = null;
-          if (attempt) throw error;
+          // Invalid bodies can recur across fresh connections. Keep retries
+          // bounded without extending the existing connection-error budget.
+          if (attempt === maxArticleAttempts - 1 || (error.code !== 'INVALID_USENET_ARTICLE' && attempt >= 1)) throw error;
         }
       }
     });

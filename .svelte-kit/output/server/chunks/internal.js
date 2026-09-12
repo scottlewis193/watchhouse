@@ -122,7 +122,7 @@ const options = {
     ` + head + '\n  </head>\n  <body data-sveltekit-preload-data="hover">\n    <div style="display: contents">' + body + "</div>\n  </body>\n</html>\n",
     error
   },
-  version_hash: "nbznry"
+  version_hash: "1qas8ba"
 };
 async function get_hooks() {
   let handle;

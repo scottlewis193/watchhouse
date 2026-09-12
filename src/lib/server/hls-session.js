@@ -16,8 +16,8 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
   let producer;
   try { producer = await produce(directory); }
   catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
-  let failure = null, closed = false, closing, timer;
-  void producer.completion.catch(error => { failure = error; });
+  let failure = null, completed = false, closed = false, closing, timer;
+  void producer.completion.then(() => { completed = true; }, error => { failure = error; });
   function touch() {
     if (closed) throw new Error('Playback session has closed.');
     clearTimeout(timer);
@@ -37,7 +37,12 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
     if (!/^(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s)$/.test(asset)) throw new Error('Invalid playback asset.');
     touch();
     if (asset === 'index.m3u8' && failure) throw failure;
-    return readFile(join(directory, asset));
+    const bytes = await readFile(join(directory, asset));
+    if (asset !== 'index.m3u8') return bytes;
+    if (failure) throw failure;
+    // FFmpeg can write ENDLIST while unwinding a failed input. Until its
+    // completion succeeds, keep the player polling rather than ending early.
+    return completed ? bytes : Buffer.from(bytes.toString().replace(/^#EXT-X-ENDLIST\r?\n?/gm, ''));
   }
   async function ready() {
     const deadline = Date.now() + 45000;

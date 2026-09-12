@@ -1,14 +1,15 @@
-import { PassThrough, Readable } from "node:stream";
-import { once } from "node:events";
-import { readFile, mkdir, writeFile, rename, readdir, stat, rm, mkdtemp } from "node:fs/promises";
+import { readFile, mkdir, writeFile, rename, mkdtemp, rm, readdir, stat } from "node:fs/promises";
 import { existsSync, createReadStream, createWriteStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer } from "node:http";
 import net from "node:net";
 import tls from "node:tls";
 import { randomUUID } from "node:crypto";
 import { o as offlineMediaKey } from "../../../../chunks/offline.js";
+import { setTimeout as setTimeout$1 } from "node:timers/promises";
+import { PassThrough } from "node:stream";
 const TMDB_IMAGE_ROOT = "https://image.tmdb.org/t/p";
 function tmdbImage(path, size = "w500") {
   return path ? `${TMDB_IMAGE_ROOT}/${size}${path}` : null;
@@ -268,6 +269,126 @@ function createMediaStateStore(path, { now = () => Date.now() } = {}) {
     }
   };
 }
+function stopConversion(child) {
+  child.stdin?.destroy();
+  child.stdout?.destroy();
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill();
+  const forceStop = setTimeout(() => child.kill("SIGKILL"), 1e3);
+  forceStop.unref();
+  child.once("exit", () => clearTimeout(forceStop));
+}
+function waitForDrain(stream) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      stream.off("drain", drained);
+      stream.off("close", closed);
+      stream.off("error", failed);
+    };
+    const drained = () => {
+      cleanup();
+      resolve();
+    };
+    const failed = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const closed = () => failed(new Error("Playback response closed."));
+    if (stream.destroyed) {
+      closed();
+      return;
+    }
+    stream.once("drain", drained);
+    stream.once("close", closed);
+    stream.once("error", failed);
+  });
+}
+function hlsOutputArgs(mp4Args, directory) {
+  const outputOptions = mp4Args.indexOf("-movflags");
+  if (outputOptions < 0) throw new Error("Missing conversion output options.");
+  return [
+    ...mp4Args.slice(0, outputOptions),
+    "-f",
+    "hls",
+    "-hls_time",
+    "4",
+    "-hls_segment_type",
+    "fmp4",
+    "-hls_fmp4_init_filename",
+    "init.mp4",
+    "-hls_list_size",
+    "0",
+    "-hls_playlist_type",
+    "event",
+    "-hls_flags",
+    "temp_file",
+    "-hls_segment_filename",
+    join(directory, "segment-%06d.m4s"),
+    join(directory, "index.m3u8")
+  ];
+}
+async function createHlsSession({ root, produce, idleMs = 18e4, onClose = () => {
+} }) {
+  await mkdir(root, { recursive: true });
+  const directory = await mkdtemp(join(root, "hls-"));
+  let producer;
+  try {
+    producer = await produce(directory);
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+  let failure = null, closed = false, closing, timer;
+  void producer.completion.catch((error) => {
+    failure = error;
+  });
+  function touch() {
+    if (closed) throw new Error("Playback session has closed.");
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      void close().catch(() => {
+      });
+    }, idleMs);
+    timer.unref();
+  }
+  function close() {
+    if (closing) return closing;
+    closed = true;
+    clearTimeout(timer);
+    closing = (async () => {
+      try {
+        await producer.stop();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+        onClose();
+      }
+    })();
+    return closing;
+  }
+  async function read(asset) {
+    if (!/^(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s)$/.test(asset)) throw new Error("Invalid playback asset.");
+    touch();
+    if (asset === "index.m3u8" && failure) throw failure;
+    return readFile(join(directory, asset));
+  }
+  async function ready() {
+    const deadline = Date.now() + 45e3;
+    while (Date.now() < deadline) {
+      if (closed) throw new Error("Playback session has closed.");
+      if (failure) throw failure;
+      try {
+        const playlist = await read("index.m3u8");
+        if (playlist.includes("#EXTINF:")) return;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      await setTimeout$1(100);
+    }
+    throw new Error("Timed out preparing playback segments.");
+  }
+  touch();
+  return { directory, ready, read, touch, close };
+}
 const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, "data", "settings.json");
 const MEDIA_STATE_PATH = join(ROOT, "data", "media-state.json");
@@ -278,6 +399,7 @@ const OFFLINE_ROOT = join(ROOT, "data", "offline");
 const OFFLINE_STATE_PATH = join(ROOT, "data", "offline-downloads.json");
 const downloads = /* @__PURE__ */ new Map();
 const playbackJobs = /* @__PURE__ */ new Map();
+const hlsSessions = /* @__PURE__ */ new Map();
 const manualReleases = /* @__PURE__ */ new Map();
 const offlineJobs = /* @__PURE__ */ new Map();
 const offlineSeriesJobs = /* @__PURE__ */ new Map();
@@ -322,9 +444,10 @@ function publicOfflineJob(job) {
 async function clearExpiredPlaybackCache() {
   const settings = await readSettings(), retentionHours = Math.min(168, Math.max(1, Number(settings.cacheRetentionHours) || 24));
   const activeDirectories = new Set([...playbackJobs.values()].map((job) => job.directory).filter(Boolean));
+  for (const { session } of hlsSessions.values()) activeDirectories.add(session.directory);
   const cutoff = Date.now() - retentionHours * 60 * 60 * 1e3;
   const entries = await readdir(PLAYBACK_CACHE_ROOT, { withFileTypes: true }).catch(() => []);
-  await Promise.all(entries.filter((entry) => entry.isDirectory() && entry.name.startsWith("playback-")).map(async (entry) => {
+  await Promise.all(entries.filter((entry) => entry.isDirectory() && (entry.name.startsWith("playback-") || entry.name.startsWith("hls-"))).map(async (entry) => {
     const directory = join(PLAYBACK_CACHE_ROOT, entry.name);
     if (activeDirectories.has(directory)) return;
     if ((await stat(directory)).mtimeMs < cutoff) await rm(directory, { recursive: true, force: true });
@@ -896,7 +1019,7 @@ async function openPostedRangeServer(job, settings, connect = connectNntp) {
         aborted = true;
       });
       await writePostedFileRange(job.file, start, end, loader.load, async (chunk) => {
-        if (!res.write(chunk)) await once(res, "drain");
+        if (!res.write(chunk)) await waitForDrain(res);
       }, { shouldContinue: () => !aborted, concurrency: settings.maxConnections });
       if (!aborted) res.end();
     })().catch((error) => {
@@ -920,6 +1043,66 @@ async function openPostedRangeServer(job, settings, connect = connectNntp) {
     }
   };
 }
+function preferredAudioStream(streams, untaggedAudioTrack = 2) {
+  const audio = streams.filter((stream) => stream.codec_type === "audio");
+  const english = audio.find((stream) => /^(eng|en|en-us|en-gb)$/i.test(stream.tags?.language || "")) || audio.find((stream) => /\b(english|eng)\b/i.test(`${stream.tags?.title || ""} ${stream.tags?.handler_name || ""}`));
+  return (english || audio[Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1))] || audio[0])?.index ?? null;
+}
+async function startHlsConversion(job, settings, start, directory, onProgress = () => {
+}) {
+  const cached = job.mode === "cached-convert";
+  const rangeSource = !cached ? await openPostedRangeServer(job, settings) : null;
+  const strategy = seekPlaybackStrategy(job.strategy === "raw" ? "remux" : job.strategy, start);
+  const toneMap = releaseDynamicRange(job.release) !== "sdr";
+  let child, closed = false;
+  try {
+    const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
+    if (!cached && !rangeSource) throw new Error("This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.");
+    const input = cached ? job.sourcePath : rangeSource.url;
+    const probe = JSON.parse(await runOutput("ffprobe", ["-v", "error", "-rw_timeout", "15000000", "-show_entries", "stream=index,codec_type:stream_tags=language,title,handler_name", "-of", "json", input]));
+    const audioIndex = preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack);
+    const mapped = ffmpegArgs(strategy, input, "pipe:1", true, start, settings.untaggedAudioTrack, true, toneMap, acceleration);
+    for (let i = mapped.length - 2; i >= 0; i--) {
+      if (mapped[i] === "-map" && mapped[i + 1] !== "0:v:0") mapped.splice(i, 2);
+    }
+    if (audioIndex !== null) mapped.splice(mapped.indexOf("-movflags"), 0, "-map", `0:${audioIndex}`);
+    mapped.splice(mapped.indexOf("-movflags"), 0, "-ac", "2");
+    const args = hlsOutputArgs(mapped, directory);
+    args.splice(args.indexOf("-i"), 0, "-readrate", "1.5");
+    if (strategy !== "remux") args.splice(args.indexOf("-f"), 0, "-force_key_frames", "expr:gte(t,n_forced*4)");
+    child = spawn("ffmpeg", args);
+    onProgress(1);
+  } catch (error) {
+    await rangeSource?.close();
+    throw error;
+  }
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr = (stderr + chunk).slice(-8e3);
+  });
+  child.stdin.on("error", () => {
+  });
+  const exited = once(child, "close");
+  void exited.catch(() => {
+  });
+  const completion = (async () => {
+    try {
+      const [code] = await exited;
+      if (!closed && !conversionSucceeded(code, stderr)) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
+    } finally {
+      stopConversion(child);
+      await rangeSource?.close();
+    }
+  })();
+  void completion.catch(() => {
+  });
+  return { completion, async stop() {
+    closed = true;
+    stopConversion(child);
+    await completion.catch(() => {
+    });
+  } };
+}
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = "") {
   const rangeSource = start > 0 ? await openPostedRangeServer(job, settings) : null;
   const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
@@ -927,6 +1110,9 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
   const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
   const child = spawn("ffmpeg", ffmpegArgs(strategy, rangeSource?.url || "pipe:0", "pipe:1", true, start, settings.untaggedAudioTrack, Boolean(rangeSource), toneMap, acceleration));
   let stderr = "";
+  const exited = once(child, "close");
+  void exited.catch(() => {
+  });
   let closed = false;
   child.stderr.on("data", (chunk) => stderr += chunk);
   child.stdin.on("error", () => {
@@ -937,23 +1123,22 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
   });
   req.on("close", () => {
     closed = true;
-    child.stdin.destroy();
-    child.kill();
+    stopConversion(child);
   });
   try {
     if (!rangeSource) {
       await streamPostedFile(job.file, settings, async (chunk) => {
         if (closed) throw new Error("Playback connection closed.");
-        if (!child.stdin.write(chunk)) await once(child.stdin, "drain");
+        if (!child.stdin.write(chunk)) await waitForDrain(child.stdin);
       }, connectNntp, job.prefetchedSegments);
       child.stdin.end();
     }
-    const [code] = await once(child, "close");
+    const [code] = await exited;
     const bytes = await output;
     if (!closed && !conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : "ffmpeg produced no video")}`);
     if (!closed) res.end();
   } catch (error) {
-    child.kill();
+    stopConversion(child);
     await output.catch(() => {
     });
     if (!closed) throw error;
@@ -966,6 +1151,9 @@ async function streamCachedConversion(req, res, job, settings, start = 0) {
   const acceleration = await configurePlaybackAcceleration(job, job.strategy, toneMap);
   const child = spawn("ffmpeg", ffmpegArgs(job.strategy, job.sourcePath, "pipe:1", true, start, settings.untaggedAudioTrack, true, toneMap, acceleration));
   let stderr = "";
+  const exited = once(child, "close");
+  void exited.catch(() => {
+  });
   let closed = false;
   child.stderr.on("data", (chunk) => stderr += chunk);
   res.writeHead(200, { "content-type": "video/mp4", "cache-control": "no-store" });
@@ -974,9 +1162,9 @@ async function streamCachedConversion(req, res, job, settings, start = 0) {
   });
   req.on("close", () => {
     closed = true;
-    child.kill();
+    stopConversion(child);
   });
-  const [code] = await once(child, "close");
+  const [code] = await exited;
   const bytes = await output;
   if (closed) return;
   if (!conversionSucceeded(code, stderr, bytes)) throw new Error(`Video conversion failed: ${stderr.trim() || (bytes ? `ffmpeg exited ${code}` : "ffmpeg produced no video")}`);
@@ -1481,7 +1669,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
 }
 function publicJob(job) {
   const { file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, ...safe } = job;
-  return { ...safe, title: media.title, streamUrl: job.status === "ready" ? `/api/play/${job.id}/stream` : null, ...diagnosticsEnabled ? { diagnostics: { media: media.type === "tv" ? `${media.title} S${String(media.season).padStart(2, "0")}E${String(media.episode).padStart(2, "0")}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {} };
+  return { ...safe, title: media.title, hlsUrl: job.status === "ready" && ["direct", "cached-convert"].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === "ready" ? `/api/play/${job.id}/stream` : null, ...diagnosticsEnabled ? { diagnostics: { media: media.type === "tv" ? `${media.title} S${String(media.season).padStart(2, "0")}E${String(media.episode).padStart(2, "0")}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {} };
 }
 function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
@@ -1497,6 +1685,25 @@ function parseByteRange(range, size) {
   const requestedEnd = match[2] ? Number(match[2]) : size - 1;
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= size || requestedEnd < start) return null;
   return { start, end: Math.min(requestedEnd, size - 1), partial: true };
+}
+async function serveHlsAsset(req, res, session, asset) {
+  let data;
+  try {
+    data = await session.read(asset);
+  } catch (error) {
+    if (error.code === "ENOENT") return json(res, 404, { error: "Segment not found." });
+    throw error;
+  }
+  const playlist = asset === "index.m3u8";
+  if (playlist) data = Buffer.from(data.toString().replace("#EXTM3U", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES"));
+  const selected = parseByteRange(req.headers.range, data.length);
+  if (!selected) {
+    res.writeHead(416, { "content-range": `bytes */${data.length}` });
+    return res.end();
+  }
+  const { start, end, partial } = selected;
+  res.writeHead(partial ? 206 : 200, { "content-type": playlist ? "application/vnd.apple.mpegurl" : "video/mp4", "content-length": end - start + 1, "accept-ranges": "bytes", "cache-control": playlist ? "no-store" : "private, max-age=3600, immutable", ...partial ? { "content-range": `bytes ${start}-${end}/${data.length}` } : {} });
+  return res.end(req.method === "HEAD" ? void 0 : data.subarray(start, end + 1));
 }
 async function serveLocalVideo(req, res, job) {
   const info = await stat(job.path), selected = parseByteRange(req.headers.range, info.size);
@@ -1681,6 +1888,72 @@ async function handleRequest(req, res) {
       preparePlayback(job, settings);
       return json(res, 202, publicJob(job));
     }
+    const hlsMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/hls(?:\/([\w-]+)\/(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s|stop|heartbeat))?$/);
+    if (hlsMatch) {
+      const [, jobId, sessionId, asset] = hlsMatch;
+      const job = playbackJobs.get(jobId);
+      if (!job) return json(res, 404, { error: "Playback session not found." });
+      if (req.method === "POST" && !sessionId) {
+        if (job.status !== "ready" || !["direct", "cached-convert"].includes(job.mode)) return json(res, 409, { error: "Conversion is not ready." });
+        const input = await body(req), start = Number(input.start || 0);
+        if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: "Invalid playback position." });
+        const id = randomUUID(), settings = await readSettings();
+        let session, cancelled = false, delivered = false;
+        const streaming = req.headers.accept?.includes("application/x-ndjson");
+        const report = (completed) => {
+          if (streaming && !cancelled) res.write(JSON.stringify({ type: "progress", completed }) + "\n");
+        };
+        req.on("close", () => {
+          if (!delivered) {
+            cancelled = true;
+            void session?.close().catch(() => {
+            });
+          }
+        });
+        if (streaming) {
+          res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store", "x-accel-buffering": "no" });
+          report(0);
+        }
+        try {
+          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: (directory) => startHlsConversion(job, settings, start, directory, report), onClose: () => hlsSessions.delete(id) });
+          hlsSessions.set(id, { jobId, session });
+          if (cancelled) {
+            await session.close();
+            return;
+          }
+          await session.ready();
+          if (cancelled) return;
+          delivered = true;
+          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}` };
+          if (streaming) {
+            report(2);
+            return res.end(JSON.stringify({ type: "ready", session: result }) + "\n");
+          }
+          return json(res, 200, result);
+        } catch (error) {
+          await session?.close();
+          if (streaming) {
+            if (!cancelled) res.end(JSON.stringify({ type: "error", error: error.message }) + "\n");
+            return;
+          }
+          throw error;
+        }
+      }
+      const entry = hlsSessions.get(sessionId);
+      if (!entry || entry.jobId !== jobId) return json(res, 404, { error: "Playback segments have expired." });
+      if (req.method === "POST" && asset === "stop") {
+        await entry.session.close();
+        return json(res, 200, { stopped: true });
+      }
+      if (req.method === "POST" && asset === "heartbeat") {
+        entry.session.touch();
+        return json(res, 200, {});
+      }
+      if (["GET", "HEAD"].includes(req.method) && /\.(m3u8|mp4|m4s)$/.test(asset)) {
+        return await serveHlsAsset(req, res, entry.session, asset);
+      }
+      return json(res, 405, { error: "Method not allowed." });
+    }
     const playMatch = url.pathname.match(/^\/api\/play\/([\w-]+)(?:\/(stream|fallback|retry))?$/);
     if (playMatch) {
       const job = playbackJobs.get(playMatch[1]);
@@ -1826,20 +2099,82 @@ function requestBody(request) {
     }
   })();
 }
-async function respond(request, url) {
+function webResponseBody(output) {
+  let settled = false;
+  let detach;
+  return new ReadableStream({
+    start(controller) {
+      const finish = (error2) => {
+        if (settled) return;
+        settled = true;
+        detach();
+        if (error2) controller.error(error2);
+        else controller.close();
+      };
+      const data = (chunk) => {
+        if (settled) return;
+        controller.enqueue(new Uint8Array(chunk));
+        if (controller.desiredSize <= 0) output.pause();
+      };
+      const end = () => finish();
+      const close = () => finish(new DOMException("Playback response closed.", "AbortError"));
+      const error = (cause) => finish(cause);
+      detach = () => {
+        output.pause();
+        output.off("data", data);
+        output.off("end", end);
+        output.off("close", close);
+        output.off("error", error);
+      };
+      output.on("data", data);
+      output.once("end", end);
+      output.once("close", close);
+      output.once("error", error);
+      output.pause();
+    },
+    pull() {
+      if (!settled) output.resume();
+    },
+    cancel() {
+      if (settled) return;
+      settled = true;
+      detach();
+      output.destroy();
+    }
+  }, new ByteLengthQueuingStrategy({ highWaterMark: output.readableHighWaterMark }));
+}
+async function respond(request, url, handleRequest2) {
   const output = new PassThrough({ highWaterMark: 16 * 1024 * 1024 });
   let status = 200;
   let headers = {};
-  let headersReady;
-  const ready = new Promise((resolve) => {
+  let headersReady, headersFailed;
+  const ready = new Promise((resolve, reject) => {
     headersReady = resolve;
+    headersFailed = reject;
   });
+  output.on("error", headersFailed);
+  const responseBody = webResponseBody(output);
+  let closed = false;
+  const closeListeners = /* @__PURE__ */ new Set();
+  const abort = () => output.destroy();
+  output.once("close", () => {
+    closed = true;
+    headersFailed(new DOMException("Playback response closed.", "AbortError"));
+    request.signal.removeEventListener("abort", abort);
+    for (const listener of closeListeners) listener();
+    closeListeners.clear();
+  });
+  request.signal.addEventListener("abort", abort, { once: true });
+  if (request.signal.aborted) abort();
   const nodeRequest = {
     method: request.method,
     url: `${url.pathname}${url.search}`,
     headers: Object.fromEntries(request.headers),
     on(event, listener) {
-      if (event === "close") request.signal.addEventListener("abort", listener, { once: true });
+      if (event === "close") {
+        if (closed) queueMicrotask(listener);
+        else closeListeners.add(listener);
+      }
       return nodeRequest;
     },
     [Symbol.asyncIterator]: () => requestBody(request)
@@ -1854,22 +2189,31 @@ async function respond(request, url) {
       return this;
     },
     write: (chunk) => output.write(chunk),
-    waitForDrain: () => once(output, "drain"),
+    waitForDrain: () => waitForDrain(output),
     end: (chunk) => output.end(chunk),
     destroy: (error) => output.destroy(error),
     get destroyed() {
       return output.destroyed;
     }
   };
-  void handleRequest(nodeRequest, nodeResponse).catch((error) => output.destroy(error));
+  try {
+    void Promise.resolve(handleRequest2(nodeRequest, nodeResponse)).catch((error) => output.destroy(error));
+  } catch (error) {
+    output.destroy(error);
+  }
   await ready;
   const responseHeaders = new Headers(headers);
-  return new Response(status === 204 ? null : Readable.toWeb(output), { status, headers: responseHeaders });
+  if ([204, 205, 304].includes(status) || request.method === "HEAD") {
+    await responseBody.cancel().catch(() => {
+    });
+    return new Response(null, { status, headers: responseHeaders });
+  }
+  return new Response(responseBody, { status, headers: responseHeaders });
 }
-const GET = ({ request, url }) => respond(request, url);
-const POST = ({ request, url }) => respond(request, url);
-const PUT = ({ request, url }) => respond(request, url);
-const DELETE = ({ request, url }) => respond(request, url);
+const GET = ({ request, url }) => respond(request, url, handleRequest);
+const POST = ({ request, url }) => respond(request, url, handleRequest);
+const PUT = ({ request, url }) => respond(request, url, handleRequest);
+const DELETE = ({ request, url }) => respond(request, url, handleRequest);
 export {
   DELETE,
   GET,
