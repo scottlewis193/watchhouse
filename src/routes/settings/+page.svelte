@@ -69,6 +69,7 @@
       <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body gap-0 p-5 sm:p-7">
           <h2 class="card-title">TMDB catalogue</h2>
+          <a class="mt-3 flex items-center gap-3 text-xs text-base-content/55 hover:text-base-content" href="https://www.themoviedb.org" target="_blank" rel="noreferrer"><img class="h-7 w-7" src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_1-5bdc75aaebeb75dc7ae79426ddd9be3b2be1e342510f8202baf6bffa71d7f5c4.svg" alt="TMDB" /><span>Uses the TMDB API. Not endorsed or certified by TMDB.</span></a>
           <p class="mt-2 text-sm leading-relaxed text-base-content/65">Used for discovery, artwork, search, seasons, and episodes.</p>
           <label class="mt-6 grid gap-2">
             <span class="text-sm font-medium">API read access token</span>

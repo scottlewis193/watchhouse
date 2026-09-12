@@ -101,10 +101,6 @@ body {
   animation: content-in 520ms 80ms cubic-bezier(.22, 1, .36, 1) both;
 }
 
-.app-footer {
-  animation: fade-in 700ms 220ms ease-out both;
-}
-
 .brand-mark {
   transition: border-color 220ms ease, color 220ms ease, transform 320ms cubic-bezier(.22, 1, .36, 1), box-shadow 320ms ease;
 }
@@ -745,22 +741,7 @@ button:not(:disabled):active { transform: scale(.97); }
   max-width: none;
   padding: 0;
 }
-.watchhouse-watch .app-header {
-  position: absolute;
-  width: 100%;
-  border-bottom-color: rgb(255 255 255 / 10%);
-  background: #050607;
-  color: white;
-  backdrop-filter: none;
-}
-.watchhouse-watch .brand-link,
-.watchhouse-watch .nav-link-active,
-.watchhouse-watch .nav-link:hover,
-.watchhouse-watch .nav-link:focus-visible { color: white; }
-.watchhouse-watch .main-nav,
-.watchhouse-watch .nav-search { color: rgb(255 255 255 / 55%); }
-.watchhouse-watch .nav-search { border-bottom-color: rgb(255 255 255 / 22%); }
-.watchhouse-watch .app-footer { position: relative; z-index: 2; background: var(--color-base-200); }
+.watchhouse-watch { --watch-header-height: 0px; }
 
 .watch-hero {
   position: relative;
@@ -807,12 +788,12 @@ button:not(:disabled):active { transform: scale(.97); }
 .watch-hero-playing {
   display: flex;
   align-items: flex-end;
-  padding: 6rem 0 0;
+  padding: 0;
 }
 .watch-hero-playing .watch-stage { width: 100%; }
 .watch-hero-playing .player-shell {
   width: 100%;
-  height: calc(100svh - 6rem);
+  height: 100svh;
   margin: 0;
   aspect-ratio: auto;
   border-right: 0;
@@ -915,7 +896,7 @@ button:not(:disabled):active { transform: scale(.97); }
 @keyframes preparation-mark-pulse { 50% { opacity: .45; } }
 @keyframes hero-preparation-slide { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
 @keyframes hero-control-swap { from { opacity: 0; } to { opacity: 1; } }
-.watch-stage-warming { position: absolute; z-index: 0; top: 6rem; right: 0; bottom: 0; left: 0; width: 100%; grid-column: auto; }
+.watch-stage-warming { position: absolute; z-index: 0; top: 0; right: 0; bottom: 0; left: 0; width: 100%; grid-column: auto; }
 .watch-stage-warming .player-shell { width: 100%; height: 100%; margin: 0; border: 0; aspect-ratio: auto; }
 .watch-stage-revealing { animation: watch-player-in 700ms cubic-bezier(.22, 1, .36, 1) both; }
 .watch-stage-revealing .player-controls { animation: watch-controls-in 560ms 120ms cubic-bezier(.22, 1, .36, 1) both; }
@@ -938,12 +919,12 @@ button:not(:disabled):active { transform: scale(.97); }
 }
 .watch-hero-playing .player-toolbar { top: 1.1rem; }
 .hero-player-toolbar {
-  top: 7.1rem;
+  top: 1.1rem;
   right: clamp(1.5rem, 5vw, 5.5rem);
   left: clamp(1.5rem, 5vw, 5.5rem);
 }
 .watch-toolbar-bridge {
-  top: 7.1rem;
+  top: 1.1rem;
   transition:
     top 620ms cubic-bezier(.22, 1, .36, 1),
     right 620ms cubic-bezier(.22, 1, .36, 1),
@@ -952,7 +933,7 @@ button:not(:disabled):active { transform: scale(.97); }
     transform 180ms ease;
 }
 .watch-hero-playing > .watch-toolbar-bridge {
-  top: 7.1rem;
+  top: 1.1rem;
   right: 1.1rem;
   left: 1.1rem;
 }
@@ -1070,7 +1051,7 @@ button:not(:disabled):active { transform: scale(.97); }
 .watch-drawer {
   position: absolute;
   z-index: 50;
-  top: 6rem;
+  top: 0;
   right: 0;
   bottom: 0;
   display: flex;
@@ -1086,12 +1067,12 @@ button:not(:disabled):active { transform: scale(.97); }
 }
 .watch-hero-playing .watch-drawer-scrim {
   top: auto;
-  height: calc(100svh - 6rem);
+  height: 100svh;
 }
 .watch-hero-playing .watch-drawer {
   top: auto;
   width: min(31rem, 42vw);
-  height: calc(100svh - 6rem);
+  height: 100svh;
   padding-top: 4.25rem;
 }
 .watch-drawer-close {
@@ -1153,14 +1134,14 @@ button:not(:disabled):active { transform: scale(.97); }
   .watch-identity h1 { font-size: clamp(2.45rem, 13vw, 4.25rem); }
   .watch-overview { display: none; }
   .watch-stage .player-shell { width: calc(100% + 2rem); margin-left: -1rem; border-inline: 0; }
-  .watch-stage-warming { top: 7rem; }
-  .watch-hero-playing { padding: 7rem 0 0; }
-  .watch-hero-playing .watch-stage .player-shell { width: 100%; height: calc(100svh - 7rem); margin: 0; }
+  .watch-stage-warming { top: 0; }
+  .watch-hero-playing { padding: 0; }
+  .watch-hero-playing .watch-stage .player-shell { width: 100%; height: 100svh; margin: 0; }
   .watch-hero-playing .watch-stage { width: 100%; }
   .player-toolbar { top: .6rem; right: .6rem; left: .6rem; }
-  .hero-player-toolbar { top: 8.75rem; right: 1rem; left: 1rem; }
-  .watch-toolbar-bridge { top: 8.75rem; }
-  .watch-hero-playing > .watch-toolbar-bridge { top: 7.6rem; right: .6rem; left: .6rem; }
+  .hero-player-toolbar { top: .75rem; right: 1rem; left: 1rem; }
+  .watch-toolbar-bridge { top: .75rem; }
+  .watch-hero-playing > .watch-toolbar-bridge { top: .6rem; right: .6rem; left: .6rem; }
   .player-toolbar-button { width: 2.3rem; height: 2.3rem; }
   .player-diagnostics-panel { top: 3.55rem; right: .6rem; width: calc(100% - 1.2rem); max-height: calc(100% - 7rem); padding: 1rem; }
   .watch-drawer {
@@ -1176,10 +1157,10 @@ button:not(:disabled):active { transform: scale(.97); }
   }
   .watch-hero-playing .watch-drawer {
     width: 100%;
-    height: calc(100svh - 7rem);
+    height: 100svh;
     padding-top: 3.25rem;
   }
-  .watch-hero-playing .watch-drawer-scrim { height: calc(100svh - 7rem); }
+  .watch-hero-playing .watch-drawer-scrim { height: 100svh; }
   .watch-drawer-handle { display: none; }
   .watch-drawer-close { top: .65rem; right: .75rem; width: 2.25rem; border: 0; }
 }
@@ -1190,3 +1171,15 @@ button:not(:disabled):active { transform: scale(.97); }
   .watch-stage-revealing .player-controls { animation-duration: 1ms; animation-delay: 0ms; }
   .watch-toolbar-bridge { transition-duration: 1ms; }
 }
+
+/* Compact application navigation */
+.with-navigation { padding-left: 5rem; }
+.app-toolbar-inner { min-height: 5rem; }
+.app-toolbar .nav-search { width: min(100%, 22rem); }
+.with-navigation .app-main { min-height: calc(100svh - 5rem); }
+@media (max-width: 767px) {
+  .with-navigation { padding-left: 0; }
+  .app-toolbar-inner { padding-inline: 5rem; }
+}
+
+body:has(.mobile-navigation[open]) { overflow: hidden; }

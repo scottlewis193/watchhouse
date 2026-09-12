@@ -3,11 +3,12 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
+  import AppNavigation from '$lib/AppNavigation.svelte';
   import IntroAnimation from '$lib/IntroAnimation.svelte';
   let { children } = $props();
   let offline = $state(false);
   let searchInput;
-  let headerHeight = $state();
+  const isWatchRoute = $derived(page.url.pathname === '/watch' || page.url.pathname.startsWith('/watch/'));
 
   onMount(() => {
     const update = () => {
@@ -25,7 +26,8 @@
     const verticalArrow = ['ArrowUp', 'ArrowDown'].includes(event.key);
     const textInput = target.matches('input:not([type]), input[type="text"], input[type="search"], input[type="email"], input[type="url"], input[type="password"], input[type="number"]');
     if (target.matches('video, textarea') || (target.matches('select') && verticalArrow) || (textInput && !verticalArrow)) return;
-    const candidates = [...document.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), video[controls]')]
+    const navigationRoot = document.querySelector('dialog[open]') || document;
+    const candidates = [...navigationRoot.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), video[controls]')]
       .filter(element => !element.hasAttribute('data-spatial-ignore') && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
     const current = candidates.includes(target) ? target : null;
     if (!current) { candidates[0]?.focus(); return; }
@@ -46,7 +48,7 @@
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.key !== '/') return;
     const target = event.target;
     if (target instanceof HTMLElement && (target.matches('input, textarea, select, button') || target.isContentEditable)) return;
-    if (!searchInput || searchInput.disabled) return;
+    if (document.querySelector('dialog[open]') || isWatchRoute || !searchInput || searchInput.disabled) return;
     event.preventDefault();
     searchInput.focus();
     searchInput.select();
@@ -59,29 +61,18 @@
 
 <IntroAnimation />
 
-<div class="watchhouse-shell min-h-screen bg-base-200 text-base-content" class:watchhouse-watch={page.url.pathname.startsWith('/watch/')} style:--watch-header-height={headerHeight ? `${headerHeight}px` : undefined}>
+<div class="watchhouse-shell min-h-screen bg-base-200 text-base-content" class:watchhouse-watch={isWatchRoute} class:with-navigation={!isWatchRoute}>
   {#if offline}<div class="bg-warning px-4 py-2 text-center text-xs font-semibold tracking-wide text-warning-content">OFFLINE MODE · ONLY DOWNLOADED TITLES ARE AVAILABLE</div>{/if}
-  <header class="app-header" bind:offsetHeight={headerHeight}>
-    <div class="app-header-inner mx-auto grid max-w-[90rem] items-center gap-x-8 gap-y-4 px-5 sm:px-8 lg:px-12">
-      <a class="brand-link" href={offline ? '/library?offline=1' : '/'}>Watchhouse</a>
-      <nav class="main-nav" aria-label="Main navigation">
-        <a class="nav-link" class:nav-link-active={page.url.pathname === '/'} href="/">Home</a>
-        <a class="nav-link" class:nav-link-active={page.url.pathname.startsWith('/library')} href="/library">Library</a>
-        <a class="nav-link" class:nav-link-active={page.url.pathname.startsWith('/downloads')} href="/downloads">Downloads</a>
-        <a class="nav-link" class:nav-link-active={page.url.pathname.startsWith('/settings')} href="/settings">Settings</a>
-      </nav>
+  {#if !isWatchRoute}
+  <AppNavigation {offline} />
+  <header class="app-toolbar">
+    <div class="app-toolbar-inner mx-auto flex max-w-[90rem] items-center justify-center px-5 sm:px-8 lg:px-12">
       <form class="nav-search" class:opacity-40={offline} action="/" method="get" role="search">
         <svg class="size-4 shrink-0" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
         <input class="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" bind:this={searchInput} name="q" type="search" value={page.url.searchParams.get('q') || ''} placeholder={offline ? 'Search unavailable offline' : 'Search'} aria-label="Search movies and shows" disabled={offline} />
       </form>
     </div>
   </header>
-  <main class="app-main mx-auto max-w-[90rem] px-5 py-7 sm:px-8 sm:py-9 lg:px-12 lg:py-10" class:watch-main={page.url.pathname.startsWith('/watch/')}>{@render children()}</main>
-  <footer class="app-footer mx-auto flex max-w-[90rem] flex-col gap-4 border-t border-base-300 px-5 py-8 text-xs text-base-content/45 sm:px-8 md:flex-row md:items-center md:justify-between lg:px-12">
-    <p class="tracking-[0.18em]">WATCHHOUSE · PRIVATE SCREENING ROOM</p>
-    <a class="flex items-center gap-3 hover:text-base-content/75" href="https://www.themoviedb.org" target="_blank" rel="noreferrer">
-      <img class="h-7 w-7" src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_square_1-5bdc75aaebeb75dc7ae79426ddd9be3b2be1e342510f8202baf6bffa71d7f5c4.svg" alt="TMDB" />
-      <span class="max-w-sm leading-relaxed">Uses the TMDB API. Not endorsed or certified by TMDB.</span>
-    </a>
-  </footer>
+  {/if}
+  <main class="app-main mx-auto max-w-[90rem] px-5 py-7 sm:px-8 sm:py-9 lg:px-12 lg:py-10" class:watch-main={isWatchRoute}>{@render children()}</main>
 </div>
