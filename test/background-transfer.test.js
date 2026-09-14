@@ -96,3 +96,48 @@ test('foreground preemption retries an article without delivering partial or dup
   assert.equal(connections, 2);
   client.close();
 });
+
+test('queued background download resumes when the viewer leaves and its report expires', async () => {
+  let now = 0;
+  const gate = createTransferCoordinator({ now: () => now, wait: setImmediate });
+  gate.report('watch', { playing: false });
+  const job = { backgroundFor: 'watch', message: 'Downloading the next episode…' };
+  let admitted = false;
+  const pending = gate.acquire(settings, job).then(release => { admitted = true; release(); });
+  await setImmediate();
+  assert.equal(admitted, false);
+  now = 10001;
+  await setImmediate();
+  if (!admitted) job.cancelled = true;
+  await pending.catch(error => { assert.equal(error.code, 'DOWNLOAD_CANCELLED'); });
+  assert.equal(admitted, true, 'an absent viewer must not pause the download forever');
+  assert.equal(job.message, 'Downloading the next episode…');
+});
+
+test('idle downloads still yield to foreground transfers and explicit settings suspension', async () => {
+  const gate = createTransferCoordinator({ wait: setImmediate });
+  const foreground = await gate.acquire(settings);
+  let admitted = false;
+  const pending = gate.acquire(settings, { backgroundFor: 'departed' }).then(release => { admitted = true; release(); });
+  await setImmediate();
+  assert.equal(admitted, false, 'a free slot must not bypass active foreground work without buffer evidence');
+  gate.pause();
+  foreground();
+  await setImmediate();
+  assert.equal(admitted, false, 'turning off automatic downloads is not an expired viewer');
+  gate.resume();
+  await pending;
+  assert.equal(admitted, true);
+});
+
+test('a remaining unhealthy viewer blocks an orphaned download until its buffer recovers', async () => {
+  const gate = createTransferCoordinator({ wait: setImmediate });
+  gate.report('other', { ...healthy, bufferedAhead: 3 });
+  let admitted = false;
+  const pending = gate.acquire(settings, { backgroundFor: 'departed' }).then(release => { admitted = true; release(); });
+  await setImmediate();
+  assert.equal(admitted, false);
+  gate.report('other', healthy);
+  await pending;
+  assert.equal(admitted, true);
+});

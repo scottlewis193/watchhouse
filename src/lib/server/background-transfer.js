@@ -12,7 +12,7 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
     if (signal?.aborted) done();
   });
   const accounts = new Map(), reports = new Map();
-  let backgroundActive = false, interruptBackground;
+  let backgroundActive = false, interruptBackground, suspended = false;
   const key = settings => JSON.stringify([settings.usenetHost, settings.usenetPort || 563, settings.usenetUser]);
   function report(id, sample) {
     for (const [key, value] of reports) if (now() - value.at > 60000) reports.delete(key);
@@ -29,18 +29,28 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
   async function acquire(settings, job, interrupt) {
     const id = key(settings);
     if (!accounts.has(id)) accounts.set(id, { active: 0, foregroundWaiting: 0 });
-    const account = accounts.get(id), background = Boolean(job);
+    const account = accounts.get(id), background = Boolean(job), previousMessage = job?.message;
+    let pausedMessage;
     if (!background) { account.foregroundWaiting++; interruptBackground?.(); }
     try {
       while (true) {
         throwIfDownloadCancelled(job);
         settings.signal?.throwIfAborted();
         const room = account.active < Math.max(1, Number(settings.maxConnections) || 4);
-        if (background ? room && !backgroundActive && !account.foregroundWaiting && safe(job.backgroundFor) : room && !backgroundActive) break;
-        if (background) job.message = 'Paused background download · current playback has priority.';
+        // Reports are viewer leases: silence after leaving the player must not
+        // block an already queued download indefinitely. Foreground transfers
+        // still win, including startup before a viewer can report its buffer.
+        const viewers = [...reports.values()].filter(sample => now() - sample.at <= 10000);
+        const downloadSafe = !suspended && (viewers.length ? viewers.every(sample => sample.safe) : account.active === 0);
+        if (background ? room && !backgroundActive && !account.foregroundWaiting && downloadSafe : room && !backgroundActive) break;
+        if (background) {
+          pausedMessage = suspended ? 'Paused background download · automatic downloads are disabled.' : 'Paused background download · current playback has priority.';
+          job.message = pausedMessage;
+        }
         await waitForChange(settings.signal);
       }
       account.active++;
+      if (background && pausedMessage && job.message === pausedMessage) job.message = previousMessage;
       if (background) { backgroundActive = true; interruptBackground = interrupt; }
       let released = false;
       return () => {
@@ -51,7 +61,7 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
       };
     } finally { if (!background) account.foregroundWaiting--; }
   }
-  return { acquire, report, forget: id => reports.delete(id), pause() { reports.clear(); interruptBackground?.(); }, safe };
+  return { acquire, report, forget(id) { reports.delete(id); wake(); }, pause() { suspended = true; reports.clear(); interruptBackground?.(); wake(); }, resume() { suspended = false; wake(); }, safe };
 }
 
 export function createBackgroundNntpClient(settings, transfers, connect) {

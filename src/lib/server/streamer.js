@@ -1273,7 +1273,7 @@ export async function handleRequest(req, res) {
       const next = connectionTestSettings(current, incoming);
       delete next.watchmodeKey; delete next.omdbKey;
       posterPreparation.cancel(); nntpPool.clearIdle();
-      if (!next.downloadNextEpisode) transfers.pause();
+      if (!next.downloadNextEpisode) transfers.pause(); else transfers.resume();
       await saveSettings(next); return json(res, 200, publicSettings(next));
     }
     if (req.method === 'DELETE' && url.pathname === '/api/settings') { posterPreparation.cancel(); nntpPool.clearIdle(); transfers.pause(); await saveSettings({}); return json(res, 204, {}); }
