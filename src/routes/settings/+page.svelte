@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
 
-  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
+  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
   let loading = $state(true);
   let saving = $state(false);
   let notice = $state('');
@@ -25,7 +25,7 @@
   function show(message, type = 'success') { notice = message; noticeType = type; }
   async function save() { saving = true; try { const config = await api.put('/api/settings', form); configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); form.indexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
   async function testConnection() { try { show('Testing Usenet connection…'); show((await api.post('/api/usenet/test', form)).message); } catch (e) { show(e.message, 'error'); } }
-  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
+  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
   function selectTheme(nextTheme) {
     theme = nextTheme;
     document.documentElement.dataset.theme = nextTheme;
@@ -125,6 +125,11 @@
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
+            <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.downloadNextEpisode} />
+            <span><span class="block text-sm font-medium">Download the next episode while watching</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Uses a spare connection when playback has at least 30 seconds buffered. Pauses when playback needs priority. Keeps completed episodes in Downloads until you delete them. Video conversion waits until you play the episode; archive-only releases and manual release selection are skipped.</span></span>
+          </label>
+
+          <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.smartAutoplay} />
             <span><span class="block text-sm font-medium">Smart next episode</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Look for end-credit frames on this device during the final 5 minutes and start the next-episode countdown early.</span></span>
           </label>
@@ -148,7 +153,7 @@
           <label class="mt-6 grid max-w-sm gap-2">
             <span class="text-sm font-medium">Clear inactive files after</span>
             <input class="input input-bordered w-full" bind:value={form.cacheRetentionHours} type="number" min="1" max="168" />
-            <span class="text-xs leading-relaxed text-base-content/55">Hours; active playback files are cleared automatically.</span>
+            <span class="text-xs leading-relaxed text-base-content/55">Hours; inactive temporary playback files are cleared automatically. Saved Downloads are kept until you delete them.</span>
           </label>
         </div>
       </section>
