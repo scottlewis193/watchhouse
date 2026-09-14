@@ -220,14 +220,15 @@
   async function showReadyPlayback(job, requestToken) {
     const entry = progressFor(currentMedia);
     const duration = progressDuration(job.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
-    resumeStreamOffset = resumePlayback && hasGrowingStreamDuration(job.mode) ? resumePosition(entry, duration) : 0;
+    resumeStreamOffset = hasGrowingStreamDuration(job.mode) ? recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0) : 0;
+    if (hasGrowingStreamDuration(job.mode)) recoveryPosition = 0;
     beginPlaybackWarmup();
     playback = job;
     if (shouldContinuePlayback(continuePlaybackOnReady, job)) {
       await tick();
       if (playbackRequests.isCurrent(requestToken) && playback?.id === job.id) void attemptAutomaticPlayback();
     }
-    if (playbackDiagnostics && playbackRequests.isCurrent(requestToken)) diagnosticPollTimer = setTimeout(() => void refreshDiagnostics(job.id, requestToken), 1000);
+    if (playbackRequests.isCurrent(requestToken)) diagnosticPollTimer = setTimeout(() => void refreshDiagnostics(job.id, requestToken), 1000);
   }
 
   async function poll(id, requestToken, attempt = 0) {
@@ -254,6 +255,19 @@
     try {
       const job = await api.get(`/api/play/${id}`);
       if (!playbackRequests.isCurrent(requestToken) || playback?.id !== id) return;
+      if (job.status !== 'ready') {
+        // Server-side archive fallback changes the job while the old player
+        // still exists. Follow preparation instead of displaying a stale seek.
+        recoveryPosition = currentPlaybackPosition();
+        resumePlayback = recoveryPosition >= 5;
+        await savePlaybackProgress(true);
+        if (!playbackRequests.isCurrent(requestToken) || playback?.id !== id) return;
+        clearTimeout(interruptionTimer); clearTimeout(startupStableTimer);
+        stopBackgroundPlayback();
+        playback = job;
+        if (!['error', 'cancelled'].includes(job.status)) void poll(id, requestToken, 0);
+        return;
+      }
       playback = { ...playback, diagnostics: job.diagnostics };
       diagnosticPollTimer = setTimeout(() => void refreshDiagnostics(id, requestToken), 1500);
     } catch {}
@@ -492,12 +506,15 @@
   function handleStartupBuffering(event) {
     stopBackgroundPlayback();
     captureVideoDiagnostics(event?.type || 'buffering');
+    // Network stalls can arrive after pause; a stationary paused playhead is expected.
+    if (!player || player.paused) return;
     clearTimeout(startupStableTimer);
     if (!playbackSettled) { clearTimeout(startupStableTimer); resumeStarting = true; return; }
     const timeline = controlTimeline(), stalledAt = timeline.position;
     if (playback?.mode !== 'direct') return;
     clearTimeout(interruptionTimer);
     interruptionTimer = setTimeout(() => {
+      if (!player || player.paused) return;
       if (Math.abs(controlTimeline().position - stalledAt) < 0.5) handlePlaybackInterruption('buffering-timeout', 'The direct stream stopped making progress.', { triggerEvent: event?.type || 'buffering', stalledAt, timeoutMs: 10000 });
     }, 10000);
   }
@@ -520,6 +537,8 @@
   function formatAirDate(value) { if (!value) return ''; const [year, month, day] = value.split('-').map(Number); if (!year || !month || !day) return value; return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(year, month - 1, day)); }
   async function attemptAutomaticPlayback() {
     if (!player || !player.paused || playbackNeedsAction || playbackRecovery) return;
+    // Subsequent canplay events must not undo an intentional pause.
+    if (playbackSettled && !continuePlaybackOnReady) return;
     try { await player.play(); }
     catch (error) {
       if (error?.name === 'NotAllowedError') { playbackNeedsAction = true; settlePlaybackWarmup(); }

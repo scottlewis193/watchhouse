@@ -78,6 +78,7 @@
             <li>
               <p><span class="text-base-content/55">{time(interruption.at)}</span> <strong>{interruptionLabels[interruption.reason] || interruption.reason}</strong> · {interruption.action === 'retry' ? `Automatic retry ${interruption.attempt}` : interruption.action === 'offer' ? 'Recovery offered' : 'Playback error'}</p>
               <p>{interruption.media?.title}{interruption.media?.season ? ` · S${interruption.media.season}E${interruption.media.episode}` : ''} · {Math.round(interruption.snapshot.position || 0)}s</p>
+              <p class="break-words text-base-content/65">{interruption.message}</p>
               <p class="text-base-content/65">Buffer ahead: {interruption.snapshot.bufferedAhead.toFixed(1)}s · Ready: {stateLabel(interruption.snapshot.readyState, readyLabels)} · Audio bytes: {interruption.snapshot.audioDecodedBytes ?? 'unavailable'} · Error code: {interruption.snapshot.errorCode ?? 'none'}</p>
             </li>
           {/each}

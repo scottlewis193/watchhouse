@@ -223,3 +223,52 @@ test('an abandoned progressive source closes its helper and removes temporary ou
     assert.equal((await readdir(root)).some(name => name.startsWith('playback-progressive-')), false);
   } finally { await source?.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('a temporary extraction pause does not kill an established progressive HLS conversion', { timeout: 40000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'archive-pause-'));
+  let source, producer, unblock;
+  const held = new Promise(resolve => { unblock = resolve; });
+  try {
+    const videoPath = join(root, 'video.mkv');
+    await execute('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24', '-t', '60', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '8', videoPath]);
+    await execute('7z', ['a', '-t7z', '-mx=0', join(root, 'video.7z'), videoPath]);
+    const archive = await readFile(join(root, 'video.7z'));
+    source = await createProgressiveArchiveSource({ size: archive.length, close: async () => {}, async read(start, end) {
+      if (start >= archive.length * 0.7 && end < archive.length - 65536) await held;
+      return archive.subarray(start, end + 1);
+    } }, { root });
+    const job = { progressiveArchive: true, archiveSource: source, file: { subject: 'video.mkv' }, release: 'Fixture SDR H264', strategy: 'remux', mode: 'direct' };
+    // Consume the available prefix promptly so this isolates the input wait,
+    // independent of the normal conversion pacing and media length.
+    producer = await startHlsConversion(job, {}, 0, root, () => {}, async () => []);
+    let failure;
+    void producer.completion.catch(error => { failure = error; });
+    await new Promise(resolve => setTimeout(resolve, 18000));
+    unblock();
+    await source.completion;
+    await producer.completion;
+    assert.equal(failure, undefined);
+    assert.match(await readFile(join(root, 'index.m3u8'), 'utf8'), /#EXT-X-ENDLIST/);
+  } finally { unblock(); await producer?.stop(); await source?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('archive extraction keeps memory bounded across repeated native read buffers', { timeout: 30000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'archive-memory-'));
+  let source, lease;
+  try {
+    const videoPath = join(root, 'video.mkv');
+    await writeFile(videoPath, Buffer.alloc(128 * 1024 * 1024, 42));
+    await execute('7z', ['a', '-t7z', '-mx=0', join(root, 'video.7z'), videoPath]);
+    const archive = await readFile(join(root, 'video.7z'));
+    const helper = join(root, 'bounded-helper.py');
+    // Lower the child ceiling so retained 4 MiB read buffers reproduce the
+    // large-release failure quickly, without a multi-gigabyte test fixture.
+    const script = new URL('../scripts/progressive-archive.py', import.meta.url).pathname;
+    await writeFile(helper, `import resource, runpy\nresource.setrlimit(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))\nrunpy.run_path(${JSON.stringify(script)}, run_name='__main__')\n`);
+    source = await createProgressiveArchiveSource({ size: archive.length, close: async () => {}, read: async (start, end) => archive.subarray(start, end + 1) }, { root, helper });
+    lease = source.retain();
+    await source.completion;
+    assert.equal(source.available, 128 * 1024 * 1024);
+    assert.equal(source.complete, true);
+  } finally { lease?.close(); await source?.close(); await rm(root, { recursive: true, force: true }); }
+});

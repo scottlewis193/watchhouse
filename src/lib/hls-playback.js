@@ -41,7 +41,14 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
         throw new Error('This browser cannot play segmented video.');
       }
       hls = new Hls({ startPosition: 0, backBufferLength: 30, maxBufferLength: 30, maxMaxBufferLength: 60, maxLiveSyncPlaybackRate: 1 });
-      hls.on(Hls.Events.ERROR, (_event, data) => { if (data.fatal && !closed) options.onError(`Segmented playback failed: ${data.details}`); });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal || closed) return;
+        const httpStatus = Number(data.response?.code || data.networkDetails?.status) || null;
+        const status = httpStatus ? ` (HTTP ${httpStatus})` : '';
+        options.onError(`Segmented playback failed: ${data.details}${status}`, {
+          hlsDetails: data.details, httpStatus, sessionUrl
+        });
+      });
       hls.on(Hls.Events.FRAG_BUFFERED, () => { if (!closed && !buffered) { buffered = true; options.onProgress?.(playbackSetupProgress(3)); } });
       hls.attachMedia(video);
       hls.loadSource(session.playlistUrl);

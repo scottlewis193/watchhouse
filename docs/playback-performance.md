@@ -443,3 +443,48 @@ the original underrun. The original buffering trigger remains unresolved; the
 player's **Playback diagnostics → Download diagnostic report**, captured after a
 stall and before navigation/reload, is needed to correlate browser buffers and
 recovery with server activity.
+
+### Recovery loops during progressive playback (2026-09-14)
+
+Live Silo diagnostics recorded a first-segment preparation timeout, followed by
+`levelLoadError` (HTTP 500). One playlist failure occurred with 17.4 seconds still
+buffered and no browser media error code. A later attempt exhausted the buffer
+and the server fell back to downloading, while the page continued to show stale
+ready/seeking state.
+
+A controlled regression reproduced a conversion failure by withholding a local
+archive tail for 18 seconds. FFmpeg's 15-second HTTP read timeout caused premature
+stream-end and demuxer I/O errors, making HLS playlist reads fail. The same test
+passes with the growing local input's read timeout disabled. The endpoint is
+supposed to wait for extraction; its source failure, session cancellation and
+idle cleanup remain active. Ordinary posted-file input keeps its network timeout.
+This reproduces a mechanism matching the live failure; the old live response did
+not retain its complete FFmpeg error text.
+
+Progressive HLS readiness now extends its 45-second inactivity deadline when
+extracted bytes advance, with a five-minute absolute limit. This avoids repeatedly
+throwing away useful preparation during a cold resume. Other sources keep the
+45-second limit. Tests cover resumed progress, no-progress expiry and the hard
+limit.
+
+The page checks job status even when detailed diagnostics are disabled. A server
+fallback moves it into preparation/download progress and preserves the recovery
+position, instead of leaving a stale ready player behind. Diagnostic entries now
+show their error messages; fatal HLS reports retain HTTP status and session
+identity. All 222 tests and an isolated production build passed before applying
+these changes to the watched source tree.
+
+The complete local archive replay then isolated a second, decisive failure:
+`ctypes.cast(buffer, ptr)` in the native read callback retained old read buffers
+through ctypes ownership cycles. With the default 1 GiB address-space limit,
+the real downloaded Silo archive failed around its first gigabyte with
+`I/O error when unstoring file`. A temporary 2 GiB limit moved the failure to
+roughly two gigabytes. This was independent of provider availability and FFmpeg.
+
+The callback now passes `ctypes.addressof(buffer)` while retaining the current
+buffer explicitly until the next read. The original 1 GiB limit stays in place.
+The entire 9,723,950,472-byte Silo video then extracted successfully through all
+93 downloaded RAR volumes in 35.199 seconds. A 128 MiB fixture under a reduced
+128 MiB child limit reproduces the old failure in about 1.4 seconds and passes
+with the fix. Full-archive extraction verifies the archive path and native checks;
+it is not a whole-episode browser playback test.

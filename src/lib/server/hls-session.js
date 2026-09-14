@@ -44,9 +44,16 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
     // completion succeeds, keep the player polling rather than ending early.
     return completed ? bytes : Buffer.from(bytes.toString().replace(/^#EXT-X-ENDLIST\r?\n?/gm, ''));
   }
-  async function ready() {
-    const deadline = Date.now() + 45000;
-    while (Date.now() < deadline) {
+  async function ready({ progress = () => 0, maxWaitMs = 45000 } = {}) {
+    const started = Date.now(), limit = started + Math.max(45000, maxWaitMs);
+    let deadline = started + 45000, previousProgress = progress();
+    while (Date.now() < limit) {
+      const currentProgress = progress();
+      if (currentProgress > previousProgress) {
+        previousProgress = currentProgress;
+        deadline = Date.now() + 45000;
+      }
+      if (Date.now() >= deadline) break;
       if (closed) throw new Error('Playback session has closed.');
       if (failure) throw failure;
       try {

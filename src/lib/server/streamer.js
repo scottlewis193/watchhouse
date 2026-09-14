@@ -869,7 +869,14 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const { audioIndex } = metadata;
     job.sourceDuration = metadata.duration;
     const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing, toneMap, acceleration);
-    if (growing) mapped.splice(mapped.indexOf('-i'), 0, '-seekable', '0');
+    if (growing) {
+      mapped.splice(mapped.indexOf('-i'), 0, '-seekable', '0');
+      // This local endpoint waits for extraction by design. A network read
+      // timeout would turn ordinary buffering into a fatal demuxer error.
+      // Session readiness/idle deadlines and source cancellation bound it.
+      const timeout = mapped.indexOf('-rw_timeout');
+      if (timeout >= 0) mapped[timeout + 1] = '0';
+    }
     // HLS exposes one audio track per rendition. Optional maps can select the
     // same English track repeatedly, which browsers reject in an MSE buffer.
     for (let i = mapped.length - 2; i >= 0; i--) {
@@ -1595,7 +1602,11 @@ export async function handleRequest(req, res) {
           session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report), onClose: () => hlsSessions.delete(id) });
           hlsSessions.set(id, { jobId, session });
           if (cancelled) { await session.close(); return; }
-          await session.ready();
+          // Growing archives must read through the resume prefix. Keep useful
+          // extraction alive, but bound both inactivity and total preparation.
+          await session.ready(job.progressiveArchive ? {
+            progress: () => job.archiveSource?.available || 0, maxWaitMs: 300000
+          } : undefined);
           jobEvent(job, 'segments-ready', 'First playback segment is ready.');
           if (cancelled) return;
           delivered = true;

@@ -75,7 +75,9 @@ def main():
             if len(payload) != end - position + 1:
                 raise RuntimeError('Incomplete archive byte range')
             buffer = C.create_string_buffer(payload)
-            target[0] = C.cast(buffer, ptr)
+            # The buffer is held until the next read. Passing its address
+            # avoids ctypes cast ownership cycles retaining old 4 MiB buffers.
+            target[0] = C.addressof(buffer)
             position += len(payload)
             return len(payload)
         except Exception as exc:

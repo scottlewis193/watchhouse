@@ -114,3 +114,27 @@ test('delivers the full source duration before attaching a growing HLS stream', 
   try { await setImmediate(); assert.equal(duration, 1407.018); }
   finally { source.destroy(); globalThis.window = oldWindow; }
 });
+
+test('fatal playlist errors retain HTTP status and session identity for diagnosis', async t => {
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ sessionUrl: '/session/failed', playlistUrl: '/playlist.m3u8' }) }));
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  const errors = []; let errorHandler;
+  class Hls {
+    static isSupported = () => true;
+    static Events = { ERROR: 'error', FRAG_BUFFERED: 'buffered' };
+    on(event, callback) { if (event === 'error') errorHandler = callback; }
+    attachMedia() {} loadSource() {} destroy() {}
+  }
+  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 0, onError: (...args) => errors.push(args) }, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    errorHandler(null, { fatal: false, details: 'levelLoadError', response: { code: 500 } });
+    assert.equal(errors.length, 0);
+    errorHandler(null, { fatal: true, details: 'levelLoadError', response: { code: 500 } });
+    assert.deepEqual(errors[0], ['Segmented playback failed: levelLoadError (HTTP 500)', { hlsDetails: 'levelLoadError', httpStatus: 500, sessionUrl: '/session/failed' }]);
+    source.destroy();
+    errorHandler(null, { fatal: true, details: 'levelLoadError' });
+    assert.equal(errors.length, 1);
+  } finally { source.destroy(); globalThis.window = oldWindow; }
+});

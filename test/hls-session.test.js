@@ -132,3 +132,34 @@ test('a failed converter cannot turn truncated playback into a completed episode
     await assert.rejects(session.read('index.m3u8'), /input ended prematurely/);
   } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('resume readiness allows extraction progress beyond the ordinary startup deadline', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-resume-progress-'));
+  let now = 0, bytes = 0;
+  t.mock.method(Date, 'now', () => now);
+  const session = await createHlsSession({ root, produce: async () => ({ completion: new Promise(() => {}), stop() {} }) });
+  try {
+    const ready = session.ready({ progress: () => bytes, maxWaitMs: 300000 });
+    await writeFile(`${session.directory}/index.m3u8`, '#EXTM3U\n#EXTINF:4,\nsegment-000000.m4s\n');
+    bytes = 1000000; now = 50000;
+    await ready;
+  } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('extended resume preparation still stops on inactivity or its hard deadline', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-resume-limit-'));
+  let now = 0, bytes = 0;
+  t.mock.method(Date, 'now', () => now);
+  try {
+    for (const progresses of [false, true]) {
+      now = 0; bytes = 0;
+      const session = await createHlsSession({ root, produce: async () => ({ completion: new Promise(() => {}), stop() {} }) });
+      try {
+        const ready = session.ready({ progress: () => bytes, maxWaitMs: 300000 });
+        now = progresses ? 300001 : 45001;
+        if (progresses) bytes = 1000000;
+        await assert.rejects(ready, /Timed out/);
+      } finally { await session.close(); }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
