@@ -81,17 +81,22 @@ function textComponentMetrics(luminance, width, height, threshold) {
     }
   }
 
-  let alignedComponentCount = 0;
+  let alignedComponentCount = 0, rowAlignedComponentCount = 0;
   for (let row = 0; row < height; row++) {
     let aligned = 0;
     for (let nearby = Math.max(0, row - 2); nearby <= Math.min(height - 1, row + 2); nearby++) aligned += componentRows[nearby];
     alignedComponentCount = Math.max(alignedComponentCount, aligned);
+    // Count each component once if it belongs to a text-like row. A handful
+    // of aligned window/face highlights among scattered scenery is not text.
+    // Sum across rows so a full credit roll need not have one dominant line.
+    if (aligned >= 4) rowAlignedComponentCount += componentRows[row];
   }
   return {
     foregroundFraction: matchingPixels / luminance.length,
     compactForegroundFraction: matchingPixels ? compactPixels / matchingPixels : 0,
     compactComponentCount,
     alignedComponentCount,
+    rowAlignedComponentFraction: compactComponentCount ? rowAlignedComponentCount / compactComponentCount : 0,
     compactHorizontalSpan: compactRight >= compactLeft ? (compactRight - compactLeft + 1) / width : 0,
     compactTopFraction: compactBottom >= compactTop ? compactTop / height : 1
   };
@@ -125,7 +130,8 @@ export function analyzeCreditFrame(pixels, width, height) {
   const darkBackground = whole.darkFraction >= 0.75 && whole.meanLuminance <= 72;
   const textShape = text.foregroundFraction >= 0.003 && text.foregroundFraction <= 0.16
     && text.compactForegroundFraction >= 0.65 && text.compactComponentCount >= 4
-    && text.alignedComponentCount >= 4 && text.compactHorizontalSpan >= 0.12
+    && text.alignedComponentCount >= 4 && text.rowAlignedComponentFraction >= 0.75
+    && text.compactHorizontalSpan >= 0.12
     && text.compactTopFraction < 0.72;
   const likely = darkBackground && textShape;
   const metrics = {
