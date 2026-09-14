@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { parse } from 'svelte/compiler';
-import { canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, shouldContinuePlayback, resumePosition, progressDuration } from '../src/lib/playback-controls.js';
+import { canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline } from '../src/lib/playback-controls.js';
 
 const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
 const ast = parse(source);
-const names = ['handlePlaybackInterruption', 'offerPlaybackRecovery', 'fallback', 'showReadyPlayback', 'restorePlaybackProgress', 'attemptAutomaticPlayback'];
+const names = ['handlePlaybackInterruption', 'offerPlaybackRecovery', 'fallback', 'showReadyPlayback', 'restorePlaybackProgress', 'attemptAutomaticPlayback', 'controlTimeline', 'handleEnded'];
 const handlers = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name)).map(node => source.slice(node.start, node.end)).join('\n');
 
 function recoveryState(retries = 0) {
@@ -24,7 +24,8 @@ function recoveryState(retries = 0) {
     interruptionTimer: null, startupStableTimer: null, diagnosticPollTimer: null, fallbackPending: false,
     sourceDuration: 1400, clearTimeout() {}, setTimeout() { return 1; },
     canUseFallback, streamInterruptionAction, hasGrowingStreamDuration,
-    shouldContinuePlayback, resumePosition, progressDuration,
+    shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline,
+    captureVideoDiagnostics() {}, playerPosition: 12, playerDuration: 1400, seekPreview: null,
     currentPlaybackPosition: () => state.player.currentTime + state.resumeStreamOffset,
     savePlaybackProgress: async () => {}, stopBackgroundPlayback() {},
     settlePlaybackWarmup() {}, beginPlaybackWarmup() { state.playbackSettled = false; },
@@ -102,4 +103,18 @@ test('a prepared-file failure is terminal instead of repeatedly downloading repl
   state.handlePlaybackInterruption('media-error', 'Browser codec unsupported');
   assert.equal(state.playback.status, 'error');
   assert.equal(requests.length, 0);
+});
+
+test('repeated partial episode endings automatically reach preparation without user clicks', async () => {
+  const { state, requests } = recoveryState();
+  state.currentMedia = { type: 'tv', season: 2, episode: 5, durationHint: 1320 };
+  state.sourceDuration = 71;
+  state.playerPosition = state.playerDuration = state.player.currentTime = 71;
+  state.resumeStreamOffset = 0;
+  for (let attempt = 0; attempt < 4; attempt++) state.handleEnded();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  assert.equal(state.recoveryPosition, 71);
+  assert.equal(state.continuePlaybackOnReady, true);
+  assert.equal(state.playbackRecovery, null);
 });

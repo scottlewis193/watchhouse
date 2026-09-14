@@ -45,6 +45,15 @@ export function progressDuration(playbackMode, duration) {
   return !hasGrowingStreamDuration(playbackMode) && Number.isFinite(duration) && duration > 0 ? duration : 0;
 }
 
+export function resolvedMediaDuration(sourceDuration, catalogueDuration, savedDuration = 0) {
+  const positive = value => Number.isFinite(value) && value > 0 ? value : 0;
+  const source = positive(sourceDuration), catalogue = positive(catalogueDuration);
+  // Source metadata is normally more precise than a catalogue runtime. But a
+  // short fragment must not override the runtime of the episode it belongs to.
+  if (catalogue && source < catalogue * 0.5) return catalogue;
+  return source || catalogue || positive(savedDuration);
+}
+
 export function playbackTimeline(playbackMode, position, mediaDuration, streamDuration, streamOffset = 0) {
   const relativePosition = Number.isFinite(position) && position > 0 ? position : 0;
   const offset = Number.isFinite(streamOffset) && streamOffset > 0 ? streamOffset : 0;

@@ -491,7 +491,20 @@ async function cachedPlaybackStrategy(path, release) {
     return audioAwarePlaybackStrategy(suggested, probe.streams);
   } catch { return suggested; }
 }
+export function assertCompleteEpisodeDuration(actualDuration, expectedDuration) {
+  if (Number.isFinite(expectedDuration) && expectedDuration > 0
+    && Number.isFinite(actualDuration) && actualDuration > 0
+    && actualDuration < expectedDuration * 0.5) {
+    throw Object.assign(new Error('This video is much shorter than the expected episode runtime. Trying another release.'), { code: 'INVALID_MEDIA_DURATION' });
+  }
+}
+async function validatePreparedEpisode(job, path) {
+  if (job.media?.type !== 'tv' || !(job.media.durationHint > 0)) return;
+  const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', path]));
+  assertCompleteEpisodeDuration(Number(probe.format?.duration), Number(job.media.durationHint));
+}
 async function optimizeCachedVideo(job, path) {
+  await validatePreparedEpisode(job, path);
   if (job.backgroundFor) return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy: await cachedPlaybackStrategy(path, job.release) };
   const strategy = await cachedPlaybackStrategy(path, job.release);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
@@ -500,6 +513,7 @@ async function optimizeCachedVideo(job, path) {
   if (shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
     await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration), job.directory || ROOT, job);
+    await validatePreparedEpisode(job, browserPath);
     return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration };
   }
   return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy, videoAcceleration: job.videoAcceleration };
@@ -869,6 +883,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const input = cached ? job.sourcePath : rangeSource.url;
     const inspection = getInspection(job, settings, input);
     const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing && !forwardSeek ? start : 0)]);
+    if (job.media?.type === 'tv') assertCompleteEpisodeDuration(metadata.duration, Number(job.media.durationHint));
     const { audioIndex } = metadata;
     job.sourceDuration = metadata.duration;
     const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration);
@@ -908,14 +923,14 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   } catch (error) {
     await producer?.stop();
     await rangeSource?.close();
-    if (job.progressiveArchive && error.code !== 'INVALID_MEDIA_TIMELINE' && !settings.signal?.aborted) {
+    if (job.progressiveArchive && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code) && !settings.signal?.aborted) {
       job.progressiveArchiveDisabled = true;
       await prepareArchive(job, settings, job.archives);
       if (job.status !== 'ready') throw new Error(job.message || 'Archive fallback failed.');
       for (const name of await readdir(directory)) if (/^(index\.m3u8|init\.mp4|segment-\d+\.m4s)(\.tmp)?$/.test(name)) await rm(join(directory, name), { force: true });
       return startHlsConversion(job, settings, start, directory, onProgress, getPacing, getInspection);
     }
-    if (error.code === 'INVALID_MEDIA_TIMELINE' && !cached) {
+    if (['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code) && !cached) {
       job.rejectedReleases ||= new Set();
       job.rejectedReleases.add(job.releaseKey || job.release);
       await releaseHealth.reject(settings, job.media, job.releaseKey || job.release);
@@ -1289,7 +1304,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           archiveChoices.push({ archives, release: release.title, releaseKey: releaseIdentity(release) });
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
         } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
-      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
+      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
     if (!archiveChoices.length) throw new Error('No compatible video release was found.');
     // As with direct videos, prefer a source that can start now before paying

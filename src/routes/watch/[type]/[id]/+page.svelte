@@ -7,6 +7,7 @@
   import { api } from '$lib/api';
   import { audioPlaybackHealth, bufferedPlaybackRanges, canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
   import { analyzeCreditFrame, updateCreditEvidence } from '$lib/credit-detection.js';
+  import { resolvedMediaDuration } from '$lib/playback-controls.js';
   import BufferedSeekBar from '$lib/BufferedSeekBar.svelte';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import { createPlaybackTrace, playbackTraceSample } from '$lib/playback-trace.js';
@@ -220,7 +221,7 @@
 
   async function showReadyPlayback(job, requestToken) {
     const entry = progressFor(currentMedia);
-    const duration = progressDuration(job.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
+    const duration = progressDuration(job.mode, player?.duration) || resolvedMediaDuration(sourceDuration, currentMedia?.durationHint, entry?.duration);
     resumeStreamOffset = hasGrowingStreamDuration(job.mode) ? recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0) : 0;
     if (hasGrowingStreamDuration(job.mode)) recoveryPosition = 0;
     beginPlaybackWarmup();
@@ -438,7 +439,7 @@
     const key = itemKey(item), sameAsPlaying = key === itemKey(currentMedia);
     if (watched) autoMarkedMediaKey = key;
     else if (autoMarkedMediaKey === key) autoMarkedMediaKey = '';
-    const state = await api.put('/api/state/progress', { media: item, watched, reset: !watched, ...(sameAsPlaying && player ? { position: currentPlaybackPosition(), duration: progressDuration(playback?.mode, player.duration) || sourceDuration || currentMedia.durationHint || progressFor(currentMedia)?.duration || 0 } : {}) });
+    const state = await api.put('/api/state/progress', { media: item, watched, reset: !watched, ...(sameAsPlaying && player ? { position: currentPlaybackPosition(), duration: progressDuration(playback?.mode, player.duration) || resolvedMediaDuration(sourceDuration, currentMedia.durationHint, progressFor(currentMedia)?.duration) } : {}) });
     progressEntries = state.progress;
   }
 
@@ -457,7 +458,7 @@
     if (position < 1 || (!force && now - lastProgressSave < 10000)) return;
     progressWritePending = true; lastProgressSave = now;
     try {
-      const duration = reliableDuration || sourceDuration || currentMedia.durationHint || progressFor(currentMedia)?.duration || 0;
+      const duration = reliableDuration || resolvedMediaDuration(sourceDuration, currentMedia.durationHint, progressFor(currentMedia)?.duration);
       const state = await api.put('/api/state/progress', { media: currentMedia, position, duration, watched: false });
       progressEntries = state.progress;
     } finally { progressWritePending = false; }
@@ -466,7 +467,7 @@
   function restorePlaybackProgress() {
     const key = itemKey(currentMedia), entry = progressFor(currentMedia);
     if (hasGrowingStreamDuration(playback?.mode)) { restoredMediaKey = key; return; }
-    const duration = progressDuration(playback?.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
+    const duration = progressDuration(playback?.mode, player?.duration) || resolvedMediaDuration(sourceDuration, currentMedia?.durationHint, entry?.duration);
     const position = recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0);
     if (!position || (!recoveryPosition && restoredMediaKey === key)) return;
     player.currentTime = Math.min(position, Math.max(0, duration - 31)); recoveryPosition = 0; restoredMediaKey = key;
@@ -715,6 +716,12 @@
     playing = false;
     captureVideoDiagnostics('ended');
     const timeline = controlTimeline();
+    // The end of an HLS fragment or interrupted conversion is not necessarily
+    // the end of the episode. Preserve this episode and use bounded recovery.
+    if (hasGrowingStreamDuration(playback?.mode) && timeline.duration > 0 && timeline.duration - timeline.position > 30) {
+      handlePlaybackInterruption('premature-end', 'The stream ended before the episode was complete.', { position: timeline.position, duration: timeline.duration });
+      return;
+    }
     if (downloadNextEpisode && autoPlayNext && currentMedia?.type === 'tv') {
       void setWatched(currentMedia, true);
       if (nextMedia) void startPlayback(nextMedia, null, false, true);
@@ -732,7 +739,7 @@
 
   function controlTimeline() {
     const entry = progressFor(currentMedia);
-    const timeline = playbackTimeline(playback?.mode, playerPosition, sourceDuration || currentMedia?.durationHint || entry?.duration || 0, playerDuration, resumeStreamOffset);
+    const timeline = playbackTimeline(playback?.mode, playerPosition, resolvedMediaDuration(sourceDuration, currentMedia?.durationHint, entry?.duration), playerDuration, resumeStreamOffset);
     return { ...timeline, position: seekPreview ?? timeline.position };
   }
   function captureVideoDiagnostics(event) {
