@@ -141,3 +141,86 @@ test('slow availability checks do not leave NZB request slots idle', async () =>
   } finally { clearTimeout(timer); releaseChecks(); await preparation; }
   assert.equal(playback.release, 'Rank 0');
 });
+
+test('a later progressive archive is selected before downloading an earlier unsupported archive', async () => {
+  const playback = job(), inspected = [], downloaded = [];
+  await preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Preferred' }, { title: 'Progressive' }],
+    load: async () => nzb('rar'), health: { has: async () => false }, plans: createPlaybackPlanCache(),
+    progressive: async job => { inspected.push(job.release); if (job.release !== 'Progressive') return false; job.status = 'ready'; return true; },
+    archive: async job => { downloaded.push(job.release); }
+  });
+  assert.deepEqual(inspected, ['Preferred', 'Progressive']);
+  assert.deepEqual(downloaded, []);
+  assert.equal(playback.release, 'Progressive');
+});
+
+test('unsupported progressive archives retain the original ranked full-download fallback', async () => {
+  const playback = job(), inspected = [], downloaded = [];
+  await preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Preferred' }, { title: 'Other' }],
+    load: async () => nzb('rar'), health: { has: async () => false }, plans: createPlaybackPlanCache(),
+    progressive: async job => { inspected.push(job.release); return false; },
+    archive: async job => { downloaded.push(job.release); job.status = 'ready'; }
+  });
+  assert.deepEqual(inspected, ['Preferred', 'Other']);
+  assert.deepEqual(downloaded, ['Preferred']);
+});
+
+test('known unreadable archives are skipped without paying for a doomed full download', async () => {
+  const playback = job(), downloaded = [];
+  await preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Encrypted' }, { title: 'Supported by full extractor' }],
+    load: async () => nzb('rar'), health: { has: async () => false }, plans: createPlaybackPlanCache(),
+    progressive: async job => { if (job.release === 'Encrypted') throw Object.assign(new Error('Encrypted'), { code: 'ARCHIVE_UNAVAILABLE' }); return false; },
+    archive: async job => { downloaded.push(job.release); job.status = 'ready'; }
+  });
+  assert.deepEqual(downloaded, ['Supported by full extractor']);
+});
+
+test('source recovery may use a progressive archive but never silently starts a full download', async () => {
+  for (const available of [true, false]) {
+    const playback = { ...job(), rejectedReleases: new Set(['Invalid direct source']) };
+    let downloads = 0;
+    await preparePlayback(playback, {}, {
+      search: async () => [{ title: 'Replacement archive' }], load: async () => nzb('rar'),
+      health: { has: async () => false }, plans: createPlaybackPlanCache(),
+      progressive: async job => { if (available) { job.status = 'ready'; job.mode = 'direct'; } return available; },
+      archive: async () => { downloads++; }
+    });
+    assert.equal(playback.status, available ? 'ready' : 'error');
+    assert.equal(downloads, 0);
+  }
+});
+
+test('playback can reach a valid result beyond the old 24-item parser cutoff', async () => {
+  const { searchResults } = await import('../src/lib/server/streamer.js');
+  const xml = '<rss>' + Array.from({ length: 40 }, (_, i) => `<item><title>Candidate ${i}</title><enclosure url="https://indexer.example/${i}" /></item>`).join('') + '</rss>';
+  const playback = job();
+  await preparePlayback(playback, {}, {
+    search: async () => searchResults(xml),
+    load: async release => { if (release.title !== 'Candidate 39') throw new Error('Missing'); return nzb('mp4'); },
+    check: async () => Buffer.from('video'),
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.release, 'Candidate 39');
+});
+
+test('a failed upload does not blacklist another upload with the same release title', async () => {
+  const releases=[{title:'Same release',nzbUrl:'https://indexer.example/get?id=bad'}, {title:'Same release',nzbUrl:'https://indexer.example/get?id=good'}];
+  const rejected=new Set(), seen=[];
+  const deps={
+    search:async()=>releases,
+    load:async release=>{seen.push(release.nzbUrl);if(release.nzbUrl.endsWith('bad'))throw Object.assign(new Error('Missing'),{code:'USENET_ARTICLE_MISSING'});return nzb('mp4');},
+    check:async()=>Buffer.from('video'),
+    health:{has:async(_s,_m,key)=>rejected.has(key),reject:async(_s,_m,key)=>rejected.add(key)},
+    plans:createPlaybackPlanCache()
+  };
+  const first=job();await preparePlayback(first,{},deps);assert.equal(first.status,'ready');
+  deps.plans=createPlaybackPlanCache();
+  const second=job();await preparePlayback(second,{},deps);
+  assert.equal(second.status,'ready');
+  assert.equal(seen.filter(url=>url.endsWith('bad')).length,1);
+  assert.equal(seen.filter(url=>url.endsWith('good')).length,2);
+});

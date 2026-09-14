@@ -5,7 +5,7 @@ WORKDIR /app
 
 # The HLS integration test converts real media during the build.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg p7zip-full python3 libarchive13 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
@@ -20,7 +20,7 @@ WORKDIR /app
 # Debian's non-free component provides unrar for multi-volume RAR releases.
 RUN sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg unrar p7zip-full \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg unrar p7zip-full python3 libarchive13 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /app/data \
     && chown node:node /app/data
@@ -32,6 +32,8 @@ ENV NODE_ENV=production \
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/build ./build
+
+COPY --from=build --chown=node:node /app/scripts/progressive-archive.py ./scripts/progressive-archive.py
 
 USER node
 VOLUME ["/app/data"]

@@ -21,3 +21,11 @@ test('rejected releases survive restart, stay provider-specific and expire', asy
     assert.equal(await restarted.has(provider,media,'broken'),false);
   } finally {await rm(dir,{recursive:true,force:true});}
 });
+
+test('upload identity separates reposts and stays stable across API key changes',async()=>{
+  const {releaseIdentity}=await import('../src/lib/server/release-health.js');
+  const one=releaseIdentity({title:'Same title',nzbUrl:'https://indexer.example/api?id=one&apikey=secret'});
+  assert.equal(one,releaseIdentity({title:'Same title',nzbUrl:'https://indexer.example/api?apikey=changed&id=one'}));
+  assert.notEqual(one,releaseIdentity({title:'Same title',nzbUrl:'https://indexer.example/api?id=two'}));
+  assert.match(one,/^upload:[a-f0-9]{64}$/);
+});

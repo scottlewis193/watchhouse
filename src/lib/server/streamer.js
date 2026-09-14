@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, titleVariants } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownloadCancelled } from './download-cancellation.js';
-import { createReleaseHealthStore } from './release-health.js';
+import { createReleaseHealthStore, releaseIdentity } from './release-health.js';
 import { createMediaStateStore } from './media-state.js';
 import { stopConversion } from './conversion-process.js';
 import { waitForDrain } from './stream-drain.js';
@@ -25,6 +25,8 @@ import { createNntpPool } from './nntp-pool.js';
 import { createSegmentCache } from './segment-cache.js';
 import { prefetchReleaseDescriptions } from './release-prefetch.js';
 import { createTransferCoordinator, createBackgroundNntpClient } from './background-transfer.js';
+import { downloadPostedFiles } from './archive-download.js';
+import { createProgressiveArchiveSource } from './progressive-archive.js';
 
 const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, 'data', 'settings.json');
@@ -117,7 +119,7 @@ function entityDecode(value = '') { return value.replace(/&amp;/g, '&').replace(
 function indexerError(xml) { return entityDecode((xml.match(/<error[^>]*\bdescription="([^"]*)"/i) || [, 'The indexer returned a non-NZB response.'])[1]); }
 function field(xml, name) { return entityDecode((xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i')) || [, ''])[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim()); }
 export function searchResults(xml) {
-  return [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].slice(0, 24).map(([, item]) => ({
+  return [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(([, item]) => ({
     title: field(item, 'title') || 'Untitled result',
     published: field(item, 'pubDate'),
     category: field(item, 'category') || 'Media',
@@ -590,8 +592,113 @@ export function createPostedSegmentLoader(posted, settings, prefetchedSegments =
   };
 }
 
+export function progressiveArchiveVolumes(archives) {
+  const names = archiveFilenames(archives);
+  if (names.length === 1 && /\.(7z|zip|rar)$/i.test(names[0])) return archives;
+  const volumes = names.map((name, index) => {
+    let match = /^(.*\.7z)\.(\d{3,})$/i.exec(name);
+    if (!match) match = /^(.*)\.part(\d+)\.rar$/i.exec(name);
+    if (match) return { base: match[1], number: Number(match[2]), file: archives[index] };
+    match = /^(.*)\.(rar|r\d{2})$/i.exec(name);
+    return match ? { base: match[1], number: match[2].toLowerCase() === 'rar' ? 1 : Number(match[2].slice(1)) + 2, file: archives[index] } : null;
+  });
+  if (!volumes.length || volumes.some(volume => !volume || volume.base !== volumes[0].base)) return null;
+  volumes.sort((a, b) => a.number - b.number);
+  return volumes.every((volume, index) => volume.number === index + 1) ? volumes.map(volume => volume.file) : null;
+}
+
+export async function openArchiveByteInput(archives, settings, connect = connectNntp) {
+  const ordered = progressiveArchiveVolumes(archives);
+  if (!ordered) throw new Error('This archive layout requires full download and extraction.');
+  const controller = new AbortController();
+  const signal = settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal;
+  const nextSettings = { ...settings, signal };
+  const files = ordered.map(file => ({ ...file, segments: file.segments.map(segment => ({ ...segment })) }));
+  const loaders = new Map();
+  let closing;
+  async function inspect(file) {
+    const client = await connect(nextSettings), chunks = [];
+    let decodedSize = 0, partBegin = 0, partEnd = 0, declared = 0;
+    const number = (line, key) => Number(line.match(new RegExp(`\\b${key}=(\\d+)`))?.[1]) || 0;
+    try {
+      await client.body(file.segments[0].id, line => {
+        if (line.startsWith('=ybegin ')) decodedSize = number(line, 'size');
+        else if (line.startsWith('=ypart ')) { partBegin = number(line, 'begin'); partEnd = number(line, 'end'); }
+        else if (line.startsWith('=yend ')) declared = number(line, 'size');
+        else chunks.push(decodeYenc(line));
+      });
+      const first = Buffer.concat(chunks);
+      if ((partBegin && partBegin !== 1) || (declared && declared !== first.length) || !applyYencByteLayout(file, { decodedSize, partBegin, partEnd, firstBytes: first.length }) || file.segments[0].decodedBytes !== first.length) throw new Error('Archive byte layout is not usable for progressive playback.');
+      return first;
+    } finally { client.close(); }
+  }
+  async function close() {
+    if (!closing) { controller.abort(); closing = Promise.all([...loaders.values()].map(loader => loader.close())).then(() => {}); }
+    return closing;
+  }
+  try {
+    const first = await inspect(files[0]);
+    const last = files.length > 1 ? await inspect(files.at(-1)) : first;
+    const volumeSize = postedFileByteLayout(files[0]).total;
+    for (let index = 1; index < files.length - 1; index++) {
+      // Supported split sets use equal-sized volumes except the last. Each article
+      // is checked against these offsets by the normal validated segment loader.
+      if (!applyYencByteLayout(files[index], { decodedSize: volumeSize, firstBytes: first.length })) throw new Error('Archive volume sizes require full download.');
+    }
+    const offsets = [0];
+    for (const file of files) offsets.push(offsets.at(-1) + postedFileByteLayout(file).total);
+    if (!Number.isSafeInteger(offsets.at(-1))) throw new Error('Archive size exceeds the supported range.');
+    const headers = new Map([[0, first], [files.length - 1, last]]);
+    const getLoader = async index => {
+      if (loaders.has(index)) { const loader = loaders.get(index); loaders.delete(index); loaders.set(index, loader); return loader; }
+      while (loaders.size >= 3) { const oldest = loaders.keys().next().value; await loaders.get(oldest).close(); loaders.delete(oldest); }
+      const loader = createPostedSegmentLoader(files[index], nextSettings, headers.has(index) ? new Map([[0, headers.get(index)]]) : new Map(), connect, 8 * 1024 * 1024);
+      loaders.set(index, loader); return loader;
+    };
+    // The extractor makes one range request at a time. Serialize defensively so
+    // cache eviction cannot close a loader while another request still uses it.
+    let reads = Promise.resolve();
+    return {
+      size: offsets.at(-1), close,
+      read(start, end, requestSignal) {
+        const result = reads.then(async () => {
+          signal.throwIfAborted(); requestSignal?.throwIfAborted();
+          const chunks = [];
+          for (let index = 0; index < files.length && offsets[index] <= end; index++) {
+            if (offsets[index + 1] <= start) continue;
+            const loader = await getLoader(index);
+            await writePostedFileRange(files[index], Math.max(0, start - offsets[index]), Math.min(end, offsets[index + 1] - 1) - offsets[index], loader.load,
+              chunk => { chunks.push(chunk); }, { concurrency: loader.concurrency, shouldContinue: () => !signal.aborted && !requestSignal?.aborted });
+          }
+          signal.throwIfAborted(); requestSignal?.throwIfAborted();
+          return Buffer.concat(chunks);
+        });
+        reads = result.catch(() => {}); return result;
+      }
+    };
+  } catch (error) { await close(); throw error; }
+}
+
+async function progressiveSource(job, settings) {
+  if (job.archiveSource && !job.archiveSource.closed && !job.archiveSource.failure) return job.archiveSource;
+  if (job.archiveSourcePromise) return job.archiveSourcePromise;
+  job.archiveSourcePromise = (async () => {
+    await job.archiveSource?.close();
+    const input = await openArchiveByteInput(job.archives, settings);
+    try {
+      await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true });
+      const source = await createProgressiveArchiveSource(input, { root: PLAYBACK_CACHE_ROOT });
+      job.archiveSource = source;
+      return source;
+    } catch (error) { await input.close(); throw error; }
+  })();
+  try { return await job.archiveSourcePromise; }
+  finally { delete job.archiveSourcePromise; }
+}
+
 export async function openPostedRangeServer(job, settings, connect = connectNntp) {
-  const posted = job.file, release = job.release;
+  if (job.progressiveArchive) return (await progressiveSource(job, settings)).retain();
+  const posted = job.file, release = job.release, releaseKey = job.releaseKey || release;
   const layout = postedFileByteLayout(posted);
   if (!layout) return null;
   const loader = createPostedSegmentLoader(posted, settings, job.prefetchedSegments, connect);
@@ -630,9 +737,9 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
     })().catch(error => {
       if (error.code === 'INVALID_USENET_ARTICLE' && job.file === posted) {
         job.rejectedReleases ||= new Set();
-        if (!job.rejectedReleases.has(release)) {
-          job.rejectedReleases.add(release);
-          if (settings.usenetHost) void releaseHealth.reject(settings, job.media, release).catch(() => {});
+        if (!job.rejectedReleases.has(releaseKey)) {
+          job.rejectedReleases.add(releaseKey);
+          if (settings.usenetHost) void releaseHealth.reject(settings, job.media, releaseKey).catch(() => {});
           playbackPlans.delete(job.media);
           void playbackPersistence.deletePlan(job.media).catch(() => {});
           jobEvent(job, 'source-rejected', 'The provider repeatedly returned invalid video data. Trying another release on recovery.', { release });
@@ -656,11 +763,11 @@ export async function recoverPlaybackSource(job, settings, prepare = preparePlay
   if (job.sourceRecovery) return job.sourceRecovery;
   const unavailable = message => Object.assign(new Error(message), { code: 'SOURCE_UNAVAILABLE' });
   if (job.sourceRecoveryError) throw unavailable(job.sourceRecoveryError);
-  if (!job.rejectedReleases?.has(job.release)) return;
+  if (!job.rejectedReleases?.has(job.releaseKey || job.release)) return;
   if (job.manualRelease || job.rejectedReleases.size >= 3) throw unavailable('This source is invalid. Try downloading another release.');
   job.sourceRecovery = (async () => {
     await prepare(job, settings);
-    if (job.status !== 'ready' || job.mode !== 'direct' || job.rejectedReleases.has(job.release)) {
+    if (job.status !== 'ready' || job.mode !== 'direct' || job.rejectedReleases.has(job.releaseKey || job.release)) {
       throw unavailable('This release contains invalid video data, and no replacement streaming source is available. Try downloading another release.');
     }
   })();
@@ -725,16 +832,17 @@ function playbackInspection(job, settings, input) {
   const source = job.mode === 'cached-convert' ? job : job.file;
   const scope = playbackScope(settings);
   return playbackInspections.get(source, scope, async publish => {
-      const persistent = job.mode !== 'cached-convert' && settings.usenetHost;
+      const persistent = job.mode !== 'cached-convert' && !job.progressiveArchive && settings.usenetHost;
       const saved = persistent && await playbackPersistence.getProbe(source, settings).catch(() => null);
       if (saved && (saved.audioIndex === null || Number.isInteger(saved.audioIndex) && saved.audioIndex >= 0) && Number.isFinite(saved.duration) && saved.duration >= 0) { publish(saved); return saved; }
       jobEvent(job, 'metadata-start', 'Reading source audio and duration metadata.');
-      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input], undefined, settings.signal));
+      const inputOptions = job.progressiveArchive && !job.archiveSource?.complete ? ['-seekable', '0'] : [];
+      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
       const metadata = { audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0 };
       const videoIndex = probe.streams?.find(stream => stream.codec_type === 'video')?.index;
       publish(metadata);
       jobEvent(job, 'metadata-ready', 'Source audio and duration identified.');
-      const timeline = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-read_intervals', '0%+20', '-show_packets', '-show_entries', 'packet=stream_index,dts_time', '-of', 'json', input], undefined, settings.signal));
+      const timeline = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-read_intervals', '0%+20', '-show_packets', '-show_entries', 'packet=stream_index,dts_time', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
       if (playbackTimelineHasGap(timeline.packets || [], videoIndex, metadata.audioIndex)) {
         throw Object.assign(new Error('This release has a gap in its opening audio and video timeline. Trying another release.'), { code: 'INVALID_MEDIA_TIMELINE' });
       }
@@ -746,19 +854,22 @@ function playbackInspection(job, settings, input) {
 
 export async function startHlsConversion(job, settings, start, directory, onProgress = () => {}, getPacing = hlsPacing, getInspection = playbackInspection) {
   const cached = job.mode === 'cached-convert';
-  const rangeSource = !cached ? await openPostedRangeServer(job, settings) : null;
+  let rangeSource;
   const strategy = seekPlaybackStrategy(job.strategy === 'raw' ? 'remux' : job.strategy, start);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   let producer;
   try {
+    rangeSource = !cached ? await openPostedRangeServer(job, settings) : null;
     const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
     const input = cached ? job.sourcePath : rangeSource.url;
     const inspection = getInspection(job, settings, input);
-    const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing()]);
+    const growing = job.progressiveArchive && !job.archiveSource?.complete;
+    const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing ? start : 0)]);
     const { audioIndex } = metadata;
     job.sourceDuration = metadata.duration;
-    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration);
+    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing, toneMap, acceleration);
+    if (growing) mapped.splice(mapped.indexOf('-i'), 0, '-seekable', '0');
     // HLS exposes one audio track per rendition. Optional maps can select the
     // same English track repeatedly, which browsers reject in an MSE buffer.
     for (let i = mapped.length - 2; i >= 0; i--) {
@@ -768,7 +879,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     // Browser MSE rejects AAC program-config-element layouts emitted for some surround sources.
     mapped.splice(mapped.indexOf('-movflags'), 0, '-ac', '2');
     const args = hlsOutputArgs(mapped, directory);
-    // Fill the first two segments promptly, then retain the usual 1.5x pace.
+    // Skip discarded input and fill two segments promptly, then pace at 1.5x.
     args.splice(args.indexOf('-i'), 0, ...pacing);
     if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', 'expr:gte(t,n_forced*4)');
     producer = startHlsProducer(args, rangeSource);
@@ -781,10 +892,17 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   } catch (error) {
     await producer?.stop();
     await rangeSource?.close();
+    if (job.progressiveArchive && error.code !== 'INVALID_MEDIA_TIMELINE' && !settings.signal?.aborted) {
+      job.progressiveArchiveDisabled = true;
+      await prepareArchive(job, settings, job.archives);
+      if (job.status !== 'ready') throw new Error(job.message || 'Archive fallback failed.');
+      for (const name of await readdir(directory)) if (/^(index\.m3u8|init\.mp4|segment-\d+\.m4s)(\.tmp)?$/.test(name)) await rm(join(directory, name), { force: true });
+      return startHlsConversion(job, settings, start, directory, onProgress, getPacing, getInspection);
+    }
     if (error.code === 'INVALID_MEDIA_TIMELINE' && !cached) {
       job.rejectedReleases ||= new Set();
-      job.rejectedReleases.add(job.release);
-      await releaseHealth.reject(settings, job.media, job.release);
+      job.rejectedReleases.add(job.releaseKey || job.release);
+      await releaseHealth.reject(settings, job.media, job.releaseKey || job.release);
       playbackPlans.delete(job.media);
       await playbackPersistence.deletePlan(job.media).catch(() => {});
       jobEvent(job, 'source-rejected', error.message, { release: job.release });
@@ -813,11 +931,14 @@ function startHlsProducer(args, rangeSource) {
 }
 
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
-  const rangeSource = start > 0 ? await openPostedRangeServer(job, settings) : null;
+  const rangeSource = start > 0 || job.progressiveArchive ? await openPostedRangeServer(job, settings) : null;
   const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
-  const child = spawn('ffmpeg', ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource), toneMap, acceleration)); let stderr = '';
+  const growing = job.progressiveArchive && !job.archiveSource?.complete;
+  const args = ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource) && !growing, toneMap, acceleration);
+  if (growing) args.splice(args.indexOf('-i'), 0, '-seekable', '0');
+  const child = spawn('ffmpeg', args); let stderr = '';
   const exited = once(child, 'close'); void exited.catch(() => {});
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); child.stdin.on('error', () => {}); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {}); req.on('close', () => { closed = true; stopConversion(child); });
@@ -846,7 +967,7 @@ async function streamCachedConversion(req, res, job, settings, start = 0) {
   res.end();
 }
 function firstArchive(archives) { return archives.find(item => /\.part0*1\.rar/i.test(item.subject)) || archives.find(item => /\.rar/i.test(item.subject)) || archives.find(item => /\.(?:7z|zip)\.0*1/i.test(item.subject)) || archives.find(item => /\.(?:7z|zip)/i.test(item.subject)); }
-async function extractPostedArchive(directory, archives, names = archiveFilenames(archives), job) { const first = firstArchive(archives); if (!first) throw new Error('No supported archive entry point was found.'); const name = names[archives.indexOf(first)]; if (/\.(?:rar|r\d\d)$/i.test(name)) await run('unrar', ['x', '-o+', '-idq', name], directory, job); else await run('7z', ['x', '-y', name, `-o${directory}`], directory, job); }
+async function extractPostedArchive(directory, archives, names = archiveFilenames(archives), job) { const first = firstArchive(archives); if (!first) throw new Error('No supported archive entry point was found.'); const name = names[archives.indexOf(first)]; if (/\.(?:rar|r\d\d)$/i.test(name)) await run('unrar', ['x', '-o+', '-idq', '-p-', name], directory, job); else await run('7z', ['x', '-y', '-p-', name, `-o${directory}`], directory, job); }
 
 async function tmdbRequest(settings, path, params = {}) {
   if (!settings.tmdbToken) throw new Error('Add a TMDB read access token in settings before browsing.');
@@ -933,16 +1054,38 @@ async function catalogueMovieRuntime(settings, titleId) {
 async function catalogueTitleDetails(settings, type, titleId) {
   return mapTmdbTitleDetails(await tmdbRequest(settings, `${type}/${titleId}`, { language: 'en-GB' }), type);
 }
-async function findReleases(settings, media, includeYear = true) {
+export async function findReleases(settings, media, includeYear = true, { request = fetch } = {}) {
   const episodic = media.type === 'tv' && media.season && media.episode;
   const searches = titleVariants(media.title).map(async title => {
     const endpoint = indexerEndpoint(settings.indexerUrl);
     endpoint.searchParams.set('t', episodic && !includeYear ? 'search' : media.type === 'movie' ? 'movie' : 'tvsearch');
     endpoint.searchParams.set('q', episodic && !includeYear ? `${title} ${episodeTag(media)}` : `${title} ${media.type === 'movie' && includeYear ? media.year || '' : ''}`.trim());
     if (episodic && includeYear) { endpoint.searchParams.set('season', media.season); endpoint.searchParams.set('ep', media.episode); }
-    endpoint.searchParams.set('apikey', settings.indexerKey); endpoint.searchParams.set('limit', '30');
-    const reply = await fetch(endpoint, { signal: settings.signal ? AbortSignal.any([settings.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) }); if (!reply.ok) throw new Error(`Indexer returned HTTP ${reply.status}.`);
-    return searchResults(await reply.text());
+    endpoint.searchParams.set('apikey', settings.indexerKey); endpoint.searchParams.set('limit', '100');
+    const releases = new Map();
+    // Fetch search metadata only; NZB/article inspection still uses the bounded
+    // lookahead below. Stop if an indexer ignores offsets or advertises a huge set.
+    for (let offset = 0; offset < 500;) {
+      settings.signal?.throwIfAborted();
+      endpoint.searchParams.set('offset', String(offset));
+      let xml;
+      try {
+        const reply = await request(new URL(endpoint), { signal: settings.signal ? AbortSignal.any([settings.signal, AbortSignal.timeout(12000)]) : AbortSignal.timeout(12000) });
+        if (!reply.ok) throw new Error(`Indexer returned HTTP ${reply.status}.`);
+        xml = await reply.text();
+      } catch (error) {
+        settings.signal?.throwIfAborted();
+        if (!releases.size) throw error;
+        break; // A failed later page must not discard earlier usable results.
+      }
+      const page = searchResults(xml), before = releases.size;
+      for (const release of page) releases.set(release.nzbUrl || release.title, release);
+      if (!page.length || releases.size === before) break;
+      offset += page.length;
+      const total = Number(xml.match(/<(?:\w+:)?response\b[^>]*\btotal=["'](\d+)["']/i)?.[1]);
+      if (Number.isFinite(total) ? offset >= total : page.length < 100) break;
+    }
+    return [...releases.values()];
   });
   const attempts = await Promise.allSettled(searches), successful = attempts.filter(attempt => attempt.status === 'fulfilled');
   if (!successful.length) throw attempts[0].reason;
@@ -985,61 +1128,45 @@ function updateDownload(job, state, maximum = 85) {
     message: `Downloading · ${state.completed}/${state.total} segments${remainingSeconds ? ` · about ${remainingSeconds}s remaining` : ''}`
   });
 }
-async function mergeParts(parts, target, count) {
-  const writer = createWriteStream(target, { flags: 'w' });
-  try {
-    for (let index = 0; index < count; index++) {
-      const source = createReadStream(join(parts, String(index).padStart(6, '0')));
-      source.pipe(writer, { end: false }); await once(source, 'end');
-    }
-    writer.end(); await once(writer, 'finish');
-  } catch (error) { writer.destroy(); throw error; }
-}
 async function writePostedFile(posted, path, settings, job, state, maximum) {
-  throwIfDownloadCancelled(job);
-  if (existsSync(path)) return;
-  const parts = `${path}.parts`; await mkdir(parts, { recursive: true });
-  const queue = [];
-  for (let index = 0; index < posted.segments.length; index++) {
-    const part = join(parts, String(index).padStart(6, '0'));
-    try { state.bytes += (await stat(part)).size; state.completed++; } catch { queue.push({ segment: posted.segments[index], part }); }
-  }
-  updateDownload(job, state, maximum);
-  const workers = Array.from({ length: settings.backgroundJob ? Math.min(1, queue.length) : Math.min(Math.max(1, Number(settings.maxConnections) || 4), 12, queue.length) }, async () => {
-    throwIfDownloadCancelled(job);
-    const client = await connectNntp(settings);
-    const removeCancelHandler = onDownloadCancel(job, () => client.close());
-    try {
-      while (queue.length) {
-        throwIfDownloadCancelled(job);
-        const next = queue.shift(); if (!next) return;
-        const pending = `${next.part}.pending`, writer = createWriteStream(pending); let bytes = 0;
-        try {
-          await client.body(next.segment.id, async line => {
-            throwIfDownloadCancelled(job);
-            if (line.startsWith('=y')) return;
-            const chunk = decodeYenc(line); bytes += chunk.length;
-            if (!writer.write(chunk)) await once(writer, 'drain');
-          });
-          throwIfDownloadCancelled(job);
-          writer.end(); await once(writer, 'finish'); await rename(pending, next.part);
-          state.bytes += bytes; state.completed++; updateDownload(job, state, maximum);
-        } catch (error) { writer.destroy(); await rm(pending, { force: true }); throw error; }
-      }
-    } finally { removeCancelHandler(); client.close(); }
-  });
-  await Promise.all(workers); throwIfDownloadCancelled(job); await mergeParts(parts, path, posted.segments.length); throwIfDownloadCancelled(job); await rm(parts, { recursive: true, force: true });
+  return writePostedFiles([{ posted, path }], settings, job, state, maximum);
 }
 async function cacheDirect(job, settings) {
   setJob(job, 'downloading', job.prepareAhead ? 'Downloading the next episode in the background…' : 'Direct playback was unavailable. Downloading the video first…', 0); await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true }); const directory = job.directory || await mkdtemp(join(PLAYBACK_CACHE_ROOT, 'playback-')); job.directory = directory;
   try { const path = join(directory, filename(job.file.subject, 'video')), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() }; await writePostedFile(job.file, path, preparationDownloadSettings(job, settings), job, state, 90); throwIfDownloadCancelled(job); setJob(job, 'optimizing', job.prepareAhead ? 'Download complete. Preparing a browser-ready copy…' : 'Download complete. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, path); throwIfDownloadCancelled(job); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode }); }
   catch (error) { throw error; }
 }
+export async function writePostedFiles(files, settings, job, state, maximum = 85, connect = connectNntp) {
+  return downloadPostedFiles(files, settings, job, state, { connect, decode: decodeYenc, progress: () => updateDownload(job, state, maximum) });
+}
+async function tryProgressiveArchive(job, settings, archives) {
+  if (!job.progressiveArchiveDisabled && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && progressiveArchiveVolumes(archives)) {
+    setJob(job, 'selecting', 'Opening the archive for progressive playback…', 45);
+    try {
+      job.archives = archives;
+      const source = await progressiveSource(job, settings);
+      const suggested = playbackStrategy(source.metadata.name, job.release);
+      Object.assign(job, { progressiveArchive: true, file: { subject: source.metadata.name }, strategy: suggested === 'raw' ? 'remux' : suggested, mode: 'direct', status: 'ready', progress: 100, message: 'Archive video is ready for progressive playback.' });
+      jobEvent(job, 'archive-progressive-ready', job.message, { extractedBytes: source.available, totalBytes: source.metadata.size });
+      return true;
+    } catch (error) {
+      // Full downloading cannot restore a missing required article or unlock an
+      // encrypted archive: this app has no archive password or repair support.
+      if (error.code === 'USENET_ARTICLE_MISSING' || /encrypt/i.test(error.message)) {
+        throw Object.assign(new Error(error.code === 'USENET_ARTICLE_MISSING' ? 'Required archive articles are missing from the provider.' : 'This archive is encrypted and no archive password is available.'), { code: 'ARCHIVE_UNAVAILABLE' });
+      }
+      jobEvent(job, 'archive-progressive-fallback', 'Progressive extraction is unavailable. Preparing the full archive.', { reason: error.message });
+    }
+  }
+  return false;
+}
 async function prepareArchive(job, settings, archives) {
+  if (await tryProgressiveArchive(job, settings, archives)) return;
+  await job.archiveSource?.close(); delete job.archiveSource; if (job.progressiveArchive) delete job.file; delete job.progressiveArchive;
   setJob(job, 'downloading', 'This release cannot stream directly. Downloading the archive first…', 0); const previousDirectory = job.directory; const root = job.offlineDownload && previousDirectory ? previousDirectory : PLAYBACK_CACHE_ROOT; await mkdir(root, { recursive: true }); const directory = await mkdtemp(join(root, job.offlineDownload ? 'candidate-' : 'playback-')); job.directory = directory; const names = archiveFilenames(archives); const total = archives.reduce((sum, file) => sum + file.segments.length, 0), state = { completed: 0, total, bytes: 0, started: Date.now() };
   try {
     const downloadSettings = preparationDownloadSettings(job, settings);
-    for (let index = 0; index < archives.length; index++) await writePostedFile(archives[index], join(directory, names[index]), downloadSettings, job, state, 85);
+    await writePostedFiles(archives.map((posted, index) => ({ posted, path: join(directory, names[index]) })), downloadSettings, job, state, 85);
     throwIfDownloadCancelled(job); setJob(job, 'extracting', 'Download complete. Extracting the video…', 90); await extractPostedArchive(directory, archives, names, job); throwIfDownloadCancelled(job); const extracted = await extractedVideo(directory); if (!extracted) throw new Error('The archive did not contain a supported video file.'); setJob(job, 'optimizing', job.prepareAhead ? 'Video extracted. Preparing a browser-ready copy…' : 'Video extracted. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, join(directory, extracted)); throwIfDownloadCancelled(job); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
   } catch (error) { await rm(directory, { recursive: true, force: true }); job.directory = previousDirectory; throw error; }
 }
@@ -1049,8 +1176,11 @@ async function savedPlanAvailable(plan, settings) {
   catch { return false; }
   finally { client.close(); }
 }
-export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, health = releaseHealth, plans = playbackPlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null } = {}) {
+export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null } = {}) {
   try {
+    if (job.progressiveArchive && job.rejectedReleases?.has(job.releaseKey || job.release)) {
+      await job.archiveSource?.close(); delete job.archiveSource; delete job.progressiveArchive; delete job.file;
+    }
     throwIfDownloadCancelled(job);
     settings.signal?.throwIfAborted();
     if (!job.manualRelease) {
@@ -1058,7 +1188,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       if (!plan && persistence) {
         const saved = await persistence.getPlan(job.media, settings).catch(() => null);
         if (saved?.file?.segments?.length && postedFileByteLayout(saved.file)
-          && !job.rejectedReleases?.has(saved.release) && !await health.has(settings, job.media, saved.release)) {
+          && !job.rejectedReleases?.has(saved.releaseKey || saved.release) && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
           // A restored plan keeps its original validation, with a cheap live
           // first/tail availability check before reuse after a restart.
           if (await verify(saved, settings)) {
@@ -1068,7 +1198,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           }
         }
       }
-      if (plan && !job.rejectedReleases?.has(plan.release) && !await health.has(settings, job.media, plan.release)) {
+      if (plan && !job.rejectedReleases?.has(plan.releaseKey || plan.release) && !await health.has(settings, job.media, plan.releaseKey || plan.release)) {
         Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments), status: 'ready', message: plan.strategy === 'raw' ? 'Reusing the direct stream selected earlier.' : 'Reusing the browser-compatible stream selected earlier.', progress: 100, mode: 'direct' });
         jobEvent(job, 'plan-cache-hit', job.message, { release: plan.release, strategy: plan.strategy, mode: 'direct' });
         if (job.offlineDownload) await cacheDirect(job, settings);
@@ -1080,8 +1210,8 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
-    const rejected = await Promise.all(releases.map(release => health.has(settings, job.media, release.title)));
-    releases = releases.filter((release, index) => !job.rejectedReleases?.has(release.title) && !rejected[index]);
+    const rejected = await Promise.all(releases.map(release => health.has(settings, job.media, releaseIdentity(release))));
+    releases = releases.filter((release, index) => !job.rejectedReleases?.has(releaseIdentity(release)) && !rejected[index]);
     // Keep three HTTP requests and two BODY checks active independently. The
     // six-candidate lookahead stays bounded and is consumed in ranking order.
     const descriptionLimit = concurrencyLimit(job.backgroundFor ? 1 : 3);
@@ -1121,22 +1251,39 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             continue;
           }
           const strategy = playbackStrategy(direct.subject, release.title);
-          Object.assign(job, { file: direct, release: release.title, strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
+          Object.assign(job, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
           if (!job.backgroundFor) await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== 'sdr');
           if (shouldCacheDirectPlayback(job) || job.downloadReplacement) { await cacheDirect(job, settings); return; }
-          plans.set(job.media, { file: direct, release: release.title, strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, playbackScope(settings));
-          if (persistence) await persistence.setPlan(job.media, settings, { file: direct, release: release.title, strategy }).catch(() => {});
+          plans.set(job.media, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, playbackScope(settings));
+          if (persistence) await persistence.setPlan(job.media, settings, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy }).catch(() => {});
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;
         }
-        if (archives.length && !job.backgroundFor && !job.speculative && (!job.rejectedReleases?.size || job.downloadReplacement)) {
-          archiveChoices.push({ archives, release: release.title });
+        if (archives.length && !job.backgroundFor && !job.speculative && (!job.rejectedReleases?.size || job.downloadReplacement || progressive)) {
+          archiveChoices.push({ archives, release: release.title, releaseKey: releaseIdentity(release) });
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
         } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
-      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING'].includes(error.code)) await health.reject(settings, job.media, release.title); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
+      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
-    if (!archiveChoices.length) throw new Error('No compatible video release was found.'); let lastError; for (const choice of archiveChoices) { try { throwIfDownloadCancelled(job); job.release = choice.release; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
+    if (!archiveChoices.length) throw new Error('No compatible video release was found.');
+    // As with direct videos, prefer a source that can start now before paying
+    // for a complete archive download. Preserve ranking within each route.
+    if (progressive) {
+      for (const choice of archiveChoices) {
+        throwIfDownloadCancelled(job); settings.signal?.throwIfAborted();
+        job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives;
+        try { if (await progressive(job, settings, choice.archives)) return; }
+        catch (error) {
+          if (error.code !== 'ARCHIVE_UNAVAILABLE') throw error;
+          choice.unavailable = error;
+          jobEvent(job, 'release-rejected', error.message, { release: choice.release });
+        }
+      }
+      job.progressiveArchiveDisabled = true;
+    }
+    if (job.rejectedReleases?.size && !job.downloadReplacement) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
+    let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { if (isDownloadCancelled(job, error)) { job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
 }
 async function startOfflineMediaDownload(media, settings, backgroundFor = null) {
@@ -1227,7 +1374,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
   }
 }
-function publicJob(job) { const { speculative, file, path, sourcePath, directory, media, release, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };
@@ -1483,8 +1630,8 @@ export async function handleRequest(req, res) {
         }
         return json(res, 200, publicJob(job));
       }
-      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || job.status === 'downloading') return json(res, 409, { error: 'Fallback download is not available.' }); const settings = await readSettings(); if (job.rejectedReleases?.has(job.release)) { job.downloadReplacement = true; delete job.file; delete job.prefetchedSegments; delete job.manualRelease; delete job.sourceRecoveryError; void preparePlayback(job, settings); } else cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
-      if (req.method === 'POST' && playMatch[2] === 'retry') { if (job.status !== 'error') return json(res, 409, { error: 'This playback job cannot be retried yet.' }); const settings = await readSettings(); if (job.file) cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); else if (job.archives) prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); else return json(res, 409, { error: 'This release cannot be resumed.' }); return json(res, 202, publicJob(job)); }
+      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || job.status === 'downloading') return json(res, 409, { error: 'Fallback download is not available.' }); const settings = await readSettings(); if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else if (job.rejectedReleases?.has(job.releaseKey || job.release)) { job.downloadReplacement = true; delete job.file; delete job.prefetchedSegments; delete job.manualRelease; delete job.sourceRecoveryError; void preparePlayback(job, settings); } else cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
+      if (req.method === 'POST' && playMatch[2] === 'retry') { if (job.status !== 'error') return json(res, 409, { error: 'This playback job cannot be retried yet.' }); const settings = await readSettings(); if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else if (job.file) cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); else if (job.archives) prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); else return json(res, 409, { error: 'This release cannot be resumed.' }); return json(res, 202, publicJob(job)); }
       if (['GET', 'HEAD'].includes(req.method) && playMatch[2] === 'stream') {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get('start')) || 0));
         jobEvent(job, 'stream-request', start ? `Browser requested playback from ${Math.round(start)}s.` : 'Browser requested the video stream.');
@@ -1546,7 +1693,7 @@ export async function handleRequest(req, res) {
       indexer.searchParams.set('t', kind); indexer.searchParams.set('q', query); indexer.searchParams.set('apikey', settings.indexerKey); indexer.searchParams.set('limit', '24');
       const reply = await fetch(indexer, { signal: AbortSignal.timeout(12000) });
       if (!reply.ok) return json(res, 502, { error: `Indexer returned HTTP ${reply.status}.` });
-      const results = searchResults(await reply.text()).map(({ nzbUrl, ...item }) => ({ ...item, size: formatSize(item.size), downloadId: nzbUrl ? addDownload(nzbUrl, item.title, settings.indexerKey) : null }));
+      const results = searchResults(await reply.text()).slice(0, 24).map(({ nzbUrl, ...item }) => ({ ...item, size: formatSize(item.size), downloadId: nzbUrl ? addDownload(nzbUrl, item.title, settings.indexerKey) : null }));
       return json(res, 200, { results });
     }
     json(res, 404, { error: 'Not found.' });

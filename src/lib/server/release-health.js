@@ -2,6 +2,14 @@ import { readFile, mkdir, writeFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 
+export function releaseIdentity(release) {
+  if (!release?.nzbUrl) return release?.title || '';
+  const url = new URL(release.nzbUrl);
+  url.searchParams.delete('apikey');
+  url.searchParams.sort();
+  return `upload:${createHash('sha256').update(url.href).digest('hex')}`;
+}
+
 export function createReleaseHealthStore(path, { now = Date.now, ttl = 24 * 60 * 60 * 1000, maximum = 1000 } = {}) {
   let entries, loading, saving = Promise.resolve();
   const key = (settings, media, release) => createHash('sha256').update(JSON.stringify([

@@ -81,8 +81,8 @@ export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 10
   return {
     getPlan: (media, settings) => getRecord(`plan:${offlineMediaKey(media)}:${playbackScope(settings)}`, playbackRetention(settings)),
     setPlan(media, settings, plan) {
-      const { file, release, strategy } = plan;
-      return setRecord(`plan:${offlineMediaKey(media)}:${playbackScope(settings)}`, { file, release, strategy }, playbackRetention(settings));
+      const { file, release, releaseKey, strategy } = plan;
+      return setRecord(`plan:${offlineMediaKey(media)}:${playbackScope(settings)}`, { file, release, ...(releaseKey ? { releaseKey } : {}), strategy }, playbackRetention(settings));
     },
     async deletePlan(media) {
       await initialize();
