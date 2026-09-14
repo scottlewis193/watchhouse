@@ -1,19 +1,30 @@
 // Keep validated source bytes across player sessions, with one global byte budget.
 // Source identity prevents bytes from leaking between releases or provider plans.
 export function createSegmentCache(maximumBytes = 64 * 1024 * 1024) {
-  const sources = new WeakMap(), entries = new Map();
+  const sources = new WeakMap(), inflight = new WeakMap(), entries = new Map();
   let size = 0;
   function remove(entry) {
     entries.delete(entry);
     entry.owner.delete(entry.index);
     size -= entry.bytes.length;
   }
-  return {
+  const cache = {
     get(source, index) {
       const entry = sources.get(source)?.get(index);
       if (!entry) return;
       entries.delete(entry); entries.set(entry, true);
       return entry.bytes;
+    },
+    load(source, index, produce) {
+      const bytes = cache.get(source, index);
+      if (bytes) return Promise.resolve(bytes);
+      let pending = inflight.get(source);
+      if (!pending) { pending = new Map(); inflight.set(source, pending); }
+      if (pending.has(index)) return pending.get(index);
+      const request = Promise.resolve().then(produce).then(bytes => { cache.set(source, index, bytes); return bytes; });
+      pending.set(index, request);
+      void request.finally(() => pending.delete(index)).catch(() => {});
+      return request;
     },
     set(source, index, bytes) {
       let owner = sources.get(source);
@@ -25,4 +36,5 @@ export function createSegmentCache(maximumBytes = 64 * 1024 * 1024) {
       while (size > maximumBytes) remove(entries.keys().next().value);
     }
   };
+  return cache;
 }

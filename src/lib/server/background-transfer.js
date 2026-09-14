@@ -1,9 +1,16 @@
 import { once } from 'node:events';
-import { setTimeout as delay } from 'node:timers/promises';
 import { throwIfDownloadCancelled } from './download-cancellation.js';
 
 // Admission is shared by playback, probes and downloads for a provider account.
-export function createTransferCoordinator({ now = Date.now, wait = () => delay(100) } = {}) {
+export function createTransferCoordinator({ now = Date.now, wait } = {}) {
+  const waiting = new Set();
+  const wake = () => { for (const resolve of waiting) resolve(); };
+  const waitForChange = signal => wait ? wait() : new Promise(resolve => {
+    const done = () => { clearTimeout(timer); waiting.delete(done); signal?.removeEventListener('abort', done); resolve(); };
+    const timer = setTimeout(done, 100);
+    waiting.add(done); signal?.addEventListener('abort', done, { once: true });
+    if (signal?.aborted) done();
+  });
   const accounts = new Map(), reports = new Map();
   let backgroundActive = false, interruptBackground;
   const key = settings => JSON.stringify([settings.usenetHost, settings.usenetPort || 563, settings.usenetUser]);
@@ -11,6 +18,7 @@ export function createTransferCoordinator({ now = Date.now, wait = () => delay(1
     for (const [key, value] of reports) if (now() - value.at > 60000) reports.delete(key);
     reports.set(id, { at: now(), safe: sample.playing === true && sample.seeking !== true && sample.readyState >= 3 && sample.bufferedAhead >= 30 });
     if (!reports.get(id).safe) interruptBackground?.();
+    wake();
   }
   function safe(id) {
     const current = reports.get(id);
@@ -26,10 +34,11 @@ export function createTransferCoordinator({ now = Date.now, wait = () => delay(1
     try {
       while (true) {
         throwIfDownloadCancelled(job);
+        settings.signal?.throwIfAborted();
         const room = account.active < Math.max(1, Number(settings.maxConnections) || 4);
-        if (background ? room && !backgroundActive && !account.foregroundWaiting && safe(job.backgroundFor) : !backgroundActive) break;
+        if (background ? room && !backgroundActive && !account.foregroundWaiting && safe(job.backgroundFor) : room && !backgroundActive) break;
         if (background) job.message = 'Paused background download · current playback has priority.';
-        await wait();
+        await waitForChange(settings.signal);
       }
       account.active++;
       if (background) { backgroundActive = true; interruptBackground = interrupt; }
@@ -38,6 +47,7 @@ export function createTransferCoordinator({ now = Date.now, wait = () => delay(1
         if (released) return;
         released = true; account.active--;
         if (background) { backgroundActive = false; interruptBackground = null; }
+        wake();
       };
     } finally { if (!background) account.foregroundWaiting--; }
   }

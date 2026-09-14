@@ -32,10 +32,13 @@
   let sourceDuration = $state(0);
   const playbackTrace = createPlaybackTrace();
   let backgroundTimer, backgroundReporting = false, backgroundTarget = null, backgroundTargetKey = "", backgroundDownloadKey = "";
+  let readinessController;
   let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, playerRevealTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, audioFrameSample = null, automaticStreamRetries = 0, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, creditSampleCount = 0, creditEvidence = [], lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
   let playbackUi = $derived(playbackPresentation({ ready: playback?.status === 'ready', warming: resumeStarting, restarting: streamRestarting, revealing: playerRevealing }));
   const playbackRequests = createPlaybackRequestGuard();
   const nextEpisodePreparation = createNextEpisodePreparationController();
+  const episodeRequests = new Map();
+  let initialPreparation;
 
   onMount(() => {
     offlineMode = !navigator.onLine;
@@ -45,7 +48,7 @@
       return;
     }
     void initialise();
-    return () => { clearInterval(backgroundTimer); stopBackgroundPlayback(); playbackRequests.cancel(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
+    return () => { clearInterval(backgroundTimer); stopBackgroundPlayback(); playbackRequests.cancel(); readinessController?.abort(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
   });
 
   async function initialise() {
@@ -54,10 +57,23 @@
     const catalogue = offlineMode ? null : api.get(media.type === 'movie'
       ? `/api/catalog/movies/${media.id}/runtime`
       : `/api/catalog/shows/${media.id}/seasons`).then(value => ({ value }), error => ({ error }));
+    if (!offlineMode && media.type === 'tv' && /^[1-9]\d*$/.test(requestedSeason)) {
+      void episodesForSeason(requestedSeason).catch(() => {});
+    }
     const [settingsResult, stateResult, offlineResult] = await Promise.allSettled([api.get('/api/settings'), api.get('/api/state'), api.get('/api/offline')]);
     try { if (settingsResult.status === 'rejected') throw settingsResult.reason; const settings = settingsResult.value; manualReleaseSelection = Boolean(settings.manualReleaseSelection); autoPlayNextEpisode = settings.autoPlayNextEpisode !== false; downloadNextEpisode = Boolean(settings.downloadNextEpisode); autoPlayNext = autoPlayNextEpisode; smartAutoplay = Boolean(settings.smartAutoplay); detailedPlaybackProgress = Boolean(settings.detailedPlaybackProgress); playbackDiagnostics = Boolean(settings.playbackDiagnostics); } catch { manualReleaseSelection = false; autoPlayNextEpisode = true; autoPlayNext = true; smartAutoplay = false; detailedPlaybackProgress = false; playbackDiagnostics = false; }
     if (stateResult.status === 'fulfilled') { library = stateResult.value.library; progressEntries = stateResult.value.progress; }
     if (offlineResult.status === 'fulfilled') { offlineDownloads = offlineResult.value.downloads; offlineJobs = offlineResult.value.jobs; scheduleDownloadPoll(); }
+    // An explicitly requested play can begin source selection while the catalogue
+    // loads, including first plays. Catalogue validation still gates the player.
+    if (!offlineMode && shouldStartImmediately && !manualReleaseSelection && settingsResult.status === 'fulfilled') {
+      const requested = media.type === 'tv' ? { ...media, season: Number(requestedSeason), episode: Number(requestedEpisode) } : media;
+      const saved = progressFor(requested);
+      if (media.type === 'movie' || (/^[1-9]\d*$/.test(requestedSeason) && /^[1-9]\d*$/.test(requestedEpisode))) {
+        const selected = { ...saved?.media, ...requested, durationHint: saved?.duration || saved?.media.durationHint || 0 };
+        initialPreparation = { key: itemKey(selected), result: api.post('/api/play', selected).then(job => ({ job }), error => ({ error })) };
+      }
+    }
     if (media.type === 'movie') {
       if (offlineMode && !offlineAvailability(media, offlineDownloads).available) { playback = { status: 'error', message: 'This movie has not been downloaded for offline viewing.', progress: 0 }; return; }
       const savedDuration = progressFor(media)?.duration;
@@ -123,9 +139,13 @@
   async function episodesForSeason(season) {
     const key = String(season);
     if (episodesBySeason[key]) return episodesBySeason[key];
-    const loaded = (await api.get(`/api/catalog/shows/${media.id}/episodes?season=${key}`)).episodes;
-    episodesBySeason = { ...episodesBySeason, [key]: loaded };
-    return loaded;
+    if (!episodeRequests.has(key)) {
+      episodeRequests.set(key, api.get(`/api/catalog/shows/${media.id}/episodes?season=${key}`).then(result => {
+        episodesBySeason = { ...episodesBySeason, [key]: result.episodes };
+        return result.episodes;
+      }).finally(() => episodeRequests.delete(key)));
+    }
+    return episodeRequests.get(key);
   }
 
   async function loadEpisodes(preferredEpisode = '') {
@@ -150,6 +170,7 @@
     if (manualReleaseSelection && !offlineMode && !selectedMedia.releaseId && !preparedJob) return chooseRelease(selectedMedia, resume);
     guideOpen = false;
     stopBackgroundPlayback(); backgroundTarget = null; backgroundTargetKey = ""; backgroundDownloadKey = "";
+    readinessController?.abort();
     const requestToken = playbackRequests.begin();
     currentPlaybackRequestToken = requestToken;
     try {
@@ -167,13 +188,17 @@
       restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; resumeStreamOffset = 0; resumeStarting = false; streamRestarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; playerPosition = 0; bufferedRanges = []; playerDuration = 0; seekPreview = null; audioFrameSample = null; automaticStreamRetries = 0;
       clearTimeout(interruptionTimer); showPlayerControls();
       playback = preparedJob || { status: 'selecting', message: 'Finding the best available release…', progress: 3 };
-      const job = preparedJob || await api.post('/api/play', selectedMedia);
-      if (!playbackRequests.isCurrent(requestToken)) return;
-      playback = job;
-      if (shouldContinuePlayback(continuePlaybackOnReady, job)) {
-        await tick();
-        if (playbackRequests.isCurrent(requestToken)) void attemptAutomaticPlayback();
+      let early;
+      if (!preparedJob && !selectedMedia.releaseId && initialPreparation?.key === itemKey(selectedMedia)) {
+        const pending = initialPreparation.result;
+        initialPreparation = null;
+        early = await pending;
+        if (early.error) throw early.error;
       }
+      const job = preparedJob || early?.job || await api.post('/api/play', selectedMedia);
+      if (!playbackRequests.isCurrent(requestToken)) return;
+      if (job.status === 'ready') return await showReadyPlayback(job, requestToken);
+      playback = job;
       void poll(job.id, requestToken, 0);
     } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; }
   }
@@ -192,24 +217,36 @@
     } catch (e) { playback = { status: 'error', message: e.message, progress: 0 }; }
   }
 
+  async function showReadyPlayback(job, requestToken) {
+    const entry = progressFor(currentMedia);
+    const duration = progressDuration(job.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
+    resumeStreamOffset = resumePlayback && hasGrowingStreamDuration(job.mode) ? resumePosition(entry, duration) : 0;
+    beginPlaybackWarmup();
+    playback = job;
+    if (shouldContinuePlayback(continuePlaybackOnReady, job)) {
+      await tick();
+      if (playbackRequests.isCurrent(requestToken) && playback?.id === job.id) void attemptAutomaticPlayback();
+    }
+    if (playbackDiagnostics && playbackRequests.isCurrent(requestToken)) diagnosticPollTimer = setTimeout(() => void refreshDiagnostics(job.id, requestToken), 1000);
+  }
+
   async function poll(id, requestToken, attempt = 0) {
     try {
-      const job = await api.get(`/api/play/${id}`);
+      const controller = new AbortController();
+      readinessController = controller;
+      const readinessTimeout = setTimeout(() => controller.abort(), 20000);
+      let job, pushed = true;
+      try {
+        job = await api.get(`/api/play/${id}?after=${playback?.revision || 0}`, { signal: readinessController.signal });
+      } catch (error) {
+        if (!playbackRequests.isCurrent(requestToken)) return;
+        pushed = false;
+        job = await api.get(`/api/play/${id}`);
+      } finally { clearTimeout(readinessTimeout); }
       if (!playbackRequests.isCurrent(requestToken)) return;
+      if (job.status === 'ready') return await showReadyPlayback(job, requestToken);
       playback = job;
-      if (job.status === 'ready') {
-        const entry = progressFor(currentMedia);
-        const duration = progressDuration(job.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
-        resumeStreamOffset = resumePlayback && hasGrowingStreamDuration(job.mode) ? resumePosition(entry, duration) : 0;
-        beginPlaybackWarmup();
-        if (shouldContinuePlayback(continuePlaybackOnReady, job)) {
-          await tick();
-          if (playbackRequests.isCurrent(requestToken) && playback?.id === id) void attemptAutomaticPlayback();
-        }
-        if (playbackDiagnostics) diagnosticPollTimer = setTimeout(() => void refreshDiagnostics(id, requestToken), 1000);
-        return;
-      }
-      if (job.status !== 'error') pollTimer = setTimeout(() => void poll(id, requestToken, attempt + 1), playbackPollDelay(attempt));
+      if (job.status !== 'error') pollTimer = setTimeout(() => void poll(id, requestToken, attempt + 1), pushed && Number.isInteger(job.revision) ? 0 : playbackPollDelay(attempt));
     } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; }
   }
 
@@ -702,7 +739,7 @@
     if (document.fullscreenElement) await document.exitFullscreen();
     await savePlaybackProgress(true);
     player?.pause();
-    playbackRequests.cancel();
+    playbackRequests.cancel(); readinessController?.abort();
     clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer);
     nextEpisodePreparation.reset();
     clearTimeout(playerRevealTimer); playerRevealing = false;

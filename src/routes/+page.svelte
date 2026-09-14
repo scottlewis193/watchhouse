@@ -137,7 +137,7 @@
               class="shelf-scroll grid snap-x snap-mandatory auto-cols-[8.75rem] grid-flow-col gap-4 overflow-x-auto pb-3 sm:auto-cols-[10.5rem] sm:gap-5 md:auto-cols-[calc((100%_-_6.25rem)/6)] md:snap-none"
               onscroll={(event) => updateShelfPosition(shelf.id, event.currentTarget)}
             >
-              {#each shelf.items as item}<MediaCard item={item} href={watchHref(item)} inLibrary={inLibrary(item)} onLibraryChange={setLibrary} onWatched={shelf.id === 'continue-watching' ? setWatched : undefined} onClearProgress={shelf.id === 'continue-watching' ? clearProgress : undefined} />{/each}
+              {#each shelf.items as item}<MediaCard item={item} prepareAhead={shelf.id === 'continue-watching'} href={watchHref(item)} inLibrary={inLibrary(item)} onLibraryChange={setLibrary} onWatched={shelf.id === 'continue-watching' ? setWatched : undefined} onClearProgress={shelf.id === 'continue-watching' ? clearProgress : undefined} />{/each}
             </div>
             <button
               class="absolute inset-y-0 right-0 z-10 hidden w-11 place-items-center bg-gradient-to-l from-base-200 via-base-200/90 to-transparent text-base-content transition hover:text-primary disabled:pointer-events-none disabled:opacity-0 md:grid"

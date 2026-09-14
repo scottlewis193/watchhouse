@@ -48,7 +48,9 @@ test('source inspection reuses all validated availability samples, including the
       await onLine(encoded); await onLine('=yend size=4');
     }, close() {}
   });
-  const first = await postedFileAvailable(file, { maxConnections: 2 }, connect);
+  let connections = 0;
+  const first = await postedFileAvailable(file, { maxConnections: 2 }, () => { connections++; return connect(); });
+  assert.equal(connections, 2, 'reuse the authenticated header connection for the remaining samples');
   const reads = checked.length;
   const source = await openPostedRangeServer({ file, prefetchedSegments: new Map([[0, first]]) }, { maxConnections: 2 }, connect);
   try {
@@ -56,4 +58,47 @@ test('source inspection reuses all validated availability samples, including the
     assert.deepEqual(Buffer.from(await tail.arrayBuffer()), Buffer.from([1, 2, 3, 4]));
     assert.equal(checked.length, reads, 'inspection must not redownload a tail article already read during availability checks');
   } finally { await source.close(); }
+});
+
+test('a single-article video releases the header connection even without further samples', async () => {
+  let closed = 0;
+  const bytes = Buffer.from('0000ftyp');
+  const first = await postedFileAvailable({ subject: 'video.mp4', segments: [{ id: 'one', number: 1 }] }, {}, async () => ({
+    async body(_id, line) {
+      await line('=ybegin size=8 name=video.mp4');
+      await line('=ypart begin=1 end=8');
+      await line(Buffer.from(bytes.map(byte => (byte + 42) & 255)).toString('latin1'));
+      await line('=yend size=8');
+    }, close() { closed++; }
+  }));
+  assert.deepEqual(first, bytes);
+  assert.equal(closed, 1);
+});
+
+test('cancelling speculative preparation interrupts authentication rather than waiting for its timeout', async () => {
+  const { createServer } = await import('node:net');
+  const { testNntp } = await import('../src/lib/server/streamer.js');
+  const controller = new AbortController(), sockets = new Set();
+  let authenticating;
+  const started = new Promise(resolve => { authenticating = resolve; });
+  const server = createServer(socket => {
+    sockets.add(socket); socket.on('close', () => sockets.delete(socket));
+    socket.write('200 Ready\r\n');
+    socket.on('data', data => {
+      if (data.toString().includes('AUTHINFO USER')) socket.write('381 Password required\r\n');
+      if (data.toString().includes('AUTHINFO PASS')) authenticating();
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const pending = testNntp({ usenetHost: '127.0.0.1', usenetPort: server.address().port, usenetUser: 'fixture', usenetPass: 'fixture', signal: controller.signal });
+  void pending.catch(() => {});
+  let timer;
+  try {
+    await started; controller.abort(new Error('Preparation superseded'));
+    const interrupted = await Promise.race([pending.then(() => false, () => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), 150); })]);
+    assert.equal(interrupted, true, 'a cancelled login must release the provider slot immediately');
+  } finally {
+    clearTimeout(timer); for (const socket of sockets) socket.destroy();
+    await pending.catch(() => {}); await new Promise(resolve => server.close(resolve));
+  }
 });

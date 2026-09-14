@@ -74,5 +74,70 @@ test('overlaps release descriptions while keeping the highest-ranked playable ch
     assert.equal(overlapped, true, 'release descriptions must overlap instead of adding their latencies');
   } finally { clearTimeout(timer); releaseFirst(); await preparation; }
   assert.equal(playback.release, 'Rank 0', 'network completion order must not lower the selected quality');
-  assert.deepEqual(started, ['Rank 0', 'Rank 1', 'Rank 2'], 'stop looking ahead once a playable release is selected');
+  assert.deepEqual(started.slice(0, 3), ['Rank 0', 'Rank 1', 'Rank 2']);
+  assert.ok(started.length <= 6, 'stop within the bounded lookahead once a playable release is selected');
+});
+
+test('availability of the next release overlaps a slow preferred candidate without changing ranking', async () => {
+  let finish, secondStarted;
+  const blocked = new Promise(resolve => { finish = resolve; });
+  const second = new Promise(resolve => { secondStarted = resolve; });
+  const playback = job();
+  const preparation = preparePlayback(playback, { maxConnections: 4 }, {
+    search: async () => [{ title: 'Preferred' }, { title: 'Other' }],
+    load: async release => nzb('mp4').replace('episode.mp4', `${release.title}.mp4`),
+    check: async file => { if (file.subject.startsWith('Preferred')) await blocked; else secondStarted(); return Buffer.from('video'); },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  let timer;
+  try {
+    assert.equal(await Promise.race([second.then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), 100); })]), true);
+    assert.notEqual(playback.status, 'ready');
+  } finally { clearTimeout(timer); finish(); await preparation; }
+  assert.equal(playback.release, 'Preferred');
+});
+
+test('restored plans avoid searching only after a live availability check and fall back when stale', async () => {
+  const saved = { file: { subject: 'episode.mp4', segments: [{ id: 'saved', decodedBytes: 4 }] }, release: 'Saved', strategy: 'raw' };
+  for (const available of [true, false]) {
+    const playback = job();
+    let searched = 0, verified = 0;
+    await preparePlayback(playback, {}, {
+      persistence: { getPlan: async () => structuredClone(saved), setPlan: async () => {} },
+      verify: async () => { verified++; return available; },
+      search: async () => { searched++; return [{ title: 'Replacement' }]; },
+      load: async () => nzb('mp4'), check: async () => Buffer.from('video'),
+      health: { has: async () => false }, plans: createPlaybackPlanCache()
+    });
+    assert.equal(verified, 1);
+    assert.equal(searched, available ? 0 : 1);
+    assert.equal(playback.status, 'ready');
+    assert.equal(playback.release, available ? 'Saved' : 'Replacement');
+  }
+});
+
+test('slow availability checks do not leave NZB request slots idle', async () => {
+  let releaseChecks, loadedSixth;
+  const gate = new Promise(resolve => { releaseChecks = resolve; });
+  const sixth = new Promise(resolve => { loadedSixth = resolve; });
+  let activeLoads = 0, peakLoads = 0;
+  const playback = job();
+  const preparation = preparePlayback(playback, {}, {
+    search: async () => Array.from({ length: 8 }, (_, i) => ({ title: `Rank ${i}` })),
+    load: async release => {
+      activeLoads++; peakLoads = Math.max(peakLoads, activeLoads);
+      await new Promise(resolve => setImmediate(resolve));
+      activeLoads--;
+      if (release.title === 'Rank 5') loadedSixth();
+      return nzb('mp4');
+    },
+    check: async () => { await gate; return Buffer.from('video'); },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  let timer;
+  try {
+    assert.equal(await Promise.race([sixth.then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), 100); })]), true, 'NZB requests should progress while availability checks wait');
+    assert.ok(peakLoads <= 3, 'the HTTP concurrency limit must remain three');
+  } finally { clearTimeout(timer); releaseChecks(); await preparation; }
+  assert.equal(playback.release, 'Rank 0');
 });

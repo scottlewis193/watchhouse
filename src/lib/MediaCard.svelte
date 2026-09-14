@@ -1,10 +1,11 @@
 <script>
-  let { item, href, inLibrary = false, onLibraryChange, onWatched, onClearProgress, downloaded = false, disabled = false } = $props();
+  import { preparePoster } from '$lib/poster-preparation.js';
+  let { item, href, inLibrary = false, onLibraryChange, onWatched, onClearProgress, downloaded = false, disabled = false, prepareAhead = false } = $props();
   const label = $derived(item.episodeTitle ? `${item.title}, season ${item.season}, episode ${item.episode}: ${item.episodeTitle}` : `${item.title}${item.year ? `, ${item.year}` : ''}`);
   const playHref = $derived(`${href}${href.includes('?') ? '&' : '?'}play=1${item.position ? '&resume=1' : ''}`);
 </script>
 
-<article class="media-card group relative min-w-0 snap-start" class:opacity-35={disabled} class:grayscale={disabled} title={disabled ? `${label} is not downloaded` : label}>
+<article use:preparePoster={prepareAhead && !disabled ? item : null} class="media-card group relative min-w-0 snap-start" class:opacity-35={disabled} class:grayscale={disabled} title={disabled ? `${label} is not downloaded` : label}>
   <div class="relative">
     <a class="media-card-link block focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-primary" href={disabled ? undefined : href} aria-label={disabled ? `${label} is unavailable offline` : `View details for ${label}`} aria-disabled={disabled} onclick={(event) => { if (disabled) event.preventDefault(); }}>
     <figure class="media-card-poster relative aspect-[2/3] overflow-hidden bg-base-300">
