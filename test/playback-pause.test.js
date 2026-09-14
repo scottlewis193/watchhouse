@@ -79,5 +79,6 @@ test('server fallback leaves stale ready playback and follows download progress'
   await state.refreshDiagnostics('job', 1);
   assert.equal(state.playback.status, 'downloading');
   assert.equal(state.recoveryPosition, 318);
+  assert.equal(state.continuePlaybackOnReady, true, 'server-side fallback must retain autoplay intent');
   assert.deepEqual(polls, [['job', 1, 0]]);
 });

@@ -24,6 +24,7 @@
   let library = $state([]), progressEntries = $state([]);
   let offlineMode = $state(false), offlineDownloads = $state([]), offlineJobs = $state([]), downloadError = $state('');
   let resumeStreamOffset = $state(0), resumeStarting = $state(false), streamRestarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
+  let fallbackPending = false;
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
   let bufferedRanges = $state([]);
   let videoDiagnostics = $state(null), creditDiagnostics = $state(null);
@@ -256,10 +257,12 @@
       const job = await api.get(`/api/play/${id}`);
       if (!playbackRequests.isCurrent(requestToken) || playback?.id !== id) return;
       if (job.status !== 'ready') {
+        if (job.status === 'error' && canUseFallback(playback)) { void fallback(); return; }
         // Server-side archive fallback changes the job while the old player
         // still exists. Follow preparation instead of displaying a stale seek.
         recoveryPosition = currentPlaybackPosition();
         resumePlayback = recoveryPosition >= 5;
+        continuePlaybackOnReady = continuePlaybackOnReady || playing || resumeStarting || streamRestarting;
         await savePlaybackProgress(true);
         if (!playbackRequests.isCurrent(requestToken) || playback?.id !== id) return;
         clearTimeout(interruptionTimer); clearTimeout(startupStableTimer);
@@ -465,7 +468,7 @@
     if (hasGrowingStreamDuration(playback?.mode)) { restoredMediaKey = key; return; }
     const duration = progressDuration(playback?.mode, player?.duration) || sourceDuration || currentMedia?.durationHint || entry?.duration || 0;
     const position = recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0);
-    if (!position || restoredMediaKey === key) return;
+    if (!position || (!recoveryPosition && restoredMediaKey === key)) return;
     player.currentTime = Math.min(position, Math.max(0, duration - 31)); recoveryPosition = 0; restoredMediaKey = key;
   }
 
@@ -570,6 +573,10 @@
     return playbackTraceSample(player, hasGrowingStreamDuration(playback?.mode) ? resumeStreamOffset : 0);
   }
   function handlePlaybackInterruption(reason, message, evidence = {}) {
+    // A media error and an HLS error can describe the same failed source.
+    // Keep one recovery request in flight rather than replacing its token.
+    if (fallbackPending && playbackRequests.isCurrent(fallbackPending)) return;
+    if (playback?.status !== 'ready') return;
     const action = evidence.code === 'SOURCE_UNAVAILABLE' ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries);
     if (playbackDiagnostics) {
       interruptionHistory = playbackTrace.interrupt(traceSource(), {
@@ -580,6 +587,7 @@
         browser: navigator.userAgent
       }, traceSample());
     }
+    if (action === 'offer' && canUseFallback(playback)) { void fallback(); return; }
     if (action !== 'retry') { offerPlaybackRecovery(message, evidence.code === 'SOURCE_UNAVAILABLE'); return; }
     automaticStreamRetries++;
     restartStream(currentPlaybackPosition());
@@ -590,7 +598,29 @@
     playbackRecovery = null; automaticStreamRetries = 0;
     restartStream(position);
   }
-  async function fallback() { if (!canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. The download is complete; try a different release or check this browser’s codec support.' }; return; } const requestToken = playbackRequests.begin(), id = playback.id; currentPlaybackRequestToken = requestToken; clearTimeout(interruptionTimer); recoveryPosition = playbackRecovery?.position ?? currentPlaybackPosition(); playbackRecovery = null; playbackNeedsAction = false; resumePlayback = recoveryPosition >= 5; try { await savePlaybackProgress(true); const job = await api.post(`/api/play/${id}/fallback`); if (!playbackRequests.isCurrent(requestToken)) return; playback = job; void poll(job.id, requestToken, 0); } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; } }
+  async function fallback() {
+    if (fallbackPending && playbackRequests.isCurrent(fallbackPending)) return;
+    if (!canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. The download is complete; try a different release or check this browser’s codec support.' }; return; }
+    const requestToken = playbackRequests.begin(), id = playback.id;
+    fallbackPending = requestToken;
+    currentPlaybackRequestToken = requestToken;
+    clearTimeout(interruptionTimer); clearTimeout(startupStableTimer);
+    recoveryPosition = playbackRecovery?.position ?? currentPlaybackPosition();
+    playbackRecovery = null; playbackNeedsAction = false;
+    resumePlayback = recoveryPosition > 0;
+    continuePlaybackOnReady = true;
+    try {
+      await savePlaybackProgress(true);
+      if (!playbackRequests.isCurrent(requestToken)) return;
+      stopBackgroundPlayback();
+      const job = await api.post(`/api/play/${id}/fallback`);
+      if (!playbackRequests.isCurrent(requestToken)) return;
+      playback = job;
+      void poll(job.id, requestToken, 0);
+    } catch (e) {
+      if (playbackRequests.isCurrent(requestToken)) playback = { id, status: 'error', message: e.message, progress: 0 };
+    } finally { if (fallbackPending === requestToken) fallbackPending = false; }
+  }
   function beginUpNextCountdown(reason) {
     if (!autoPlayNext || !nextMedia) return;
     showUpNext = true;
@@ -855,7 +885,9 @@
       {#if titleDetails.backdrop || media.poster}<img src={titleDetails.backdrop || media.poster} alt="" />{/if}
     </div>
     <div class="watch-hero-shade" aria-hidden="true"></div>
-    {@render watchToolbar(playbackUi.inPlayer)}
+    {#if playback?.status !== 'ready'}
+      {@render watchToolbar(playbackUi.inPlayer)}
+    {/if}
 
     {#if downloadError || bulkError}<div class="watch-hero-alerts">{#if downloadError}<div class="alert alert-error"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}{#if bulkError}<div class="alert alert-error"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}</div>{/if}
 
@@ -878,6 +910,7 @@
       <div class="watch-stage" class:watch-stage-warming={playbackUi.warming} class:watch-stage-revealing={playerRevealing}>
       {#if currentMedia}
         <div class="player-shell cinema-player group/player relative aspect-video overflow-hidden bg-black" class:player-shell-warming={playbackUi.warming} bind:this={playerShell} role="group" aria-label="Video player" onpointermove={showPlayerControls} onpointerleave={schedulePlayerControlsHide} onfocusin={showPlayerControls} onfocusout={schedulePlayerControlsHide}>
+          {@render watchToolbar(true)}
           {#if playbackDiagnostics && diagnosticsOpen}
             <aside id="player-diagnostics" class="player-diagnostics-panel" aria-label="Playback diagnostics">
               <div class="player-diagnostics-header"><div><p class="player-eyebrow">Live technical data</p><h2>Playback diagnostics</h2></div><button class="player-diagnostics-close" onclick={() => { diagnosticsOpen = false; }} aria-label="Close playback diagnostics">×</button></div>
