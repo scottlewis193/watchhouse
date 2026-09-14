@@ -488,3 +488,72 @@ The entire 9,723,950,472-byte Silo video then extracted successfully through all
 128 MiB child limit reproduces the old failure in about 1.4 seconds and passes
 with the fix. Full-archive extraction verifies the archive path and native checks;
 it is not a whole-episode browser playback test.
+
+## Reuse progressive archive extraction across player sessions
+
+Slow Horses S01E02 at approximately five minutes into the 4K HONE release
+spent 13 seconds opening the archive and 51 seconds preparing its first resumed
+segment, in addition to release selection. Previously, a new playback job had no
+archive plan to reuse, and an unreferenced extractor expired after five seconds.
+
+Validated progressive sources now enter a process-local resume cache. New
+foreground playback jobs reuse the source and its extracted bytes when media,
+provider, quality and audio settings match. Existing direct plans retain priority.
+Rejected sources, explicit release choices and download/background jobs do not
+use this shortcut. Retention leases prevent the extractor's short idle timeout
+from deleting the cached prefix. Active consumers renew retention; idle entries
+expire within five minutes of the last cache touch. The cache retains at most
+two sources with a combined declared video size of 20 GiB. Extraction may
+continue during this short retention window; eviction releases only the cache's
+lease, leaving an active player intact. Server restarts clear this cache.
+
+The regression first failed because the reopened job searched again and entered
+an error state. It now reuses the same source. The real archive/HLS integration
+also reopens through a separate playback job and resumes at 110.900803 seconds
+within its eight-second segment budget while the archive tail remains blocked.
+The production build passes. The full 226-test run had three timing failures
+under overlapping build/playback load; all three passed when their files were
+rerun serially after the build. A live before/after reopen measurement remains
+unverified: automatic approval review blocked leaving the active player.
+
+This improves repeat resumes within the retention window. Cold starts still
+need archive extraction, and incomplete sources still require sequential input
+processing up to the saved position. It does not promise instant 4K cold resumes.
+
+After the user authorized the live reopen check, Slow Horses S01E02's 4K HONE
+source recorded `archive-resume-hit` at 18:46:33 and `segments-ready` at
+18:47:20 (47 seconds). The source search and archive opening were skipped, but
+conversion of the prefix remained slow. Playback subsequently advanced with no
+recorded interruptions and zero dropped frames in the observed sample. This
+confirms source reuse, not a satisfactory fix for total resume latency. The
+remaining conversion delay needs separate optimisation and validation.
+
+## Accurate forward seeking within retained Matroska archives
+
+Repeated output-side seeks decoded the discarded prefix even when its bytes
+were cached. Retained, validated Matroska archive jobs now use accurate input
+seeking with `-fflags +ignidx`. Cold preparations and other containers retain
+the existing sequential path. Completed files retain ordinary indexed seeking.
+
+Ignoring the index alone still allowed the real container to jump to tail
+metadata. Returning HTTP errors for those speculative reads proved unreliable
+on real 4K files and was removed. The final converter-only HTTP view replaces
+complete SeekHead elements in the initial 64 KiB with equal-length EBML Void.
+All byte offsets and media bytes remain unchanged. Normal readers receive the
+original container. The converter discovers Info, Tracks and available clusters
+in order and builds its seek index without requesting the unfinished tail.
+All unavailable ranges and sequential reads continue to wait for extraction.
+
+An isolated check using the real 9.7 GB cached Silo video, with only its first
+3 GiB available over HTTP, reproduced the original hardware conversion failure.
+The header view produced the first HLS segment in 2.310 seconds at a
+410.617498-second offset. The regression suite compares resumed audio/video
+hashes and timestamps with normal accurate seeking, verifies normal readers
+are unchanged, and verifies truncated/non-Matroska headers are not rewritten.
+This is a real-file isolated measurement, not a live browser timing claim.
+
+Live testing also found archive opening could exceed the previous 30-second
+limit. Production opening now has a bounded 120-second allowance, avoiding a
+premature full-download fallback while the provider opens the archive. This
+does not promise fast cold starts. Live warm-resume verification remains the
+last check after restarting the development server.

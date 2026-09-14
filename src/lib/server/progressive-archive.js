@@ -4,6 +4,7 @@ import { mkdtemp, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
+import { matroskaSeekHeadPatches } from './matroska-forward-seek.js';
 import { waitForDrain } from './stream-drain.js';
 
 export function archiveByteRange(value, size) {
@@ -36,11 +37,20 @@ export async function createProgressiveArchiveSource(input, {
     changes.once('change', done); signal.addEventListener('abort', done, { once: true });
     if (signal.aborted || failure || closed) done();
   });
+  let seekPatches;
+  const forwardPatches = () => seekPatches ||= (async () => {
+    const file = await open(output, 'r');
+    try {
+      const header = Buffer.alloc(Math.min(available, 65536));
+      const { bytesRead } = await file.read(header, 0, header.length, 0);
+      return matroskaSeekHeadPatches(header.subarray(0, bytesRead));
+    } finally { await file.close(); }
+  })();
   const server = createServer((req, res) => {
     const controller = new AbortController();
     res.on('close', () => { controller.abort(); changes.emit('change'); });
     void (async () => {
-      const archive = req.url === `/${token}/archive`, video = req.url === `/${token}/video`;
+      const archive = req.url === `/${token}/archive`, forwardSeek = req.url === `/${token}/video/forward-seek`, video = req.url === `/${token}/video` || forwardSeek;
       if ((!archive && !video) || !['GET', 'HEAD'].includes(req.method)) { res.writeHead(404); return res.end(); }
       if (closed || failure) throw failure || new Error('Archive source closed');
       const size = archive ? input.size : metadata?.size;
@@ -61,6 +71,7 @@ export async function createProgressiveArchiveSource(input, {
       } else {
         let file;
         try {
+          const patches = forwardSeek ? await forwardPatches() : [];
           let offset = start;
           while (offset <= end && !controller.signal.aborted) {
             if (failure || closed) throw failure || new Error('Archive source closed');
@@ -73,6 +84,10 @@ export async function createProgressiveArchiveSource(input, {
             const buffer = Buffer.allocUnsafe(count);
             const { bytesRead } = await file.read(buffer, 0, count, offset);
             if (!bytesRead) throw new Error('Extracted video could not be read');
+            for (const patch of patches) {
+              const from = Math.max(offset, patch.offset), to = Math.min(offset + bytesRead, patch.offset + patch.bytes.length);
+              if (to > from) patch.bytes.copy(buffer, from - offset, from - patch.offset, to - patch.offset);
+            }
             offset += bytesRead;
             if (!res.write(buffer.subarray(0, bytesRead))) await waitForDrain(res);
           }
@@ -139,13 +154,14 @@ export async function createProgressiveArchiveSource(input, {
     clearTimeout(timeout); expire();
     return {
       metadata, completion,
+      get consumers() { return refs; },
       get closed() { return closed; }, get failure() { return failure; },
       get available() { return available; }, get complete() { return complete; },
-      retain() {
+      retain({ forwardSeek = false } = {}) {
         if (closed || failure) throw failure || new Error('Archive source closed');
         refs++; clearTimeout(idle);
         let released = false;
-        return { url: `${base}/video`, close() { if (!released) { released = true; if (--refs === 0) expire(Math.min(idleMs, 5000)); } } };
+        return { url: `${base}/video${forwardSeek ? '/forward-seek' : ''}`, close() { if (!released) { released = true; if (--refs === 0) expire(Math.min(idleMs, 5000)); } } };
       }, close
     };
   } catch (error) { await close(); throw error; }

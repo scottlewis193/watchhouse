@@ -26,6 +26,7 @@ import { createSegmentCache } from './segment-cache.js';
 import { prefetchReleaseDescriptions } from './release-prefetch.js';
 import { createTransferCoordinator, createBackgroundNntpClient } from './background-transfer.js';
 import { downloadPostedFiles } from './archive-download.js';
+import { createArchiveResumeCache } from './archive-resume-cache.js';
 import { createProgressiveArchiveSource } from './progressive-archive.js';
 
 const ROOT = process.cwd();
@@ -45,6 +46,7 @@ const posterPreparation = createPosterPreparation();
 const offlineJobs = new Map();
 const offlineSeriesJobs = new Map();
 const playbackPlans = createPlaybackPlanCache();
+const archiveResumePlans = createArchiveResumeCache();
 const playbackPersistence = createPlaybackPersistence(join(PLAYBACK_CACHE_ROOT, 'resume-v1'));
 const resumeSegments = createSegmentCache();
 const transfers = createTransferCoordinator();
@@ -687,7 +689,7 @@ async function progressiveSource(job, settings) {
     const input = await openArchiveByteInput(job.archives, settings);
     try {
       await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true });
-      const source = await createProgressiveArchiveSource(input, { root: PLAYBACK_CACHE_ROOT });
+      const source = await createProgressiveArchiveSource(input, { root: PLAYBACK_CACHE_ROOT, startupTimeoutMs: 120000 });
       job.archiveSource = source;
       return source;
     } catch (error) { await input.close(); throw error; }
@@ -696,8 +698,8 @@ async function progressiveSource(job, settings) {
   finally { delete job.archiveSourcePromise; }
 }
 
-export async function openPostedRangeServer(job, settings, connect = connectNntp) {
-  if (job.progressiveArchive) return (await progressiveSource(job, settings)).retain();
+export async function openPostedRangeServer(job, settings, connect = connectNntp, options = {}) {
+  if (job.progressiveArchive) return (await progressiveSource(job, settings)).retain(options);
   const posted = job.file, release = job.release, releaseKey = job.releaseKey || release;
   const layout = postedFileByteLayout(posted);
   if (!layout) return null;
@@ -859,18 +861,21 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   let producer;
   try {
-    rangeSource = !cached ? await openPostedRangeServer(job, settings) : null;
+    const growing = job.progressiveArchive && !job.archiveSource?.complete;
+    const forwardSeek = growing && job.archiveResume && start > 0 && videoType(job.file.subject) === 'video/x-matroska';
+    rangeSource = !cached ? await openPostedRangeServer(job, settings, undefined, { forwardSeek }) : null;
     const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
     const input = cached ? job.sourcePath : rangeSource.url;
     const inspection = getInspection(job, settings, input);
-    const growing = job.progressiveArchive && !job.archiveSource?.complete;
-    const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing ? start : 0)]);
+    const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing && !forwardSeek ? start : 0)]);
     const { audioIndex } = metadata;
     job.sourceDuration = metadata.duration;
-    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing, toneMap, acceleration);
+    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration);
     if (growing) {
-      mapped.splice(mapped.indexOf('-i'), 0, '-seekable', '0');
+      // Matroska can build a seek index from available clusters. Ignore its
+      // tail index so accurate input seeking never waits for full extraction.
+      mapped.splice(mapped.indexOf('-i'), 0, ...(forwardSeek ? ['-fflags', '+ignidx'] : ['-seekable', '0']));
       // This local endpoint waits for extraction by design. A network read
       // timeout would turn ordinary buffering into a fatal demuxer error.
       // Session readiness/idle deadlines and source cancellation bound it.
@@ -895,6 +900,10 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     // Encoding may run while we check the timeline. No playlist/session is
     // returned until the full existing validation has passed.
     await Promise.race([inspection.validated, producer.completion.then(() => inspection.validated)]);
+    if (job.progressiveArchive) {
+      const { archiveSource, archives, file, release, releaseKey, strategy } = job;
+      archiveResumePlans.set(job.media, playbackScope(settings), { archiveSource, archives, file, release, releaseKey, strategy, progressiveArchive: true });
+    }
     return producer;
   } catch (error) {
     await producer?.stop();
@@ -1183,7 +1192,7 @@ async function savedPlanAvailable(plan, settings) {
   catch { return false; }
   finally { client.close(); }
 }
-export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null } = {}) {
+export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null } = {}) {
   try {
     if (job.progressiveArchive && job.rejectedReleases?.has(job.releaseKey || job.release)) {
       await job.archiveSource?.close(); delete job.archiveSource; delete job.progressiveArchive; delete job.file;
@@ -1214,6 +1223,15 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
     if (connectAhead && settings.usenetHost && !job.backgroundFor && !job.prepareAhead && !job.speculative && !job.offlineDownload) {
       void connectAhead(settings).then(() => jobEvent(job, 'provider-connected', 'Provider connection ready for source checks.')).catch(() => {});
+    }
+    if (!job.manualRelease && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.speculative && !job.downloadReplacement && !job.progressiveArchiveDisabled) {
+      const saved = archivePlans.get(job.media, playbackScope(settings));
+      if (saved && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
+        && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
+        Object.assign(job, saved, { archiveResume: true, status: 'ready', mode: 'direct', progress: 100, message: 'Reusing the archive video prepared earlier.' });
+        jobEvent(job, 'archive-resume-hit', job.message, { extractedBytes: saved.archiveSource.available, totalBytes: saved.archiveSource.metadata.size });
+        return;
+      }
     }
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
@@ -1381,7 +1399,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
   }
 }
-function publicJob(job) { const { archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { archiveResume, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };

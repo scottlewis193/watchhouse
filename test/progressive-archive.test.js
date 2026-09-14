@@ -1,6 +1,6 @@
 import { crc32 } from 'node:zlib';
 import { createHlsSession } from '../src/lib/server/hls-session.js';
-import { progressiveArchiveVolumes, openArchiveByteInput, startHlsConversion } from '../src/lib/server/streamer.js';
+import { progressiveArchiveVolumes, openArchiveByteInput, startHlsConversion, preparePlayback, createPlaybackPlanCache } from '../src/lib/server/streamer.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, readdir } from 'node:fs/promises';
@@ -103,17 +103,38 @@ test('HLS passes real opening timeline validation and produces segments before a
       if (start >= archive.length * 0.7 && end < archive.length - 65536) await held;
       return archive.subarray(start, end + 1);
     } }, { root });
-    const job = { progressiveArchive: true, archiveSource: source, file: { subject: 'video.mkv' }, release: 'Fixture SDR H264', strategy: 'remux', mode: 'direct', diagnosticsEnabled: true, events: [] };
+    const job = { media: { type: 'tv', id: 999999, season: 1, episode: 1 }, progressiveArchive: true, archiveSource: source, file: { subject: 'video.mkv' }, release: 'Fixture SDR H264', strategy: 'remux', mode: 'direct', diagnosticsEnabled: true, events: [] };
     const startup = Date.now();
     session = await createHlsSession({ root, produce: directory => startHlsConversion(job, {}, 0, directory) });
     await session.ready();
     assert.ok(Date.now() - startup < 8000, 'probing must not wait for the 15-second tail-seek timeout');
     assert.equal(source.complete, false, 'first HLS segments must not require the entire extracted video');
+    const seeking = source.retain({ forwardSeek: true });
+    try {
+      const response = await fetch(seeking.url, { headers: { Range: 'bytes=0-65535' } });
+      const edited = Buffer.from(await response.arrayBuffer());
+      const original = (await readFile(videoPath)).subarray(0, 65536);
+      assert.equal(edited.length, original.length);
+      assert.notDeepEqual(edited, original, 'the seek view hides SeekHead without changing offsets');
+      const ordinary = source.retain();
+      try {
+        const plain = Buffer.from(await (await fetch(ordinary.url, { headers: { Range: 'bytes=0-65535' } })).arrayBuffer());
+        assert.deepEqual(plain, original, 'normal playback still receives original container bytes');
+      } finally { ordinary.close(); }
+    } finally { seeking.close(); }
     assert.ok(job.events.some(event => event.activity === 'timeline-validated'));
     assert.ok((await session.read('index.m3u8')).toString().includes('segment-000000.m4s'));
     await session.close();
+    const reopened = { media: job.media, diagnosticsEnabled: true, events: [] };
+    await preparePlayback(reopened, {}, {
+      plans: createPlaybackPlanCache(), health: { has: async () => false },
+      search: async () => { throw new Error('Resume searched instead of reusing the live archive'); }
+    });
+    assert.equal(reopened.status, 'ready');
+    assert.equal(reopened.archiveSource, source);
+    assert.ok(reopened.events.some(event => event.activity === 'archive-resume-hit'));
     const resumed = Date.now();
-    session = await createHlsSession({ root, produce: directory => startHlsConversion(job, {}, 110.900803, directory) });
+    session = await createHlsSession({ root, produce: directory => startHlsConversion(reopened, {}, 110.900803, directory) });
     let deadline;
     try {
       await Promise.race([session.ready(), new Promise((_, reject) => {
@@ -122,7 +143,7 @@ test('HLS passes real opening timeline validation and produces segments before a
     } finally { clearTimeout(deadline); }
     assert.ok(Date.now() - resumed < 8000);
     assert.equal(source.complete, false, 'resuming within the extracted prefix must not wait for the archive tail');
-    assert.ok(job.events.some(event => event.activity === 'encoding-start' && event.start === 110.900803));
+    assert.ok(reopened.events.some(event => event.activity === 'encoding-start' && event.start === 110.900803));
     const playlist = (await session.read('index.m3u8')).toString();
     assert.ok(playlist.includes('#EXTINF:'));
     await session.close();
