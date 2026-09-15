@@ -427,7 +427,13 @@ function run(command, args, cwd, job) { return new Promise((resolve, reject) => 
   }));
 }); }
 function runOutput(command, args, cwd, signal) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd, signal }); let stdout = '', stderr = ''; child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
-const VAAPI_DEVICES = Array.from({ length: 8 }, (_, index) => `/dev/dri/renderD${128 + index}`);
+// Prefer unprivileged render nodes, but some appliance distributions expose
+// only the primary DRM card. The entrypoint grants the app either device's
+// host group before dropping privileges.
+const VAAPI_DEVICES = [
+  ...Array.from({ length: 8 }, (_, index) => `/dev/dri/renderD${128 + index}`),
+  ...Array.from({ length: 8 }, (_, index) => `/dev/dri/card${index}`)
+];
 let videoAccelerationDetection;
 export async function detectVideoAcceleration({ devices = VAAPI_DEVICES, exists = existsSync, execute = run } = {}) {
   for (const device of devices) {

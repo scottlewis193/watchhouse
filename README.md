@@ -53,10 +53,12 @@ docker run -d --name watchhouse \
 ```
 
 The image includes the Intel iHD and Mesa VAAPI drivers. At startup it grants
-the unprivileged `node` process access to the mounted render-device groups, whose
-numeric IDs vary between Linux distributions. Playback diagnostics should then
-report `GPU · VAAPI decode + encode` for SDR transcodes. If `/dev/dri` is not
-mounted, Watchhouse safely falls back to software conversion.
+the unprivileged `node` process access to the mounted DRM-device groups, whose
+numeric IDs vary between Linux distributions. Watchhouse prefers `renderD*`
+nodes and falls back to `card*` nodes on appliance distributions that expose
+only the primary DRM device. Playback diagnostics should then report
+`GPU · VAAPI decode + encode` for SDR transcodes. If `/dev/dri` is not mounted,
+Watchhouse safely falls back to software conversion.
 
 To build locally (including the test suite):
 

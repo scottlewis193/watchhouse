@@ -958,6 +958,17 @@ test('detects a working AMD or Intel VAAPI render device', async () => {
   assert.ok(attempts[0].includes('h264_vaapi'));
 });
 
+test('checks primary DRM cards when a host exposes no render node', async () => {
+  const checked = [], attempts = [];
+  const acceleration = await detectVideoAcceleration({
+    exists: device => { checked.push(device); return device === '/dev/dri/card0'; },
+    execute: async (_command, args) => { attempts.push(args); }
+  });
+  assert.ok(checked.includes('/dev/dri/card0'));
+  assert.deepEqual(acceleration, { kind: 'vaapi', device: '/dev/dri/card0' });
+  assert.equal(attempts.length, 1);
+});
+
 test('uses VAAPI decode and encode for SDR transcodes', () => {
   const acceleration = { kind: 'vaapi', device: '/dev/dri/renderD128' };
   const args = ffmpegArgs('transcode', 'pipe:0', 'pipe:1', true, 0, 2, false, false, acceleration);
