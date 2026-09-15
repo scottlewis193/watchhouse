@@ -40,8 +40,23 @@ across container replacements. The image runs as the `node` user (UID 1000); bin
 mounts used instead of the named volume must be writable by that user.
 
 FFmpeg, ffprobe, unrar, 7-Zip, Python 3 and libarchive are included. Software video conversion works
-without host devices; VAAPI acceleration additionally requires compatible host
-GPU devices and drivers.
+without host devices. To enable VAAPI acceleration on Linux, including Intel
+11th-generation Core graphics, expose the host DRM devices as well:
+
+```sh
+docker run -d --name watchhouse \
+  --device /dev/dri:/dev/dri \
+  -p 3000:3000 \
+  -e ORIGIN=http://localhost:3000 \
+  -v watchhouse-data:/app/data \
+  <username>/watchhouse:latest
+```
+
+The image includes the Intel iHD and Mesa VAAPI drivers. At startup it grants
+the unprivileged `node` process access to the mounted render-device groups, whose
+numeric IDs vary between Linux distributions. Playback diagnostics should then
+report `GPU · VAAPI decode + encode` for SDR transcodes. If `/dev/dri` is not
+mounted, Watchhouse safely falls back to software conversion.
 
 To build locally (including the test suite):
 
