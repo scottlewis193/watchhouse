@@ -45,6 +45,22 @@ test('archive range parsing rejects malformed requests and supports suffixes', (
   for (const value of ['bytes=10-', 'bytes=8-2', 'bytes=-0', 'bytes=0-1,3-4']) assert.equal(archiveByteRange(value, 10), null);
 });
 
+test('archive extraction keeps an 8 MB read in one upstream batch', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'progressive-read-window-'));
+  const helper = join(root, 'helper.py'), reads = [];
+  let source;
+  try {
+    await writeFile(helper, `import json, sys, urllib.request\nurl, output, total, window = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])\nrequest = urllib.request.Request(url, headers={'Range': f'bytes=0-{window - 1}'})\nwith urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request) as response:\n    payload = response.read()\nwith open(output, 'wb') as target:\n    target.write(payload)\nprint(json.dumps({'type': 'metadata', 'name': 'video.mkv', 'size': len(payload)}), flush=True)\nprint(json.dumps({'type': 'complete', 'bytes': len(payload)}), flush=True)\n`);
+    source = await createProgressiveArchiveSource({
+      size: 32 * 1024 * 1024,
+      close: async () => {},
+      async read(start, end) { reads.push([start, end]); return Buffer.alloc(end - start + 1); }
+    }, { root, helper });
+    assert.equal(source.complete, true);
+    assert.deepEqual(reads, [[0, 8 * 1024 * 1024 - 1]], 'splitting the read under-fills the configured Usenet connection pool');
+  } finally { await source?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 
 test('archive volume ordering is numeric and rejects mixed or incomplete sets', () => {
   const file = subject => ({ subject, segments: [{ id: 'part' }] });
@@ -186,6 +202,28 @@ test('multivolume stored RAR extracts through virtual ranges with matching bytes
     await source.completion;
     lease.close();
   } finally { await source?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('an obvious full-size RAR video starts before trailing volumes are inspected', { timeout: 10000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'progressive-rar-startup-'));
+  let source, unblock;
+  const reads = [];
+  const held = new Promise(resolve => { unblock = resolve; });
+  try {
+    const video = randomBytes(3 * 1024 * 1024 + 500), archive = Buffer.concat(storedRarVolumes(video));
+    source = await Promise.race([
+      createProgressiveArchiveSource({ size: archive.length, close: async () => {}, async read(start, end) {
+        reads.push([start, end]);
+        if (start >= 1024 * 1024 && start < 2 * 1024 * 1024) await held;
+        return archive.subarray(start, end + 1);
+      } }, { root }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`startup inspected trailing archive volumes before exposing the main video: ${JSON.stringify(reads)}`)), 2000))
+    ]);
+    assert.equal(source.metadata.name, 'video.mkv');
+    assert.ok(source.available >= 65536);
+    unblock();
+    await source.completion;
+  } finally { unblock(); await source?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('compressed 7z selects the full video instead of a smaller sample', async () => {

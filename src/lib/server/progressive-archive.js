@@ -21,8 +21,9 @@ export function archiveByteRange(value, size) {
 // masquerade as zero-filled sparse data or an early EOF.
 export async function createProgressiveArchiveSource(input, {
   root, helper = join(process.cwd(), 'scripts', 'progressive-archive.py'),
-  startupTimeoutMs = 30000, idleMs = 30000, onProgress = () => {}
+  startupTimeoutMs = 30000, idleMs = 30000, archiveReadBytes = 8 * 1024 * 1024, onProgress = () => {}
 }) {
+  if (!Number.isSafeInteger(archiveReadBytes) || archiveReadBytes < 64 * 1024 || archiveReadBytes > 64 * 1024 * 1024) throw new Error('Invalid archive read window');
   const directory = await mkdtemp(join(root, 'playback-progressive-'));
   const output = join(directory, 'video');
   const token = randomUUID(), changes = new EventEmitter();
@@ -62,8 +63,8 @@ export async function createProgressiveArchiveSource(input, {
       if (req.method === 'HEAD') return res.end();
       if (archive) {
         // Bound every allocation even if an unexpected client asks for everything.
-        for (let offset = start; offset <= end && !controller.signal.aborted; offset += 4 * 1024 * 1024) {
-          const stop = Math.min(end, offset + 4 * 1024 * 1024 - 1);
+        for (let offset = start; offset <= end && !controller.signal.aborted; offset += archiveReadBytes) {
+          const stop = Math.min(end, offset + archiveReadBytes - 1);
           const bytes = await input.read(offset, stop, controller.signal);
           if (bytes.length !== stop - offset + 1) throw new Error('Incomplete archive range');
           if (!res.write(bytes)) await waitForDrain(res);
@@ -116,7 +117,7 @@ export async function createProgressiveArchiveSource(input, {
   try {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const base = `http://127.0.0.1:${server.address().port}/${token}`;
-    child = spawn('python3', [helper, `${base}/archive`, output, String(input.size)], { stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn('python3', [helper, `${base}/archive`, output, String(input.size), String(archiveReadBytes)], { stdio: ['ignore', 'pipe', 'pipe'] });
     let pending = '', stderr = '';
     child.stderr.on('data', data => { stderr = (stderr + data).slice(-1000); });
     child.on('error', fail);

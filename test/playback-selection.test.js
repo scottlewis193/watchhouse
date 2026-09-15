@@ -155,6 +155,35 @@ test('a later progressive archive is selected before downloading an earlier unsu
   assert.equal(playback.release, 'Progressive');
 });
 
+test('starts the highest-ranked progressive archive before exhausting lower-ranked releases', async () => {
+  let releaseTail;
+  const tail = new Promise(resolve => { releaseTail = resolve; });
+  const playback = job(), inspected = [];
+  const preparation = preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Preferred archive' }, { title: 'Slow lower rank' }],
+    load: async release => {
+      if (release.title === 'Slow lower rank') await tail;
+      return nzb('rar');
+    },
+    health: { has: async () => false }, plans: createPlaybackPlanCache(),
+    progressive: async job => { inspected.push(job.release); job.status = 'ready'; job.mode = 'direct'; return true; },
+    archive: async () => { throw new Error('A progressive archive must not fall back to a full download.'); }
+  });
+  let timer;
+  try {
+    assert.equal(await Promise.race([
+      preparation.then(() => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), 100); })
+    ]), true, 'a ready progressive archive must not wait for lower-ranked NZBs');
+  } finally {
+    clearTimeout(timer);
+    releaseTail();
+    await preparation;
+  }
+  assert.deepEqual(inspected, ['Preferred archive']);
+  assert.equal(playback.release, 'Preferred archive');
+});
+
 test('unsupported progressive archives retain the original ranked full-download fallback', async () => {
   const playback = job(), inspected = [], downloaded = [];
   await preparePlayback(playback, {}, {

@@ -8,6 +8,7 @@ import ctypes as C
 import ctypes.util
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -25,6 +26,7 @@ def main():
     except (ImportError, ValueError, OSError):
         pass
     url, output, total = sys.argv[1], sys.argv[2], int(sys.argv[3])
+    extraction_read_size = int(sys.argv[4]) if len(sys.argv) > 4 else 8 * 1024 * 1024
     lib = C.CDLL(ctypes.util.find_library('archive') or 'libarchive.so.13')
     ptr = C.c_void_p
     def api(name, restype, *args):
@@ -50,6 +52,7 @@ def main():
     set_seek = api('archive_read_set_seek_callback', C.c_int, ptr, SEEK)
     position, buffer, read_error = 0, None, None
     read_size = 64 * 1024
+    grow_read_after = False
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     @OPEN
@@ -66,7 +69,8 @@ def main():
         try:
             if position >= total:
                 return 0
-            end = min(total, position + read_size) - 1
+            window = extraction_read_size if grow_read_after and position >= 4 * 1024 * 1024 else read_size
+            end = min(total, position + window) - 1
             request = urllib.request.Request(url, headers={'Range': f'bytes={position}-{end}'})
             with opener.open(request, timeout=30) as response:
                 if response.status != 206:
@@ -121,7 +125,10 @@ def main():
             free(a)
             raise
 
-    # Select the largest regular video, so a sample/cover cannot win by order.
+    # Select the largest regular video, so a sample cannot win by order. Media is
+    # already compressed, therefore a non-sample entry at least half the archive
+    # size is unambiguously the main payload. Stop at its header instead of
+    # touching every later RAR volume before playback can begin.
     a, selected, index = reader(), None, 0
     try:
         while True:
@@ -134,8 +141,14 @@ def main():
             if filetype(entry) == 0o100000 and os.path.splitext(name)[1].lower() in ('.mkv', '.mp4', '.m4v', '.mov', '.webm'):
                 if encrypted(entry):
                     raise RuntimeError('Encrypted video requires full archive preparation')
-                if length > 0 and (selected is None or length > selected['size']):
-                    selected = {'index': index, 'name': os.path.basename(name), 'size': length}
+                basename = os.path.basename(name)
+                sample = re.search(r'(^|[._ -])(sample|trailer|preview|proof)([._ -]|$)', basename, re.IGNORECASE) is not None
+                candidate = {'index': index, 'name': basename, 'size': length, 'sample': sample}
+                if length > 0 and (selected is None or (selected['sample'] and not sample) or selected['sample'] == sample and length > selected['size']):
+                    selected = candidate
+                if length > 0 and not sample and length * 2 >= total:
+                    selected = candidate
+                    break
             check(a, skip_data(a))
             index += 1
             if index > 10000:
@@ -144,7 +157,12 @@ def main():
         free(a)
     if selected is None:
         raise RuntimeError('No supported video found in archive')
+    del selected['sample']
     emit(type='metadata', **selected)
+    # Expose the opening bytes quickly, then use a wider window so extraction
+    # can keep the provider connection pool busy during cold resumes.
+    read_size = min(4 * 1024 * 1024, extraction_read_size)
+    grow_read_after = True
     a = reader()
     try:
         for index in range(selected['index'] + 1):
@@ -153,7 +171,6 @@ def main():
                 raise RuntimeError('Video entry disappeared')
             if index != selected['index']:
                 check(a, skip_data(a))
-        read_size = 4 * 1024 * 1024
         block, written = C.create_string_buffer(256 * 1024), 0
         with open(output, 'wb') as target:
             while True:

@@ -894,12 +894,12 @@
   <div class="hero-preparation" class:hero-preparation-error={status === 'error'} aria-live="polite">
     <div class="hero-preparation-heading">
       <span class="hero-preparation-mark" aria-hidden="true">{status === 'error' ? '!' : '▶'}</span>
-      <span class="hero-preparation-copy"><strong>{status === 'error' ? 'Playback unavailable' : heroLaunching && !playback ? 'Opening' : 'Preparing playback'}</strong><small>{setup ? `${setup.completed}/${setup.total} steps complete · ${setup.message}` : message || `Opening ${currentMedia?.episodeTitle || media.title}…`}</small></span>
+      <span class="hero-preparation-copy"><strong>{status === 'error' ? 'Playback unavailable' : heroLaunching && !playback ? 'Opening' : 'Preparing playback'}</strong><small>{setup ? `${setup.completed}/${setup.total} steps complete · ${setup.message}` : message || `Opening ${currentMedia?.episodeTitle || media.title}…`}{#if setup?.detail}<span class="mt-1 block text-white/55">{setup.detail}</span>{/if}</small></span>
       {#if status !== 'error' && detailedPlaybackProgress && !unknown && !setup}<span class="hero-preparation-percent">{Math.round(shownProgress || 0)}%</span>{/if}
       {#if status === 'error' && playback?.id}<button class="hero-preparation-retry" onclick={retryPlayback}>Try again</button>{/if}
     </div>
     {#if status !== 'error'}
-      <div class="hero-preparation-track" role="progressbar" aria-label="Preparing playback" aria-valuenow={unknown ? undefined : Math.round(shownProgress || 0)} aria-valuetext={setup ? `${setup.completed} of ${setup.total} preparation steps complete` : undefined} aria-valuemin="0" aria-valuemax="100">
+      <div class="hero-preparation-track" role="progressbar" aria-label="Preparing playback" aria-valuenow={unknown ? undefined : Math.round(shownProgress || 0)} aria-valuetext={setup ? `${setup.completed} of ${setup.total} preparation steps complete${setup.detail ? `, ${setup.detail}` : ''}` : undefined} aria-valuemin="0" aria-valuemax="100">
         <span class:hero-preparation-indeterminate={unknown} style={`width: ${Math.min(100, Math.max(0, shownProgress || 0))}%`}></span>
       </div>
     {/if}
@@ -930,7 +930,7 @@
         <h1>{media.title || 'Watch'}</h1>
         {#if currentMedia?.episodeTitle}<p class="watch-episode-name">{currentMedia.episodeTitle}</p>{/if}
         {#if titleDetails.overview}<p class="watch-overview">{titleDetails.overview}</p>{/if}
-        <div class="hero-action-slot">
+        <div class="hero-action-slot" class:hero-action-slot-detailed={resumeStarting && setupProgress?.detail}>
           {#if playback || heroLaunching}
             {@render heroPreparation(resumeStarting ? (resumeStreamOffset > 0 ? `Opening the stream and restoring your position at ${formatPosition(resumeStreamOffset)}…` : 'Opening the video stream and preparing the first frames…') : playback?.message, playback?.progress, playback?.status, resumeStarting || heroLaunching && !playback || playback?.status === 'extracting' || playback?.status === 'optimizing')}
           {:else}
@@ -958,7 +958,7 @@
             {/key}
             {#if playbackUi.showSeekStatus}
               <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/30 text-white" role="status">
-                <div class="flex items-center gap-3 rounded-full border border-white/15 bg-black/70 px-5 py-3 text-sm shadow-2xl backdrop-blur-md"><span class="loading loading-spinner loading-sm"></span><span>Seeking to {formatPosition(resumeStreamOffset)}…{#if setupProgress}<small class="mt-1 block text-xs text-white/60">{setupProgress.completed}/{setupProgress.total} steps complete · {setupProgress.message}</small>{/if}</span></div>
+                <div class="flex items-center gap-3 rounded-full border border-white/15 bg-black/70 px-5 py-3 text-sm shadow-2xl backdrop-blur-md"><span class="loading loading-spinner loading-sm"></span><span>Seeking to {formatPosition(resumeStreamOffset)}…{#if setupProgress}<small class="mt-1 block text-xs text-white/60">{setupProgress.completed}/{setupProgress.total} steps complete · {setupProgress.message}{#if setupProgress.detail}<span class="mt-0.5 block text-white/50">{setupProgress.detail}</span>{/if}</small>{/if}</span></div>
               </div>
             {/if}
             {#if playbackRecovery}

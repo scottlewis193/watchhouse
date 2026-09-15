@@ -10,7 +10,7 @@ import { startHlsConversion } from '../src/lib/server/streamer.js';
 import { createHlsSession } from '../src/lib/server/hls-session.js';
 const run = promisify(execFile);
 
-test('growing Matroska resumes by seeking through available bytes with matching video and audio', { timeout: 30000 }, async () => {
+test('cold growing Matroska resumes by seeking through available bytes with matching video and audio', { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'archive-forward-seek-'));
   let server, session, baseline;
   try {
@@ -26,7 +26,7 @@ test('growing Matroska resumes by seeking through available bytes with matching 
     });
     await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
     const source = { complete:false, available, metadata:{name:'source.mkv',size:bytes.length}, retain: () => ({url:`http://127.0.0.1:${server.address().port}/video`,close:async()=>{}}) };
-    const job = { archiveResume:true, progressiveArchive:true, archiveSource:source, file:{subject:'source.mkv'}, strategy:'remux',mode:'direct',release:'SDR' };
+    const job = { progressiveArchive:true, archiveSource:source, file:{subject:'source.mkv'}, strategy:'remux',mode:'direct',release:'SDR' };
     session = await createHlsSession({root,produce:directory=>startHlsConversion(job,{},40.123,directory)});
     await Promise.race([session.ready(),new Promise((_,reject)=>{ const timer=setTimeout(()=>reject(Error('Resume waited for missing archive tail')),8000);timer.unref(); })]);
     assert.ok(ranges.some(start=>start>bytes.length*.2 && start<available), 'resume must skip available prefix bytes instead of decoding from byte zero');

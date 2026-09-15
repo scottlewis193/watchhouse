@@ -170,6 +170,35 @@ export function searchResults(xml) {
   }));
 }
 function formatSize(bytes) { const n = Number(bytes); return n ? `${(n / 1024 ** 3).toFixed(n >= 1024 ** 3 ? 1 : 2)} GB` : ''; }
+function playbackSetupByteSize(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  return value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
+}
+function playbackSetupTime(seconds) {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, '0')}`;
+}
+export function archivePlaybackSetupProgress(job, start, completed = 0) {
+  const source = job?.archiveSource;
+  if (!job?.progressiveArchive || !source || source.complete || completed >= 2) return null;
+  const available = Math.max(0, Number(source.available) || 0);
+  const total = Math.max(0, Number(source.metadata?.size) || 0);
+  const duration = Math.max(0, Number(job.sourceDuration) || 0);
+  if (start > 0) {
+    const target = total && duration ? Math.min(total, Math.ceil(total * Math.min(1, start / duration))) : 0;
+    return {
+      message: `Restoring your saved position at ${playbackSetupTime(start)}`,
+      detail: target
+        ? `${playbackSetupByteSize(Math.min(available, target))} of about ${playbackSetupByteSize(target)} prepared`
+        : `${playbackSetupByteSize(available)} prepared so far`,
+      ...(target ? { percent: 25 + Math.round(Math.min(1, available / target) * 24) } : {})
+    };
+  }
+  return {
+    message: completed ? 'Preparing the first playable segment' : 'Opening the archived episode',
+    detail: `${playbackSetupByteSize(available)} unpacked and ready for playback`
+  };
+}
 function addDownload(url, title, apiKey) {
   const id = randomUUID();
   const target = new URL(url); if (!target.searchParams.has('apikey')) target.searchParams.set('apikey', apiKey);
@@ -950,7 +979,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   let producer;
   try {
     const growing = job.progressiveArchive && !job.archiveSource?.complete;
-    const forwardSeek = growing && job.archiveResume && start > 0 && videoType(job.file.subject) === 'video/x-matroska';
+    const forwardSeek = growing && start > 0 && videoType(job.file.subject) === 'video/x-matroska';
     rangeSource = !cached ? await openPostedRangeServer(job, settings, undefined, { forwardSeek }) : null;
     const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
@@ -1375,27 +1404,27 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           return;
         }
         if (archives.length && !job.backgroundFor && !job.speculative && (!job.rejectedReleases?.size || job.downloadReplacement || progressive)) {
-          archiveChoices.push({ archives, release: release.title, releaseKey: releaseIdentity(release) });
+          const choice = { archives, release: release.title, releaseKey: releaseIdentity(release) };
+          archiveChoices.push(choice);
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
+          // Progressive extraction only reads enough of the ranked archive to
+          // start playback. Try it now instead of inspecting every lower-ranked
+          // NZB first; a failed attempt still leaves the original full-download
+          // fallback ordered after all streamable candidates have been checked.
+          if (progressive) {
+            job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives;
+            try { if (await progressive(job, settings, choice.archives)) return; }
+            catch (error) {
+              if (error.code !== 'ARCHIVE_UNAVAILABLE') throw error;
+              choice.unavailable = error;
+              jobEvent(job, 'release-rejected', error.message, { release: choice.release });
+            }
+          }
         } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
       } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
     if (!archiveChoices.length) throw new Error('No compatible video release was found.');
-    // As with direct videos, prefer a source that can start now before paying
-    // for a complete archive download. Preserve ranking within each route.
-    if (progressive) {
-      for (const choice of archiveChoices) {
-        throwIfDownloadCancelled(job); settings.signal?.throwIfAborted();
-        job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives;
-        try { if (await progressive(job, settings, choice.archives)) return; }
-        catch (error) {
-          if (error.code !== 'ARCHIVE_UNAVAILABLE') throw error;
-          choice.unavailable = error;
-          jobEvent(job, 'release-rejected', error.message, { release: choice.release });
-        }
-      }
-      job.progressiveArchiveDisabled = true;
-    }
+    if (progressive) job.progressiveArchiveDisabled = true;
     if (job.rejectedReleases?.size && !job.downloadReplacement) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
     let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { if (isDownloadCancelled(job, error)) { job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
@@ -1706,11 +1735,23 @@ export async function handleRequest(req, res) {
         const input = await body(req), start = Number(input.start || 0);
         if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid playback position.' });
         const id = randomUUID(), settings = await readSettings();
-        let session, cancelled = false, delivered = false;
+        let session, cancelled = false, delivered = false, progressTimer, reportedCompleted = 0, lastProgress = '';
         const streaming = req.headers.accept?.includes('application/x-ndjson');
-        const report = completed => { if (streaming && !cancelled) res.write(JSON.stringify({ type: 'progress', completed }) + '\n'); };
+        const report = (completed, details = {}) => {
+          reportedCompleted = Math.max(reportedCompleted, Number(completed) || 0);
+          if (!streaming || cancelled) return;
+          const archive = archivePlaybackSetupProgress(job, start, reportedCompleted) || {};
+          const event = { type: 'progress', completed: reportedCompleted, ...archive, ...details };
+          const serialized = JSON.stringify(event);
+          if (serialized !== lastProgress) { lastProgress = serialized; res.write(serialized + '\n'); }
+        };
         req.on('close', () => { if (!delivered) { cancelled = true; void session?.close().catch(() => {}); } });
-        if (streaming) { res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store', 'x-accel-buffering': 'no' }); report(0); }
+        if (streaming) {
+          res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+          report(0);
+          progressTimer = setInterval(() => report(reportedCompleted), 1000);
+          progressTimer.unref();
+        }
         try {
           session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report), onClose: () => hlsSessions.delete(id) });
           hlsSessions.set(id, { jobId, session });
@@ -1730,7 +1771,7 @@ export async function handleRequest(req, res) {
           await session?.close();
           if (streaming) { if (!cancelled) res.end(JSON.stringify({ type: 'error', error: error.message }) + '\n'); return; }
           throw error;
-        }
+        } finally { clearInterval(progressTimer); }
       }
       const entry = hlsSessions.get(sessionId);
       if (!entry || entry.jobId !== jobId) return json(res, 404, { error: 'Playback segments have expired.' });
