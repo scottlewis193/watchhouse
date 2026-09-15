@@ -580,9 +580,7 @@ export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
 }
 export function shouldCacheDirectPlayback(job, settings = {}) {
-  // A later timeline hole cannot be known from a live stream's opening probe.
-  // Opt-in repair therefore prepares and scans the complete release first.
-  return Boolean(job.offlineDownload || settings.repairVideoTimeline);
+  return Boolean(job.offlineDownload);
 }
 export function shouldFinalizeCachedPlayback(job, strategy) {
   return Boolean((job.prepareAhead || job.offlineDownload) && strategy !== 'raw');
@@ -1008,13 +1006,15 @@ function playbackInspection(job, settings, input) {
       if (saved && (saved.audioIndex === null || Number.isInteger(saved.audioIndex) && saved.audioIndex >= 0) && Number.isFinite(saved.duration) && saved.duration >= 0) { publish(saved); return saved; }
       jobEvent(job, 'metadata-start', 'Reading source audio and duration metadata.');
       const inputOptions = job.progressiveArchive && !job.archiveSource?.complete ? ['-seekable', '0'] : [];
-      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
-      const metadata = { audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0 };
-      const videoIndex = probe.streams?.find(stream => stream.codec_type === 'video')?.index;
+      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
+      const video = probe.streams?.find(stream => stream.codec_type === 'video');
+      const metadata = { audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0, videoFrameRate: frameRate(video) };
+      const videoIndex = video?.index;
       publish(metadata);
       jobEvent(job, 'metadata-ready', 'Source audio and duration identified.');
       const timeline = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-read_intervals', '0%+20', '-show_packets', '-show_entries', 'packet=stream_index,dts_time', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
-      if (playbackTimelineHasGap(timeline.packets || [], videoIndex, metadata.audioIndex)) {
+      const issue = playbackTimelineIssue(timeline.packets || [], videoIndex, metadata.audioIndex);
+      if (issue && !(issue.type === 'video-only' && settings.repairVideoTimeline && metadata.videoFrameRate)) {
         throw Object.assign(new Error('This release has a gap in its opening audio and video timeline. Trying another release.'), { code: 'INVALID_MEDIA_TIMELINE' });
       }
       jobEvent(job, 'timeline-validated', 'Opening audio and video timeline validated.');
@@ -1026,22 +1026,25 @@ function playbackInspection(job, settings, input) {
 export async function startHlsConversion(job, settings, start, directory, onProgress = () => {}, getPacing = hlsPacing, getInspection = playbackInspection) {
   const cached = job.mode === 'cached-convert';
   let rangeSource;
-  const strategy = seekPlaybackStrategy(job.strategy === 'raw' ? 'remux' : job.strategy, start);
+  const requestedStrategy = seekPlaybackStrategy(job.strategy === 'raw' ? 'remux' : job.strategy, start);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   let producer;
   try {
     const growing = job.progressiveArchive && !job.archiveSource?.complete;
     const forwardSeek = growing && start > 0 && videoType(job.file.subject) === 'video/x-matroska';
     rangeSource = !cached ? await openPostedRangeServer(job, settings, undefined, { forwardSeek }) : null;
-    const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
     const input = cached ? job.sourcePath : rangeSource.url;
     const inspection = getInspection(job, settings, input);
     const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing && !forwardSeek ? start : 0)]);
+    const repairVideoFrameRate = settings.repairVideoTimeline ? metadata.videoFrameRate : null;
+    const strategy = repairVideoFrameRate ? 'transcode' : requestedStrategy;
+    const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap);
+    if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
     if (job.media?.type === 'tv') assertCompleteEpisodeDuration(metadata.duration, Number(job.media.durationHint));
     const { audioIndex } = metadata;
     job.sourceDuration = metadata.duration;
-    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration);
+    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration, repairVideoFrameRate);
     if (growing) {
       // Matroska can build a seek index from available clusters. Ignore its
       // tail index so accurate input seeking never waits for full extraction.
@@ -1326,7 +1329,7 @@ export async function writePostedFiles(files, settings, job, state, maximum = 85
   return downloadPostedFiles(files, settings, job, state, { connect, decode: decodeYenc, progress: () => updateDownload(job, state, maximum) });
 }
 async function tryProgressiveArchive(job, settings, archives) {
-  if (!settings.repairVideoTimeline && !job.progressiveArchiveDisabled && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && progressiveArchiveVolumes(archives)) {
+  if (!job.progressiveArchiveDisabled && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && progressiveArchiveVolumes(archives)) {
     setJob(job, 'selecting', 'Opening the archive for progressive playback…', 45);
     try {
       job.archives = archives;

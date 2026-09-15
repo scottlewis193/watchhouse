@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ffmpegArgs, inspectPlaybackSource, playbackTimelineHasGap, validateOfflinePlaybackRecord } from '../src/lib/server/streamer.js';
+import { ffmpegArgs, inspectPlaybackSource, playbackTimelineHasGap, startHlsConversion, validateOfflinePlaybackRecord } from '../src/lib/server/streamer.js';
+import { createHlsSession } from '../src/lib/server/hls-session.js';
 
 const run = promisify(execFile);
 
@@ -87,4 +88,19 @@ test('legacy offline records request repair without being marked validated first
   assert.equal(result.timelineValidated, undefined);
   assert.equal(result.timelineRepairRequired, true);
   assert.equal(result.repairVideoFrameRate, 25);
+});
+
+test('repair mode keeps direct playback segmented instead of requiring a full cached download', { timeout: 15000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'watchhouse-live-repair-'));
+  let session;
+  try {
+    const path = join(root, 'live-gap.mkv');
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25:duration=10',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=10', '-vf', "select='not(between(t,3,4.4))'",
+      '-fps_mode', 'vfr', '-c:v', 'libx264', '-c:a', 'aac', '-metadata:s:a:0', 'language=eng', path]);
+    const job = { mode: 'cached-convert', sourcePath: path, strategy: 'remux', release: 'SDR', events: [] };
+    session = await createHlsSession({ root, produce: directory => startHlsConversion(job, { repairVideoTimeline: true }, 0, directory) });
+    await session.ready();
+    await assert.doesNotReject(inspectPlaybackSource(join(session.directory, 'index.m3u8'), 2, { fullTimeline: true }));
+  } finally { await session?.close(); await rm(root, { recursive: true, force: true }); }
 });

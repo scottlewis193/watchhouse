@@ -268,7 +268,7 @@ test('makes persistent and prepare-ahead downloads fully browser-ready before pl
   assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'raw'), false);
   assert.equal(shouldCacheDirectPlayback({ prepareAhead: true }), false);
   assert.equal(shouldCacheDirectPlayback({}), false);
-  assert.equal(shouldCacheDirectPlayback({}, { repairVideoTimeline: true }), true);
+  assert.equal(shouldCacheDirectPlayback({}, { repairVideoTimeline: true }), false);
   assert.equal(preparationDownloadSettings({ prepareAhead: true }, { maxConnections: 12 }).maxConnections, 2);
   assert.equal(preparationDownloadSettings({}, { maxConnections: 12 }).maxConnections, 12);
 });

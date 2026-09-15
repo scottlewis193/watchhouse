@@ -146,7 +146,7 @@
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.repairVideoTimeline} />
-            <span><span class="block text-sm font-medium">Repair video timeline gaps</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Download and scan the complete release before playback. If video timestamps contain a hole while audio continues, Watchhouse keeps the release and performs a slower one-off conversion that interpolates the missing interval against the audio clock. Disabled by default.</span></span>
+            <span><span class="block text-sm font-medium">Repair video timeline gaps</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Normalise video timing while streaming instead of downloading the complete release first. Downloaded copies are fully scanned and repaired only when a video timestamp hole is found while audio continues. Uses additional CPU and is disabled by default.</span></span>
           </label>
 
           <label class="mt-5 grid max-w-sm gap-2">
