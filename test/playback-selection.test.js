@@ -196,6 +196,20 @@ test('unsupported progressive archives retain the original ranked full-download 
   assert.deepEqual(downloaded, ['Preferred']);
 });
 
+test('background next-episode preparation accepts an archive release', async () => {
+  const playback = { ...job(), prepareAhead: true, backgroundFor: 'current-playback' };
+  const downloaded = [];
+  await preparePlayback(playback, { backgroundJob: playback }, {
+    search: async () => [{ title: 'Silo S01E02 archive' }],
+    load: async () => nzb('rar'),
+    health: { has: async () => false },
+    plans: createPlaybackPlanCache(),
+    archive: async job => { downloaded.push(job.release); job.status = 'ready'; job.mode = 'cached'; }
+  });
+  assert.equal(playback.status, 'ready', playback.message);
+  assert.deepEqual(downloaded, ['Silo S01E02 archive']);
+});
+
 test('known unreadable archives are skipped without paying for a doomed full download', async () => {
   const playback = job(), downloaded = [];
   await preparePlayback(playback, {}, {

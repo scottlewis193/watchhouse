@@ -1403,7 +1403,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;
         }
-        if (archives.length && !job.backgroundFor && !job.speculative && (!job.rejectedReleases?.size || job.downloadReplacement || progressive)) {
+        if (archives.length && !job.speculative && (!job.rejectedReleases?.size || job.downloadReplacement || progressive)) {
           const choice = { archives, release: release.title, releaseKey: releaseIdentity(release) };
           archiveChoices.push(choice);
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
