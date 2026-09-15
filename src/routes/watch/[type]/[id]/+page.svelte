@@ -907,6 +907,12 @@
 {/snippet}
 
 <section class="watch-page">
+  {#if cacheError || cacheMessage}
+    <div class="watch-toast-stack" aria-live="polite" aria-atomic="true">
+      {#if cacheError}<div class="alert alert-error"><span>{cacheError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss cache error" onclick={() => { cacheError = ''; }}>Dismiss</button></div>{/if}
+      {#if cacheMessage}<div class="alert alert-success"><span>{cacheMessage}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss cache message" onclick={() => { cacheMessage = ''; }}>Dismiss</button></div>{/if}
+    </div>
+  {/if}
   <div class="watch-hero" class:watch-hero-playing={playbackUi.inPlayer} class:watch-hero-revealing={playerRevealing}>
     <div class="watch-hero-art" aria-hidden="true">
       {#if titleDetails.backdrop || media.poster}<img src={titleDetails.backdrop || media.poster} alt="" />{/if}
@@ -916,7 +922,7 @@
       {@render watchToolbar(playbackUi.inPlayer)}
     {/if}
 
-    {#if downloadError || bulkError || cacheError || cacheMessage}<div class="watch-hero-alerts">{#if downloadError}<div class="alert alert-error"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}{#if bulkError}<div class="alert alert-error"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}{#if cacheError}<div class="alert alert-error"><span>{cacheError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss cache error" onclick={() => { cacheError = ''; }}>Dismiss</button></div>{/if}{#if cacheMessage}<div class="alert alert-success"><span>{cacheMessage}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss cache message" onclick={() => { cacheMessage = ''; }}>Dismiss</button></div>{/if}</div>{/if}
+    {#if downloadError || bulkError}<div class="watch-hero-alerts">{#if downloadError}<div class="alert alert-error"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}{#if bulkError}<div class="alert alert-error"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}</div>{/if}
 
     {#if playbackUi.showIdentity}
       <div class="watch-identity" class:watch-identity-departing={playerRevealing}>

@@ -59,3 +59,11 @@ test('the watch toolbar exposes a confirmed per-item cache action', () => {
   assert.match(source, /watch progress and offline downloads will be kept/);
   assert.match(source, /api\.delete\('\/api\/cache', item\)/);
 });
+
+test('cache feedback uses a fixed toast instead of the hero alert position', () => {
+  const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
+  const styles = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(source, /class="watch-toast-stack"/);
+  assert.match(source, /class="watch-toast-stack"[^>]*aria-live="polite"/);
+  assert.match(styles, /\.watch-toast-stack\s*\{[^}]*position:\s*fixed;/s);
+});
