@@ -958,6 +958,32 @@ test('detects a working AMD or Intel VAAPI render device', async () => {
   assert.ok(attempts[0].includes('h264_vaapi'));
 });
 
+test('prefers a working NVIDIA NVENC device over VAAPI', async () => {
+  const attempts = [];
+  const acceleration = await detectVideoAcceleration({
+    devices: ['/dev/dri/renderD128'],
+    exists: device => ['/dev/nvidia0', '/dev/dri/renderD128'].includes(device),
+    execute: async (_command, args) => { attempts.push(args); }
+  });
+  assert.deepEqual(acceleration, { kind: 'nvenc' });
+  assert.equal(attempts.length, 1);
+  assert.ok(attempts[0].includes('h264_nvenc'));
+});
+
+test('falls through to VAAPI when an NVIDIA device cannot encode', async () => {
+  const attempts = [];
+  const acceleration = await detectVideoAcceleration({
+    devices: ['/dev/dri/renderD128'],
+    exists: device => ['/dev/nvidia0', '/dev/dri/renderD128'].includes(device),
+    execute: async (_command, args) => {
+      attempts.push(args);
+      if (args.includes('h264_nvenc')) throw new Error('NVENC unavailable');
+    }
+  });
+  assert.deepEqual(acceleration, { kind: 'vaapi', device: '/dev/dri/renderD128' });
+  assert.equal(attempts.length, 2);
+});
+
 test('checks primary DRM cards when a host exposes no render node', async () => {
   const checked = [], attempts = [];
   const acceleration = await detectVideoAcceleration({
@@ -992,6 +1018,26 @@ test('uses VAAPI decode and encode for SDR transcodes', () => {
   assert.ok(args.includes('h264_vaapi'));
   assert.ok(!args.includes('libx264'));
   assert.equal(playbackAccelerationLabel('transcode', false, acceleration), 'GPU · VAAPI decode + encode');
+});
+
+test('uses NVIDIA NVENC encoding for SDR transcodes', () => {
+  const acceleration = { kind: 'nvenc' };
+  const args = ffmpegArgs('transcode', 'pipe:0', 'pipe:1', true, 0, 2, false, false, acceleration);
+  assert.ok(args.includes('h264_nvenc'));
+  assert.ok(args.includes('p4'));
+  assert.ok(!args.includes('libx264'));
+  assert.ok(!args.includes('-hwaccel'));
+  assert.equal(playbackAccelerationLabel('transcode', false, acceleration), 'GPU · NVENC encode');
+});
+
+test('uses CPU tone mapping with NVIDIA NVENC encoding for HDR transcodes', () => {
+  const acceleration = { kind: 'nvenc' };
+  const args = ffmpegArgs('transcode', 'pipe:0', 'pipe:1', true, 0, 2, false, true, acceleration);
+  const filter = args[args.indexOf('-vf') + 1];
+  assert.match(filter, /tonemap=tonemap=hable/);
+  assert.match(filter, /format=yuv420p$/);
+  assert.ok(args.includes('h264_nvenc'));
+  assert.equal(playbackAccelerationLabel('transcode', true, acceleration), 'GPU · NVENC encode + CPU HDR tone mapping');
 });
 
 test('uses CPU tone mapping with VAAPI encoding for HDR transcodes', () => {

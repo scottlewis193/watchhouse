@@ -60,6 +60,26 @@ only the primary DRM device. Playback diagnostics should then report
 `GPU · VAAPI decode + encode` for SDR transcodes. If `/dev/dri` is not mounted,
 Watchhouse safely falls back to software conversion.
 
+For an NVIDIA GPU, install the NVIDIA driver and NVIDIA Container Toolkit on
+the Docker host, then expose the GPU through the NVIDIA runtime:
+
+```sh
+docker run -d --name watchhouse \
+  --gpus all \
+  -e NVIDIA_DRIVER_CAPABILITIES=video,compute,utility \
+  -p 3000:3000 \
+  -e ORIGIN=http://localhost:3000 \
+  -v watchhouse-data:/app/data \
+  <username>/watchhouse:latest
+```
+
+Watchhouse probes `h264_nvenc` at startup and uses it when the NVIDIA runtime
+has supplied a working GPU and encode libraries. Video decoding and HDR tone
+mapping remain on the CPU for broad GPU-generation compatibility; H.264
+encoding runs on NVENC. Playback diagnostics then report `GPU · NVENC encode`.
+If Watchhouse runs inside a VM, the physical GPU must first be passed through
+to that VM and the NVIDIA driver and Container Toolkit installed in the guest.
+
 To build locally (including the test suite):
 
 ```sh

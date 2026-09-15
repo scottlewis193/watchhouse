@@ -1,11 +1,11 @@
 #!/bin/sh
 set -eu
 
-# Docker preserves the host GID on mounted DRM devices. Add the unprivileged app
+# Docker preserves the host GID on mounted GPU devices. Add the unprivileged app
 # user to those groups at startup, then drop root before launching Watchhouse.
 if [ "$(id -u)" = "0" ]; then
   device_groups=''
-  for device in /dev/dri/renderD* /dev/dri/card*; do
+  for device in /dev/dri/renderD* /dev/dri/card* /dev/nvidia*; do
     [ -e "$device" ] || continue
     device_gid=$(stat -c '%g' "$device")
     device_group=$(getent group "$device_gid" | cut -d: -f1)

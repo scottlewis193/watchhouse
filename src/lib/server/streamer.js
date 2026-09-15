@@ -436,6 +436,19 @@ const VAAPI_DEVICES = [
 ];
 let videoAccelerationDetection;
 export async function detectVideoAcceleration({ devices = VAAPI_DEVICES, exists = existsSync, execute = runOutput, probeTimeoutMs = 5000 } = {}) {
+  if (exists('/dev/nvidia0')) {
+    const controller = new AbortController();
+    let timeout;
+    try {
+      const probe = Promise.resolve(execute('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=size=128x128:rate=1', '-frames:v', '1', '-c:v', 'h264_nvenc', '-f', 'null', '-'], undefined, controller.signal));
+      void probe.catch(() => {});
+      await Promise.race([probe, new Promise((_, reject) => {
+        timeout = setTimeout(() => { controller.abort(); reject(new Error('NVENC probe timed out')); }, probeTimeoutMs);
+      })]);
+      return { kind: 'nvenc' };
+    } catch {}
+    finally { clearTimeout(timeout); }
+  }
   for (const device of devices) {
     if (!exists(device)) continue;
     const controller = new AbortController();
@@ -486,6 +499,7 @@ export function seekPlaybackStrategy(strategy, start = 0) {
 }
 export function playbackAccelerationLabel(strategy, toneMap = false, acceleration = null) {
   if (['raw', 'remux'].includes(strategy)) return 'Not needed · video stream copy';
+  if (acceleration?.kind === 'nvenc') return toneMap ? 'GPU · NVENC encode + CPU HDR tone mapping' : 'GPU · NVENC encode';
   if (acceleration?.kind === 'vaapi') return toneMap ? 'GPU encode · CPU HDR tone mapping' : 'GPU · VAAPI decode + encode';
   return toneMap ? 'CPU · HDR tone mapping' : 'CPU · software transcode';
 }
@@ -513,13 +527,20 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
     ? ['-reconnect', '1', '-reconnect_delay_max', '2', '-rw_timeout', '15000000'] : [];
   const transcodeVideo = strategy !== 'remux' || toneMap;
   const vaapi = transcodeVideo && acceleration?.kind === 'vaapi';
+  const nvenc = transcodeVideo && acceleration?.kind === 'nvenc';
   const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi'] : [];
   const filter = toneMap
     ? `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`
     : vaapi ? 'scale_vaapi=format=nv12' : '';
   const filterArgs = filter ? ['-vf', filter] : [];
   const colorArgs = toneMap ? ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] : [];
-  const videoCodecArgs = !transcodeVideo ? ['-c:v', 'copy'] : vaapi ? ['-c:v', 'h264_vaapi', '-rc_mode', 'CQP', '-qp', '22'] : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p'];
+  const videoCodecArgs = !transcodeVideo
+    ? ['-c:v', 'copy']
+    : vaapi
+      ? ['-c:v', 'h264_vaapi', '-rc_mode', 'CQP', '-qp', '22']
+      : nvenc
+        ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '22', '-b:v', '0', '-pix_fmt', 'yuv420p']
+        : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p'];
   return ['-y', '-loglevel', 'error', ...hardwareInputArgs, ...reconnect, ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), ...filterArgs, ...colorArgs, ...videoCodecArgs, '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
 }
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
