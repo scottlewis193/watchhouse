@@ -969,6 +969,21 @@ test('checks primary DRM cards when a host exposes no render node', async () => 
   assert.equal(attempts.length, 1);
 });
 
+test('a hung VAAPI device probe cannot block playback preparation forever', async () => {
+  const detection = detectVideoAcceleration({
+    devices: ['/dev/dri/card0'],
+    exists: () => true,
+    probeTimeoutMs: 10,
+    execute: async () => new Promise(() => {})
+  });
+  const outcome = await Promise.race([
+    detection.then(result => ({ settled: true, result })),
+    new Promise(resolve => setTimeout(() => resolve({ settled: false }), 50))
+  ]);
+  assert.equal(outcome.settled, true);
+  assert.equal(outcome.result, null);
+});
+
 test('uses VAAPI decode and encode for SDR transcodes', () => {
   const acceleration = { kind: 'vaapi', device: '/dev/dri/renderD128' };
   const args = ffmpegArgs('transcode', 'pipe:0', 'pipe:1', true, 0, 2, false, false, acceleration);

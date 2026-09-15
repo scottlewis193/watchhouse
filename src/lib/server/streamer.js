@@ -435,13 +435,20 @@ const VAAPI_DEVICES = [
   ...Array.from({ length: 8 }, (_, index) => `/dev/dri/card${index}`)
 ];
 let videoAccelerationDetection;
-export async function detectVideoAcceleration({ devices = VAAPI_DEVICES, exists = existsSync, execute = run } = {}) {
+export async function detectVideoAcceleration({ devices = VAAPI_DEVICES, exists = existsSync, execute = runOutput, probeTimeoutMs = 5000 } = {}) {
   for (const device of devices) {
     if (!exists(device)) continue;
+    const controller = new AbortController();
+    let timeout;
     try {
-      await execute('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-vaapi_device', device, '-f', 'lavfi', '-i', 'color=size=128x128:rate=1', '-frames:v', '1', '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-f', 'null', '-']);
+      const probe = Promise.resolve(execute('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-vaapi_device', device, '-f', 'lavfi', '-i', 'color=size=128x128:rate=1', '-frames:v', '1', '-vf', 'format=nv12,hwupload', '-c:v', 'h264_vaapi', '-f', 'null', '-'], undefined, controller.signal));
+      void probe.catch(() => {});
+      await Promise.race([probe, new Promise((_, reject) => {
+        timeout = setTimeout(() => { controller.abort(); reject(new Error(`VAAPI probe timed out for ${device}`)); }, probeTimeoutMs);
+      })]);
       return { kind: 'vaapi', device };
     } catch {}
+    finally { clearTimeout(timeout); }
   }
   return null;
 }
