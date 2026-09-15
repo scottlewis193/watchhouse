@@ -34,6 +34,13 @@ export function createSegmentCache(maximumBytes = 64 * 1024 * 1024) {
       const entry = { owner, index, bytes };
       owner.set(index, entry); entries.set(entry, true); size += bytes.length;
       while (size > maximumBytes) remove(entries.keys().next().value);
+    },
+    delete(source) {
+      const owner = sources.get(source);
+      if (!owner) return;
+      for (const entry of [...owner.values()]) remove(entry);
+      sources.delete(source);
+      inflight.delete(source);
     }
   };
   return cache;

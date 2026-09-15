@@ -19,6 +19,7 @@ export function playbackSourceKey(file, settings) {
   }
   return entry.id;
 }
+const scopedPlaybackSourceKey = (file, scope) => digest(JSON.stringify([scope, file.subject, file.segments.map(s => [s.id, s.decodedBytes])]));
 
 // Small metadata is written atomically. No credentials or NZB URLs are stored.
 export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 1024, maximumRecords = 100, now = Date.now } = {}) {
@@ -89,6 +90,25 @@ export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 10
       const prefix = `plan:${offlineMediaKey(media)}:`;
       for (const key of records.keys()) if (key.startsWith(prefix)) records.delete(key);
       await flush();
+    },
+    async deleteMedia(media) {
+      await initialize();
+      await initializeBytes();
+      await byteWrites.catch(() => {});
+      const prefix = `plan:${offlineMediaKey(media)}:`;
+      const sources = [];
+      for (const [key, entry] of [...records]) {
+        if (!key.startsWith(prefix)) continue;
+        const file = entry?.value?.file;
+        if (file?.segments?.length) sources.push({ file, id: scopedPlaybackSourceKey(file, key.slice(prefix.length)) });
+        records.delete(key);
+      }
+      for (const source of sources) {
+        records.delete(`probe:${source.id}`);
+        for (let index = 0; index < source.file.segments.length; index++) await removeArticle(digest(`${source.id}:${index}`));
+      }
+      await flush();
+      return { sources: sources.length };
     },
     getProbe: (file, settings) => getRecord(`probe:${playbackSourceKey(file, settings)}`, playbackRetention(settings)),
     setProbe: (file, settings, metadata) => setRecord(`probe:${playbackSourceKey(file, settings)}`, metadata, playbackRetention(settings)),

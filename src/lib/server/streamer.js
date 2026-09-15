@@ -1,6 +1,6 @@
 import { readFile, mkdir, writeFile, mkdtemp, readdir, rm, rename, stat } from 'node:fs/promises';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
@@ -106,6 +106,46 @@ async function clearExpiredPlaybackCache() {
     if (activeDirectories.has(directory)) return;
     if ((await stat(directory)).mtimeMs < cutoff) await rm(directory, { recursive: true, force: true });
   }));
+}
+function playbackCacheDirectory(directory, root) {
+  if (!directory || !basename(directory).startsWith('playback-')) return false;
+  const path = relative(resolve(root), resolve(directory));
+  return path && !path.startsWith('..') && !isAbsolute(path);
+}
+export async function clearPlaybackCacheForMedia(media, {
+  plans = playbackPlans, archivePlans = archiveResumePlans, persistence = playbackPersistence,
+  health = releaseHealth, jobs = playbackJobs, sessions = hlsSessions,
+  inspections = playbackInspections, segments = resumeSegments, poster = posterPreparation,
+  root = PLAYBACK_CACHE_ROOT, remove = rm
+} = {}) {
+  const key = offlineMediaKey(media);
+  if (!key || media.type === 'tv' && (!Number.isInteger(Number(media.season)) || !Number.isInteger(Number(media.episode)))) {
+    throw new Error('Choose an individual movie or episode to clear.');
+  }
+  poster.cancel();
+  plans.delete(media);
+  archivePlans.delete(media);
+  const matched = [...jobs].filter(([, job]) => offlineMediaKey(job.media) === key);
+  const ids = new Set(matched.map(([id]) => id));
+  let closedSessions = 0;
+  for (const [id, entry] of [...sessions]) {
+    if (!ids.has(entry.jobId)) continue;
+    await entry.session.close();
+    sessions.delete(id);
+    closedSessions++;
+  }
+  const directories = new Set();
+  for (const [id, job] of matched) {
+    cancelDownloadJob(job);
+    await job.archiveSource?.close();
+    if (job.file) { inspections.delete(job.file); segments.delete(job.file); }
+    if (playbackCacheDirectory(job.directory, root)) directories.add(job.directory);
+    jobs.delete(id);
+  }
+  const persisted = await persistence.deleteMedia(media);
+  await health.delete(media);
+  for (const directory of directories) await remove(directory, { recursive: true, force: true });
+  return { jobs: matched.length, sessions: closedSessions, sources: persisted?.sources || 0, directories: directories.size };
 }
 const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {}), CACHE_SWEEP_MS);
 cacheSweep.unref();
@@ -1468,6 +1508,12 @@ export async function handleRequest(req, res) {
     if (req.method === 'PUT' && url.pathname === '/api/state/library') { const input = await body(req); return json(res, 200, await mediaState.setLibrary(input.media, input.inLibrary)); }
     if (req.method === 'PUT' && url.pathname === '/api/state/progress/bulk') { const input = await body(req); return json(res, 200, await mediaState.setProgressMany(input.media, input)); }
     if (req.method === 'PUT' && url.pathname === '/api/state/progress') { const input = await body(req); return json(res, 200, await mediaState.setProgress(input.media, input)); }
+    if (req.method === 'DELETE' && url.pathname === '/api/cache') {
+      const media = await body(req);
+      if (!media.title || !['movie', 'tv'].includes(media.type) || !Number.isInteger(Number(media.id))) return json(res, 400, { error: 'A valid movie or episode is required.' });
+      if (media.type === 'tv' && (!Number.isInteger(Number(media.season)) || !Number.isInteger(Number(media.episode)))) return json(res, 400, { error: 'Select an individual episode first.' });
+      return json(res, 200, { cleared: await clearPlaybackCacheForMedia(media) });
+    }
     if (req.method === 'GET' && url.pathname === '/api/offline') {
       const records = await readOfflineRecords();
       return json(res, 200, { downloads: [...records.values()].map(publicOfflineRecord), jobs: [...offlineSeriesJobs.values()].filter(job => job.status !== 'ready').map(publicOfflineJob).concat([...offlineJobs.values()].filter(job => job.status !== 'ready').map(publicOfflineJob)) });

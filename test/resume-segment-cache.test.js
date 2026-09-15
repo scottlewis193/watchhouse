@@ -34,6 +34,16 @@ test('resume byte cache evicts least recently used entries across sources within
   assert.equal(cache.get(first, 0).toString(), 'DD');
 });
 
+test('resume byte cache clears one source without evicting another', async () => {
+  const { createSegmentCache } = await import('../src/lib/server/segment-cache.js');
+  const cache = createSegmentCache(8), first = {}, second = {};
+  cache.set(first, 0, Buffer.from('AAAA'));
+  cache.set(second, 0, Buffer.from('BBBB'));
+  cache.delete(first);
+  assert.equal(cache.get(first, 0), undefined);
+  assert.equal(cache.get(second, 0).toString(), 'BBBB');
+});
+
 test('overlapping playback sessions share an article that is still downloading', async () => {
   let reads = 0, release, firstRead;
   const gate = new Promise(resolve => { release = resolve; });

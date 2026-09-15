@@ -43,3 +43,26 @@ test('disk bytes are globally bounded and corruption is a cache miss', async () 
     assert.equal(await cache.getSegment(file, 1, {}), null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('clearing one title removes its saved plan, probe and source bytes only', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'resume-cache-clear-'));
+  const settings = { usenetHost: 'provider' };
+  const firstMedia = { type: 'movie', id: 1 }, secondMedia = { type: 'tv', id: 2, season: 1, episode: 3 };
+  const firstFile = { subject: 'first.mkv', segments: [{ id: 'one', decodedBytes: 4 }] };
+  const secondFile = { subject: 'second.mkv', segments: [{ id: 'two', decodedBytes: 4 }] };
+  const cache = createPlaybackPersistence(root);
+  try {
+    for (const [media, file, bytes] of [[firstMedia, firstFile, 'AAAA'], [secondMedia, secondFile, 'BBBB']]) {
+      await cache.setPlan(media, settings, { file, release: file.subject, strategy: 'transcode' });
+      await cache.setProbe(file, settings, { duration: 100 });
+      cache.setSegment(file, 0, settings, Buffer.from(bytes));
+    }
+    await cache.flush();
+    assert.deepEqual(await cache.deleteMedia(firstMedia), { sources: 1 });
+    assert.equal(await cache.getPlan(firstMedia, settings), null);
+    assert.equal(await cache.getProbe(firstFile, settings), null);
+    assert.equal(await cache.getSegment(firstFile, 0, settings), null);
+    assert.equal((await cache.getSegment(secondFile, 0, settings)).toString(), 'BBBB');
+    assert.equal((await cache.getPlan(secondMedia, settings)).release, 'second.mkv');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

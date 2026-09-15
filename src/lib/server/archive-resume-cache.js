@@ -38,6 +38,10 @@ export function createArchiveResumeCache({ ttl = 5 * 60 * 1000, maximum = 2, max
       touch(id, entry);
       while (entries.size > maximum || [...entries.values()].reduce((sum, e) => sum + e.bytes, 0) > maximumBytes) remove(entries.keys().next().value);
     },
+    delete(media) {
+      const prefix = `${offlineMediaKey(media)}:`;
+      for (const id of [...entries.keys()]) if (id.startsWith(prefix)) remove(id);
+    },
     clear() { for (const id of entries.keys()) remove(id); }
   };
 }

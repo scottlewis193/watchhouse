@@ -21,6 +21,9 @@ export function createValidatedPreparationCache() {
         void entry.validated.catch(() => { if (variants.get(scope) === entry) variants.delete(scope); });
       }
       return variants.get(scope);
+    },
+    delete(source) {
+      sources.delete(source);
     }
   };
 }

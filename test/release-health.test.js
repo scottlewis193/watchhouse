@@ -29,3 +29,16 @@ test('upload identity separates reposts and stays stable across API key changes'
   assert.notEqual(one,releaseIdentity({title:'Same title',nzbUrl:'https://indexer.example/api?id=two'}));
   assert.match(one,/^upload:[a-f0-9]{64}$/);
 });
+
+test('clears remembered failures for only the selected episode', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'release-health-clear-'));
+  const settings = { usenetHost: 'one' }, first = { type: 'tv', id: 1, season: 1, episode: 1 }, second = { ...first, episode: 2 };
+  try {
+    const store = createReleaseHealthStore(join(dir, 'health.json'));
+    await store.reject(settings, first, 'broken-one');
+    await store.reject(settings, second, 'broken-two');
+    await store.delete(first);
+    assert.equal(await store.has(settings, first, 'broken-one'), false);
+    assert.equal(await store.has(settings, second, 'broken-two'), true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

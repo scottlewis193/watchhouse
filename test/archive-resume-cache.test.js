@@ -55,3 +55,15 @@ test('rejected archives and download requests do not reuse the streaming cache',
     if (!flags.manualRelease) assert.equal(searched, true);
   }
 });
+
+test('clears retained extraction for only the selected episode', () => {
+  const cache = createArchiveResumeCache(), first = fixture(), second = fixture(), other = { ...media, episode: 3 };
+  cache.set(media, 'scope', first.plan);
+  cache.set(other, 'scope', second.plan);
+  cache.delete(media);
+  assert.equal(first.leases(), 0);
+  assert.equal(second.leases(), 1);
+  assert.equal(cache.get(media, 'scope'), undefined);
+  assert.equal(cache.get(other, 'scope'), second.plan);
+  cache.clear();
+});

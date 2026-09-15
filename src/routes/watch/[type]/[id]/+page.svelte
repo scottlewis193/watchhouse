@@ -24,6 +24,7 @@
   let currentMedia = $state(null), nextMedia = $state(null), nextJob = $state(null), showUpNext = $state(false), autoPlayNextEpisode = $state(true), downloadNextEpisode = $state(false), autoPlayNext = $state(true), smartAutoplay = $state(false), upNextSeconds = $state(30), upNextReason = $state('');
   let library = $state([]), progressEntries = $state([]);
   let offlineMode = $state(false), offlineDownloads = $state([]), offlineJobs = $state([]), downloadError = $state('');
+  let cacheClearing = $state(false), cacheMessage = $state(''), cacheError = $state('');
   let resumeStreamOffset = $state(0), resumeStarting = $state(false), streamRestarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
   let fallbackPending = false;
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
@@ -136,6 +137,20 @@
     downloadError = '';
     try { const job = await api.post('/api/offline', item); if (job?.id) offlineJobs = [...offlineJobs.filter(existing => existing.id !== job.id), job]; scheduleDownloadPoll(); }
     catch (error) { downloadError = error.message; }
+  }
+
+  async function clearPlaybackCache(inPlayer = false) {
+    const item = inPlayer ? currentMedia : selectedMediaItem();
+    if (!item || item.type === 'tv' && (!item.season || !item.episode)) return;
+    const name = item.type === 'tv' ? `S${String(item.season).padStart(2, '0')}E${String(item.episode).padStart(2, '0')} ${item.episodeTitle || ''}`.trim() : item.title;
+    if (!confirm(`Clear cached playback data for ${name}?\n\nYour watch progress and offline downloads will be kept.`)) return;
+    cacheClearing = true; cacheMessage = ''; cacheError = '';
+    try {
+      if (inPlayer) await returnToHero();
+      await api.delete('/api/cache', item);
+      cacheMessage = `Cleared cached playback data for ${name}.`;
+    } catch (error) { cacheError = error.message; }
+    finally { cacheClearing = false; }
   }
 
   async function episodesForSeason(season) {
@@ -857,6 +872,11 @@
       {/if}
       {/if}
       <button class="player-toolbar-button" class:player-toolbar-button-active={isWatched()} onclick={toggleWatched} disabled={media.type === 'tv' && !selectedEpisode} aria-label={isWatched() ? 'Mark unwatched' : 'Mark watched'} title={isWatched() ? 'Mark unwatched' : 'Mark watched'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8.5" />{#if isWatched()}<path d="m8.25 12.15 2.45 2.45 5.05-5.2" />{/if}</svg></button>
+      {#if !offlineMode}
+        <button class="player-toolbar-button" onclick={() => void clearPlaybackCache(inPlayer)} disabled={cacheClearing || media.type === 'tv' && !(inPlayer ? currentMedia?.episode : selectedEpisode)} aria-label={media.type === 'tv' ? 'Clear episode cache' : 'Clear movie cache'} title={media.type === 'tv' ? 'Clear episode cache' : 'Clear movie cache'}>
+          {#if cacheClearing}<span class="loading loading-spinner loading-xs"></span>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><ellipse cx="12" cy="5" rx="7" ry="2.5" /><path d="M5 5v6c0 1.4 3.1 2.5 7 2.5 1.1 0 2.2-.1 3.1-.3M5 11v6c0 1.4 3.1 2.5 7 2.5" /><path d="m16.5 16.5 4 4m0-4-4 4" /></svg>{/if}
+        </button>
+      {/if}
       {#if playbackDiagnostics && inPlayer}
         <button class="player-toolbar-button" class:player-toolbar-button-active={diagnosticsOpen} aria-expanded={diagnosticsOpen} aria-controls="player-diagnostics" onclick={() => { diagnosticsOpen = !diagnosticsOpen; if (diagnosticsOpen) guideOpen = false; showPlayerControls(); }} aria-label="Playback diagnostics" title="Playback diagnostics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3" /><path d="M2.5 19.5h19" /></svg></button>
       {/if}
@@ -896,7 +916,7 @@
       {@render watchToolbar(playbackUi.inPlayer)}
     {/if}
 
-    {#if downloadError || bulkError}<div class="watch-hero-alerts">{#if downloadError}<div class="alert alert-error"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}{#if bulkError}<div class="alert alert-error"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}</div>{/if}
+    {#if downloadError || bulkError || cacheError || cacheMessage}<div class="watch-hero-alerts">{#if downloadError}<div class="alert alert-error"><span>{downloadError}</span><button class="btn btn-sm btn-ghost" onclick={() => { downloadError = ''; }}>Dismiss</button></div>{/if}{#if bulkError}<div class="alert alert-error"><span>{bulkError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss bulk update error" onclick={() => { bulkError = ''; }}>Dismiss</button></div>{/if}{#if cacheError}<div class="alert alert-error"><span>{cacheError}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss cache error" onclick={() => { cacheError = ''; }}>Dismiss</button></div>{/if}{#if cacheMessage}<div class="alert alert-success"><span>{cacheMessage}</span><button class="btn btn-sm btn-ghost" aria-label="Dismiss cache message" onclick={() => { cacheMessage = ''; }}>Dismiss</button></div>{/if}</div>{/if}
 
     {#if playbackUi.showIdentity}
       <div class="watch-identity" class:watch-identity-departing={playerRevealing}>
