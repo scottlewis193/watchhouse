@@ -39,6 +39,7 @@ test('uses entered connection values for a test without overwriting saved secret
 
 test('defaults next-episode autoplay on while preserving an explicit opt-out', () => {
   assert.equal(publicSettings({}).autoPlayNextEpisode, true);
+  assert.equal(publicSettings({}).repairVideoTimeline, false);
   assert.equal(publicSettings({ autoPlayNextEpisode: true }).autoPlayNextEpisode, true);
   assert.equal(publicSettings({ autoPlayNextEpisode: false }).autoPlayNextEpisode, false);
 });
@@ -267,6 +268,7 @@ test('makes persistent and prepare-ahead downloads fully browser-ready before pl
   assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'raw'), false);
   assert.equal(shouldCacheDirectPlayback({ prepareAhead: true }), false);
   assert.equal(shouldCacheDirectPlayback({}), false);
+  assert.equal(shouldCacheDirectPlayback({}, { repairVideoTimeline: true }), true);
   assert.equal(preparationDownloadSettings({ prepareAhead: true }, { maxConnections: 12 }).maxConnections, 2);
   assert.equal(preparationDownloadSettings({}, { maxConnections: 12 }).maxConnections, 12);
 });

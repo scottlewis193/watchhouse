@@ -14,7 +14,7 @@ export function releaseIdentity(release) {
 export function createReleaseHealthStore(path, { now = Date.now, ttl = 24 * 60 * 60 * 1000, maximum = 1000 } = {}) {
   let entries, loading, saving = Promise.resolve();
   const key = (settings, media, release) => createHash('sha256').update(JSON.stringify([
-    settings.usenetHost, settings.usenetPort || 563, settings.usenetUser,
+    settings.usenetHost, settings.usenetPort || 563, settings.usenetUser, Boolean(settings.repairVideoTimeline),
     media.type, media.id || media.title, media.season, media.episode, release
   ])).digest('hex');
   async function load() {

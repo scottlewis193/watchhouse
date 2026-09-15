@@ -151,7 +151,7 @@ const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {})
 cacheSweep.unref();
 export function publicSettings(settings) {
   const { indexerKey, usenetPass, tmdbToken, omdbKey, watchmodeKey, ...safe } = settings;
-  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
+  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, repairVideoTimeline: false, ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
 }
 export function connectionTestSettings(saved, entered = {}) {
   return { ...saved, ...Object.fromEntries(Object.entries(entered).filter(([, value]) => value !== '')) };
@@ -541,7 +541,7 @@ async function configurePlaybackAcceleration(job, strategy, toneMap = false) {
   }
   return acceleration;
 }
-export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null) {
+export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null, repairVideoFrameRate = null) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
   const englishMetadataMaps = [
     '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:m:language:en-US:?', '0:a:m:language:en-GB:?',
@@ -554,13 +554,17 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
   // Without this, a transient source disconnect can corrupt otherwise valid HLS.
   const reconnect = /^https?:\/\//i.test(input)
     ? ['-reconnect', '1', '-reconnect_delay_max', '2', '-rw_timeout', '15000000'] : [];
-  const transcodeVideo = strategy !== 'remux' || toneMap;
+  const repairRate = Number(repairVideoFrameRate);
+  const repairTimeline = Number.isFinite(repairRate) && repairRate > 0;
+  const transcodeVideo = strategy !== 'remux' || toneMap || repairTimeline;
   const vaapi = transcodeVideo && acceleration?.kind === 'vaapi';
   const nvenc = transcodeVideo && acceleration?.kind === 'nvenc';
   const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi'] : [];
-  const filter = toneMap
-    ? `zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`
-    : vaapi ? 'scale_vaapi=format=nv12' : '';
+  const filters = [
+    ...(repairTimeline ? [`minterpolate=fps=${repairRate}:mi_mode=blend`] : []),
+    ...(toneMap ? [`zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`] : vaapi ? ['scale_vaapi=format=nv12'] : [])
+  ];
+  const filter = filters.join(',');
   const filterArgs = filter ? ['-vf', filter] : [];
   const colorArgs = toneMap ? ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] : [];
   const videoCodecArgs = !transcodeVideo
@@ -575,8 +579,10 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
 }
-export function shouldCacheDirectPlayback(job) {
-  return Boolean(job.offlineDownload);
+export function shouldCacheDirectPlayback(job, settings = {}) {
+  // A later timeline hole cannot be known from a live stream's opening probe.
+  // Opt-in repair therefore prepares and scans the complete release first.
+  return Boolean(job.offlineDownload || settings.repairVideoTimeline);
 }
 export function shouldFinalizeCachedPlayback(job, strategy) {
   return Boolean((job.prepareAhead || job.offlineDownload) && strategy !== 'raw');
@@ -606,20 +612,27 @@ async function validatePreparedEpisode(job, path) {
   const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', path]));
   assertCompleteEpisodeDuration(Number(probe.format?.duration), Number(job.media.durationHint));
 }
-async function optimizeCachedVideo(job, path) {
+async function optimizeCachedVideo(job, path, settings = {}) {
   await validatePreparedEpisode(job, path);
-  if (job.backgroundFor) return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy: await cachedPlaybackStrategy(path, job.release) };
-  const strategy = await cachedPlaybackStrategy(path, job.release);
+  const inspection = await inspectPlaybackSource(path, job.untaggedAudioTrack, { fullTimeline: true, repairVideoTimeline: Boolean(settings.repairVideoTimeline) });
+  const repairVideoFrameRate = inspection.repairVideoFrameRate || null;
+  if (repairVideoFrameRate) jobEvent(job, 'timeline-repair', 'A video timestamp hole was found. Rebuilding the missing interval against the audio clock.');
+  if (job.backgroundFor && !repairVideoFrameRate) return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy: await cachedPlaybackStrategy(path, job.release), timelineValidated: true };
+  const strategy = repairVideoFrameRate ? 'transcode' : await cachedPlaybackStrategy(path, job.release);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
-  const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
-  if (strategy === 'raw') return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration };
-  if (shouldFinalizeCachedPlayback(job, strategy)) {
+  // Timeline interpolation is a software filter; keep hardware frames out of
+  // this rare repair path so it behaves consistently on every host.
+  const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap);
+  if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
+  if (strategy === 'raw') return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration, timelineValidated: true };
+  if (repairVideoFrameRate || shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
-    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration), job.directory || ROOT, job);
+    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration, repairVideoFrameRate), job.directory || ROOT, job);
     await validatePreparedEpisode(job, browserPath);
-    return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration };
+    await inspectPlaybackSource(browserPath, job.untaggedAudioTrack, { fullTimeline: true });
+    return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration, timelineValidated: true, timelineRepaired: Boolean(repairVideoFrameRate) };
   }
-  return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy, videoAcceleration: job.videoAcceleration };
+  return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy, videoAcceleration: job.videoAcceleration, timelineValidated: true };
 }
 export async function audioSafeOfflineRecord(record, inspectStrategy = cachedPlaybackStrategy) {
   if (record.mode !== 'cached' || !record.path) return record;
@@ -914,36 +927,75 @@ export function preferredAudioStream(streams, untaggedAudioTrack = 2) {
   return (english || audio[Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1))] || audio[0])?.index ?? null;
 }
 
-export function playbackTimelineHasGap(packets, videoIndex, audioIndex) {
-  const gaps = index => {
+export function playbackTimelineIssue(packets, videoIndex, audioIndex) {
+  const timestamps = index => packets
+    .filter(packet => packet.stream_index === index)
+    .map(packet => Number(packet.dts_time))
+    .filter(Number.isFinite);
+  const gaps = (times, minimum) => {
     const result = [];
     let end;
-    for (const packet of packets) {
-      if (packet.stream_index !== index) continue;
-      const time = Number(packet.dts_time);
-      if (!Number.isFinite(time)) continue;
-      if (end !== undefined && time - end > 3) result.push({ start: end, end: time });
+    for (const time of times) {
+      if (end !== undefined && time - end > minimum) result.push({ start: end, end: time });
       // Demuxers can stretch a frame's reported duration across the hole.
       // Measure arrival of new frames, not that inferred duration.
       end = Math.max(end ?? time, time);
     }
     return result;
   };
+  const videoTimes = timestamps(videoIndex);
+  const audioTimes = timestamps(audioIndex);
+  const videoGaps = gaps(videoTimes, 1);
+  // Audio continuing through a missing run of video makes FFmpeg manufacture
+  // repeated frames while speech advances. Reject it even when the hole is
+  // shorter than the shared-discontinuity threshold.
+  const videoOnly = videoGaps.find(video => audioTimes.some(time => time > video.start + 0.1 && time < video.end - 0.1));
+  if (videoOnly) return { type: 'video-only', ...videoOnly };
   // A shared hole is a discontinuity, not an audio lead-in or reordered video.
   // HLS/MSE cannot reliably bridge it: audio may advance while video stalls.
-  const audioGaps = gaps(audioIndex);
-  return gaps(videoIndex).some(video => audioGaps.some(audio => Math.min(video.end, audio.end) - Math.max(video.start, audio.start) > 3));
+  const audioGaps = gaps(audioTimes, 3);
+  const shared = videoGaps.find(video => audioGaps.some(audio => Math.min(video.end, audio.end) - Math.max(video.start, audio.start) > 3));
+  return shared ? { type: 'shared', ...shared } : null;
 }
 
-export async function inspectPlaybackSource(input, untaggedAudioTrack = 2) {
-  const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-read_intervals', '0%+20', '-show_packets', '-show_entries', 'packet=stream_index,dts_time:format=duration:stream=index,codec_type:stream_tags=language,title,handler_name', '-of', 'json', input]));
+export function playbackTimelineHasGap(packets, videoIndex, audioIndex) {
+  return Boolean(playbackTimelineIssue(packets, videoIndex, audioIndex));
+}
+
+function frameRate(stream) {
+  for (const value of [stream?.r_frame_rate, stream?.avg_frame_rate]) {
+    const [numerator, denominator] = String(value || '').split('/').map(Number);
+    const rate = denominator ? numerator / denominator : Number(value);
+    if (Number.isFinite(rate) && rate > 0 && rate <= 240) return rate;
+  }
+  return 0;
+}
+
+export async function inspectPlaybackSource(input, untaggedAudioTrack = 2, { fullTimeline = false, repairVideoTimeline = false } = {}) {
+  const interval = fullTimeline ? [] : ['-read_intervals', '0%+20'];
+  const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', ...interval, '-show_packets', '-show_entries', 'packet=stream_index,dts_time:format=duration:stream=index,codec_type,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name', '-of', 'json', input]));
   const audioIndex = preferredAudioStream(probe.streams || [], untaggedAudioTrack);
-  const videoIndex = probe.streams?.find(stream => stream.codec_type === 'video')?.index;
-  if (playbackTimelineHasGap(probe.packets || [], videoIndex, audioIndex)) {
-    throw Object.assign(new Error('This release has a gap in its opening audio and video timeline. Trying another release.'), { code: 'INVALID_MEDIA_TIMELINE' });
+  const video = probe.streams?.find(stream => stream.codec_type === 'video');
+  const issue = playbackTimelineIssue(probe.packets || [], video?.index, audioIndex);
+  if (issue && !(issue.type === 'video-only' && repairVideoTimeline && frameRate(video))) {
+    throw Object.assign(new Error('This release has a gap in its audio and video timeline. Trying another release.'), { code: 'INVALID_MEDIA_TIMELINE' });
   }
   const duration = Number(probe.format?.duration);
-  return { audioIndex, duration: Number.isFinite(duration) && duration > 0 ? duration : 0 };
+  return {
+    audioIndex,
+    duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+    ...(issue?.type === 'video-only' ? { repairVideoFrameRate: frameRate(video), timelineIssue: issue } : {})
+  };
+}
+
+export async function validateOfflinePlaybackRecord(record, settings = {}, inspect = inspectPlaybackSource) {
+  if (record.timelineValidated) return record;
+  const metadata = await inspect(record.sourcePath || record.path, Number(settings.untaggedAudioTrack) || 2, {
+    fullTimeline: true,
+    ...(settings.repairVideoTimeline ? { repairVideoTimeline: true } : {})
+  });
+  if (metadata?.repairVideoFrameRate) return { ...record, timelineRepairRequired: true, repairVideoFrameRate: metadata.repairVideoFrameRate };
+  return { ...record, timelineValidated: true };
 }
 
 const playbackInspections = createValidatedPreparationCache();
@@ -1267,14 +1319,14 @@ async function writePostedFile(posted, path, settings, job, state, maximum) {
 }
 async function cacheDirect(job, settings) {
   setJob(job, 'downloading', job.prepareAhead ? 'Downloading the next episode in the background…' : 'Direct playback was unavailable. Downloading the video first…', 0); await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true }); const directory = job.directory || await mkdtemp(join(PLAYBACK_CACHE_ROOT, 'playback-')); job.directory = directory;
-  try { const path = join(directory, filename(job.file.subject, 'video')), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() }; await writePostedFile(job.file, path, preparationDownloadSettings(job, settings), job, state, 90); throwIfDownloadCancelled(job); setJob(job, 'optimizing', job.prepareAhead ? 'Download complete. Preparing a browser-ready copy…' : 'Download complete. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, path); throwIfDownloadCancelled(job); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode }); }
+  try { const path = join(directory, filename(job.file.subject, 'video')), state = { completed: 0, total: job.file.segments.length, bytes: 0, started: Date.now() }; await writePostedFile(job.file, path, preparationDownloadSettings(job, settings), job, state, 90); throwIfDownloadCancelled(job); setJob(job, 'optimizing', job.prepareAhead ? 'Download complete. Preparing a browser-ready copy…' : 'Download complete. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, path, settings); throwIfDownloadCancelled(job); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode }); }
   catch (error) { throw error; }
 }
 export async function writePostedFiles(files, settings, job, state, maximum = 85, connect = connectNntp) {
   return downloadPostedFiles(files, settings, job, state, { connect, decode: decodeYenc, progress: () => updateDownload(job, state, maximum) });
 }
 async function tryProgressiveArchive(job, settings, archives) {
-  if (!job.progressiveArchiveDisabled && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && progressiveArchiveVolumes(archives)) {
+  if (!settings.repairVideoTimeline && !job.progressiveArchiveDisabled && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && progressiveArchiveVolumes(archives)) {
     setJob(job, 'selecting', 'Opening the archive for progressive playback…', 45);
     try {
       job.archives = archives;
@@ -1301,7 +1353,7 @@ async function prepareArchive(job, settings, archives) {
   try {
     const downloadSettings = preparationDownloadSettings(job, settings);
     await writePostedFiles(archives.map((posted, index) => ({ posted, path: join(directory, names[index]) })), downloadSettings, job, state, 85);
-    throwIfDownloadCancelled(job); setJob(job, 'extracting', 'Download complete. Extracting the video…', 90); await extractPostedArchive(directory, archives, names, job); throwIfDownloadCancelled(job); const extracted = await extractedVideo(directory); if (!extracted) throw new Error('The archive did not contain a supported video file.'); setJob(job, 'optimizing', job.prepareAhead ? 'Video extracted. Preparing a browser-ready copy…' : 'Video extracted. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, join(directory, extracted)); throwIfDownloadCancelled(job); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
+    throwIfDownloadCancelled(job); setJob(job, 'extracting', 'Download complete. Extracting the video…', 90); await extractPostedArchive(directory, archives, names, job); throwIfDownloadCancelled(job); const extracted = await extractedVideo(directory); if (!extracted) throw new Error('The archive did not contain a supported video file.'); setJob(job, 'optimizing', job.prepareAhead ? 'Video extracted. Preparing a browser-ready copy…' : 'Video extracted. Checking browser compatibility…', 95); const optimized = await optimizeCachedVideo(job, join(directory, extracted), settings); throwIfDownloadCancelled(job); Object.assign(job, { status: 'ready', message: job.prepareAhead ? 'Next episode is ready to play.' : optimized.mode === 'cached-convert' ? 'Video prepared. Opening the browser stream…' : 'Video prepared. Opening playback…', progress: 100, mode: 'cached', ...optimized }); jobEvent(job, 'ready', job.message, { release: job.release || null, strategy: job.strategy || null, mode: job.mode });
   } catch (error) { await rm(directory, { recursive: true, force: true }); job.directory = previousDirectory; throw error; }
 }
 async function savedPlanAvailable(plan, settings) {
@@ -1396,7 +1448,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
           if (!job.backgroundFor) await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== 'sdr');
-          if (shouldCacheDirectPlayback(job) || job.downloadReplacement) { await cacheDirect(job, settings); return; }
+          if (shouldCacheDirectPlayback(job, settings) || job.downloadReplacement) { await cacheDirect(job, settings); return; }
           plans.set(job.media, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, playbackScope(settings));
           if (persistence) await persistence.setPlan(job.media, settings, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy }).catch(() => {});
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
@@ -1421,12 +1473,12 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             }
           }
         } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
-      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
+      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
     if (!archiveChoices.length) throw new Error('No compatible video release was found.');
     if (progressive) job.progressiveArchiveDisabled = true;
     if (job.rejectedReleases?.size && !job.downloadReplacement) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
-    let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
+    let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { if (isDownloadCancelled(job, error)) { job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
 }
 async function startOfflineMediaDownload(media, settings, backgroundFor = null) {
@@ -1437,14 +1489,14 @@ async function startOfflineMediaDownload(media, settings, backgroundFor = null) 
   if (existing) { if (backgroundFor && existing.backgroundFor) existing.backgroundFor = backgroundFor; return existing; }
   for (const [jobId, previous] of offlineJobs) if (previous.offlineKey === key && previous.status === 'error') offlineJobs.delete(jobId);
   const id = randomUUID(), directory = join(OFFLINE_ROOT, id);
-  const job = { id, offlineKey: key, offlineDownload: true, directory, rootDirectory: directory, media: { ...media }, status: 'selecting', message: 'Queued for offline download…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), events: [] };
+  const job = { id, offlineKey: key, offlineDownload: true, directory, rootDirectory: directory, media: { ...media }, status: 'selecting', message: 'Queued for offline download…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] };
   if (backgroundFor) job.backgroundFor = backgroundFor;
   offlineJobs.set(id, job);
   job.completion = (async () => {
     try {
       await preparePlayback(job, backgroundFor ? { ...settings, backgroundJob: job } : settings);
       if (job.status === 'ready' && !job.cancelled) {
-        records.set(key, { key, media: job.media, status: 'ready', mode: job.mode, path: job.path, sourcePath: job.sourcePath, directory: job.directory, mime: job.mime, strategy: job.strategy, release: job.release || '', backgroundDownload: Boolean(job.backgroundFor), downloadedAt: Date.now() });
+        records.set(key, { key, media: job.media, status: 'ready', mode: job.mode, path: job.path, sourcePath: job.sourcePath, directory: job.directory, mime: job.mime, strategy: job.strategy, release: job.release || '', backgroundDownload: Boolean(job.backgroundFor), timelineValidated: Boolean(job.timelineValidated), timelineRepaired: Boolean(job.timelineRepaired), downloadedAt: Date.now() });
         await writeOfflineRecords();
       }
       return job;
@@ -1506,9 +1558,11 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
   try {
     const source = record.sourcePath || record.path;
     setJob(job, 'optimizing', 'Preparing the downloaded copy for reliable offline playback…', 95);
-    const optimized = await optimizeCachedVideo({ ...job, offlineDownload: true, release: record.release, directory: record.directory }, source);
-    const updated = { ...record, ...optimized, mode: 'cached' };
+    const optimized = await optimizeCachedVideo({ ...job, offlineDownload: true, release: record.release, directory: record.directory }, source, settings);
+    const updated = { ...record, ...optimized, mode: 'cached', timelineValidated: true };
     delete updated.sourcePath;
+    delete updated.timelineRepairRequired;
+    delete updated.repairVideoFrameRate;
     const records = await readOfflineRecords();
     records.set(record.key, updated);
     await writeOfflineRecords();
@@ -1678,15 +1732,30 @@ export async function handleRequest(req, res) {
     if (req.method === 'POST' && url.pathname === '/api/play') {
       const media = await body(req); if (!media.title || !['movie', 'tv'].includes(media.type)) return json(res, 400, { error: 'A valid movie or show is required.' });
       if (media.type === 'tv' && (!Number.isInteger(media.season) || media.season < 1 || !Number.isInteger(media.episode) || media.episode < 1)) return json(res, 400, { error: 'Select a season and episode first.' });
-      const offline = (await readOfflineRecords()).get(offlineMediaKey(media));
+      const records = await readOfflineRecords();
+      let offline = records.get(offlineMediaKey(media));
+      let playbackSettings;
+      if (offline?.status === 'ready') {
+        playbackSettings = await readSettings();
+        try {
+          const validated = await validateOfflinePlaybackRecord(offline, playbackSettings);
+          if (validated !== offline) { offline = validated; records.set(offline.key, offline); await writeOfflineRecords(); }
+        } catch (error) {
+          if (error.code !== 'INVALID_MEDIA_TIMELINE') throw error;
+          records.set(offline.key, { ...offline, status: 'error', message: error.message });
+          await writeOfflineRecords();
+          if (offline.release) await releaseHealth.reject(playbackSettings, media, offline.release);
+          offline = null;
+        }
+      }
       if (offline?.status === 'ready') {
         posterPreparation.cancel();
         const local = await audioSafeOfflineRecord(offline);
-        const playbackSettings = await readSettings();
-        if (local.mode === 'cached-convert' && !offline.backgroundDownload) {
+        playbackSettings ||= await readSettings();
+        if (local.timelineRepairRequired || (local.mode === 'cached-convert' && !offline.backgroundDownload)) {
           const existing = [...playbackJobs.values()].find(candidate => candidate.offlineKey === offline.key && !['ready', 'error'].includes(candidate.status));
           if (existing) return json(res, 202, publicJob(existing));
-          const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', message: 'Preparing the downloaded copy for reliable offline playback…', progress: 95, created: Date.now(), mode: local.mode, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
+          const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', message: local.timelineRepairRequired ? 'Repairing a video timeline gap against the audio clock…' : 'Preparing the downloaded copy for reliable offline playback…', progress: 95, created: Date.now(), mode: 'cached-convert', sourcePath: local.sourcePath || local.path, mime: 'video/mp4', strategy: local.timelineRepairRequired ? 'transcode' : local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
           playbackJobs.set(job.id, job);
           void finalizeExistingOfflineRecord(offline, job, playbackSettings);
           return json(res, 202, publicJob(job));
@@ -1694,7 +1763,7 @@ export async function handleRequest(req, res) {
         const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
         playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
       }
-      const settings = await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
+      const settings = playbackSettings || await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
       const prepared = !media.releaseId && !media.prepareAhead && !settings.manualReleaseSelection
         ? posterPreparation.take(`${offlineMediaKey(media)}:${playbackScope(settings)}`) : null;
       if (prepared) {

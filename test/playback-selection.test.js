@@ -196,6 +196,25 @@ test('unsupported progressive archives retain the original ranked full-download 
   assert.deepEqual(downloaded, ['Preferred']);
 });
 
+test('a downloaded release with an invalid media timeline is blacklisted before trying the next archive', async () => {
+  const playback = job(), downloaded = [], rejected = [];
+  await preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Broken timeline' }, { title: 'Healthy replacement' }],
+    load: async () => nzb('rar'), health: {
+      has: async () => false,
+      reject: async (_settings, _media, release) => rejected.push(release)
+    }, plans: createPlaybackPlanCache(), progressive: async () => false,
+    archive: async job => {
+      downloaded.push(job.release);
+      if (job.release === 'Broken timeline') throw Object.assign(new Error('Video freezes while audio continues.'), { code: 'INVALID_MEDIA_TIMELINE' });
+      job.status = 'ready'; job.mode = 'cached';
+    }
+  });
+  assert.equal(playback.status, 'ready');
+  assert.deepEqual(downloaded, ['Broken timeline', 'Healthy replacement']);
+  assert.deepEqual(rejected, ['Broken timeline']);
+});
+
 test('background next-episode preparation accepts an archive release', async () => {
   const playback = { ...job(), prepareAhead: true, backgroundFor: 'current-playback' };
   const downloaded = [];

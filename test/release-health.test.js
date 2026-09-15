@@ -16,6 +16,7 @@ test('rejected releases survive restart, stay provider-specific and expire', asy
     const restarted=createReleaseHealthStore(path,options);
     assert.equal(await restarted.has(provider,media,'broken'),true);
     assert.equal(await restarted.has({usenetHost:'two'},media,'broken'),false);
+    assert.equal(await restarted.has({...provider,repairVideoTimeline:true},media,'broken'),false);
     assert.equal(await restarted.has(provider,{...media,episode:3},'broken'),false);
     now=201;
     assert.equal(await restarted.has(provider,media,'broken'),false);
