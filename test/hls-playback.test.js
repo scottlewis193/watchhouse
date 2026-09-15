@@ -20,7 +20,8 @@ test('prefers MSE over advertised native HLS and releases a source when seeking 
     loadSource(url) { this.url = url; }
     destroy() { this.destroyed = true; }
   }
-  const video = { canPlayType: () => 'probably', removeAttribute() {}, load() {} };
+  let resets = 0;
+  const video = { canPlayType: () => 'probably', removeAttribute() {}, load() { resets++; } };
   const options = { url: '/stream', hlsUrl: '/hls', start: 0, onError: error => { throw new Error(error); } };
   const source = playbackSource(video, options, async () => ({ default: Hls }));
   try {
@@ -35,9 +36,11 @@ test('prefers MSE over advertised native HLS and releases a source when seeking 
     await setImmediate();
     assert.equal(instances[0].destroyed, true);
     assert.equal(instances.length, 2);
+    assert.equal(resets, 0, 'replacing a source must preserve the established media element for autoplay');
     assert.ok(requests.some(request => request.url === '/session/1/stop'));
     listeners.get('pagehide')();
     assert.equal(instances[1].destroyed, true);
+    assert.equal(resets, 1, 'leaving playback must still reset and release the media element');
     assert.equal(listeners.size, 0);
   } finally { source.destroy(); globalThis.window = oldWindow; }
 });

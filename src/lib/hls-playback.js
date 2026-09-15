@@ -6,14 +6,18 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
   function update(options) {
     const nextKey = `${options.url}:${options.hlsUrl}:${options.start}`;
     if (key === nextKey) return;
-    key = nextKey; dispose();
+    key = nextKey; dispose(false);
     let closed = false, hls, sessionUrl, heartbeat, buffered = false;
     const controller = new AbortController();
     const post = path => fetch(path, { method: 'POST', keepalive: true }).catch(() => {});
-    const stop = () => {
+    const stop = (resetMedia = true) => {
       if (closed) return;
       closed = true; controller.abort(); clearInterval(heartbeat);
-      hls?.destroy(); video.removeAttribute('src'); video.load();
+      hls?.destroy();
+      // Keep the established media element intact while replacing an episode
+      // or seek source. An explicit load() here discards its autoplay context
+      // and can make the next episode require another user gesture.
+      if (resetMedia) { video.removeAttribute('src'); video.load(); }
       if (sessionUrl) void post(`${sessionUrl}/stop`);
       window.removeEventListener('pagehide', stop);
     };
