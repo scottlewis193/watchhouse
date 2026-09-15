@@ -1067,7 +1067,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     // Skip discarded input and fill two segments promptly, then pace at 1.5x.
     args.splice(args.indexOf('-i'), 0, ...pacing);
     if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', 'expr:gte(t,n_forced*4)');
-    producer = startHlsProducer(args, rangeSource);
+    producer = startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start));
     jobEvent(job, 'encoding-start', 'Preparing the first playback segments.', { start });
     onProgress(1);
     // Encoding may run while we check the timeline. No playlist/session is
@@ -1103,7 +1103,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     throw error;
   }
 }
-function startHlsProducer(args, rangeSource) {
+function startHlsProducer(args, rangeSource, expectedDuration = 0) {
   const child = spawn('ffmpeg', args);
   let stderr = '', closed = false;
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
@@ -1116,7 +1116,7 @@ function startHlsProducer(args, rangeSource) {
     } finally { stopConversion(child); await rangeSource?.close(); }
   })();
   void completion.catch(() => {});
-  return { completion, async stop() { closed = true; stopConversion(child); await completion.catch(() => {}); } };
+  return { completion, expectedDuration, async stop() { closed = true; stopConversion(child); await completion.catch(() => {}); } };
 }
 
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {

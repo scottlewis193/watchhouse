@@ -107,7 +107,7 @@ test('does not advertise end of playback before conversion succeeds', async () =
   const completion = new Promise(resolve => { finish = resolve; });
   const session = await createHlsSession({ root, async produce(directory) {
     await writeFile(join(directory, 'index.m3u8'), '#EXTM3U\n#EXTINF:4,\nsegment-000000.m4s\n#EXT-X-ENDLIST\n');
-    return { completion, stop() {} };
+    return { completion, expectedDuration: 4, stop() {} };
   }});
   try {
     await session.ready();
@@ -123,13 +123,29 @@ test('a failed converter cannot turn truncated playback into a completed episode
   const completion = new Promise((_, reject) => { fail = reject; });
   const session = await createHlsSession({ root, async produce(directory) {
     await writeFile(join(directory, 'index.m3u8'), '#EXTM3U\n#EXTINF:4,\nsegment-000000.m4s\n#EXT-X-ENDLIST\n');
-    return { completion, stop() {} };
+    return { completion, expectedDuration: 12, stop() {} };
   }});
   try {
     assert.doesNotMatch((await session.read('index.m3u8')).toString(), /#EXT-X-ENDLIST/);
     fail(new Error('input ended prematurely'));
     await assert.rejects(completion);
     await assert.rejects(session.read('index.m3u8'), /input ended prematurely/);
+  } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a late converter failure keeps a playlist that covers the expected remaining runtime', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-covered-end-'));
+  let fail;
+  const completion = new Promise((_, reject) => { fail = reject; });
+  const session = await createHlsSession({ root, async produce(directory) {
+    await writeFile(join(directory, 'index.m3u8'), '#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment-000000.m4s\n#EXTINF:4,\nsegment-000001.m4s\n#EXT-X-ENDLIST\n');
+    return { completion, expectedDuration: 8, stop() {} };
+  }});
+  try {
+    fail(new Error('input ended with a damaged trailing packet'));
+    await assert.rejects(completion);
+    await session.ready();
+    assert.match((await session.read('index.m3u8')).toString(), /#EXT-X-ENDLIST/);
   } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
 });
 

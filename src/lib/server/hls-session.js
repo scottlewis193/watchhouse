@@ -10,6 +10,17 @@ export function hlsOutputArgs(mp4Args, directory) {
     '-hls_segment_filename', join(directory, 'segment-%06d.m4s'), join(directory, 'index.m3u8')];
 }
 
+function playlistCoversExpectedDuration(bytes, expectedDuration) {
+  if (!Number.isFinite(expectedDuration) || expectedDuration <= 0) return false;
+  const playlist = bytes.toString();
+  if (!/^#EXT-X-ENDLIST\s*$/m.test(playlist)) return false;
+  const durations = [...playlist.matchAll(/^#EXTINF:([\d.]+)/gm)].map(match => Number(match[1])).filter(Number.isFinite);
+  if (!durations.length) return false;
+  const targetDuration = Number(playlist.match(/^#EXT-X-TARGETDURATION:([\d.]+)/m)?.[1]) || 0;
+  const tolerance = Math.max(0.5, Math.min(targetDuration, 5));
+  return durations.reduce((total, duration) => total + duration, 0) >= expectedDuration - tolerance;
+}
+
 export async function createHlsSession({ root, produce, idleMs = 180000, onClose = () => {} }) {
   await mkdir(root, { recursive: true });
   const directory = await mkdtemp(join(root, 'hls-'));
@@ -36,13 +47,14 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
   async function read(asset) {
     if (!/^(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s)$/.test(asset)) throw new Error('Invalid playback asset.');
     touch();
-    if (asset === 'index.m3u8' && failure) throw failure;
     const bytes = await readFile(join(directory, asset));
     if (asset !== 'index.m3u8') return bytes;
-    if (failure) throw failure;
+    if (failure && !playlistCoversExpectedDuration(bytes, producer.expectedDuration)) throw failure;
     // FFmpeg can write ENDLIST while unwinding a failed input. Until its
     // completion succeeds, keep the player polling rather than ending early.
-    return completed ? bytes : Buffer.from(bytes.toString().replace(/^#EXT-X-ENDLIST\r?\n?/gm, ''));
+    // A late failure is safe only when the finalized playlist already covers
+    // the duration left after the requested resume position.
+    return completed || failure ? bytes : Buffer.from(bytes.toString().replace(/^#EXT-X-ENDLIST\r?\n?/gm, ''));
   }
   async function ready({ progress = () => 0, maxWaitMs = 45000 } = {}) {
     const started = Date.now(), limit = started + Math.max(45000, maxWaitMs);
@@ -55,11 +67,13 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
       }
       if (Date.now() >= deadline) break;
       if (closed) throw new Error('Playback session has closed.');
-      if (failure) throw failure;
       try {
         const playlist = await read('index.m3u8');
         if (playlist.includes('#EXTINF:')) return;
-      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        if (failure) throw failure;
+      }
       await delay(100);
     }
     throw new Error('Timed out preparing playback segments.');
