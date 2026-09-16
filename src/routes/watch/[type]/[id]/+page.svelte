@@ -5,7 +5,7 @@
   import { goto, replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { audioPlaybackHealth, bufferedPlaybackRanges, canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
+  import { audioPlaybackHealth, bufferedPlaybackRanges, canAttemptCreditFrameSample, canSavePlaybackProgress, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
   import { analyzeCreditFrame, updateCreditEvidence } from '$lib/credit-detection.js';
   import { resolvedMediaDuration } from '$lib/playback-controls.js';
   import BufferedSeekBar from '$lib/BufferedSeekBar.svelte';
@@ -649,15 +649,17 @@
     if (!showUpNext || !autoPlayNext || !upNextStartedAt) return;
     const countdown = upNextCountdown(upNextStartedAt);
     upNextSeconds = countdown.seconds;
-    if (countdown.elapsed && canStartNextEpisode(nextMedia, nextJob)) { playNextEpisode(); return; }
+    const action = nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob);
+    if (countdown.elapsed && (action === 'play' || action === 'retry')) { playNextEpisode(); return; }
     upNextTimer = setTimeout(tickUpNextCountdown, countdown.elapsed ? 500 : 1000);
   }
   function cancelUpNext() {
     autoPlayNext = false; showUpNext = false; upNextStartedAt = 0; upNextReason = ''; clearTimeout(upNextTimer);
   }
   function playNextEpisode() {
-    if (!canStartNextEpisode(nextMedia, nextJob)) { beginUpNextCountdown('Waiting for the next episode'); return; }
-    const selectedMedia = nextMedia, job = nextJob;
+    const action = nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob);
+    if (action !== 'play' && action !== 'retry') { beginUpNextCountdown('Waiting for the next episode'); return; }
+    const selectedMedia = nextMedia, job = action === 'retry' ? null : nextJob;
     clearTimeout(upNextTimer); autoPlayNext = false;
     void setWatched(currentMedia, true);
     void startPlayback(selectedMedia, downloadNextEpisode ? null : job, false, true);
@@ -939,8 +941,8 @@
         </div>
       </div>
     {/if}
-    {#if playback?.status === 'ready'}
-      <div class="watch-stage" class:watch-stage-warming={playbackUi.warming} class:watch-stage-revealing={playerRevealing}>
+    {#if playback && (playback.status === 'ready' || player)}
+      <div class:hidden={playback.status !== 'ready'} class="watch-stage" class:watch-stage-warming={playbackUi.warming} class:watch-stage-revealing={playerRevealing}>
       {#if currentMedia}
         <div class="player-shell cinema-player group/player relative aspect-video overflow-hidden bg-black" class:player-shell-warming={playbackUi.warming} bind:this={playerShell} role="group" aria-label="Video player" onpointermove={showPlayerControls} onpointerleave={schedulePlayerControlsHide} onfocusin={showPlayerControls} onfocusout={schedulePlayerControlsHide}>
           {@render watchToolbar(true)}
@@ -950,12 +952,11 @@
               <PlaybackDiagnostics {playback} {nextJob} video={videoDiagnostics} credits={creditDiagnostics} interruptions={interruptionHistory} embedded />
             </aside>
           {/if}
+          <!-- Keep the video element through episode preparation so browser playback permission survives. -->
+          <!-- svelte-ignore a11y_media_has_caption -->
+          <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" use:playbackSource={{ active: playback?.status === 'ready', attempt: streamAttempt, url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: value => { setupProgress = value; }, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
           {#if playback?.status === 'ready'}
             {@const timeline = controlTimeline()}
-            {#key streamAttempt}
-              <!-- svelte-ignore a11y_media_has_caption -->
-              <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} autoplay playsinline preload="auto" use:playbackSource={{ url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: value => { setupProgress = value; }, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}></video>
-            {/key}
             {#if playbackUi.showSeekStatus}
               <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/30 text-white" role="status">
                 <div class="flex items-center gap-3 rounded-full border border-white/15 bg-black/70 px-5 py-3 text-sm shadow-2xl backdrop-blur-md"><span class="loading loading-spinner loading-sm"></span><span>Seeking to {formatPosition(resumeStreamOffset)}…{#if setupProgress}<small class="mt-1 block text-xs text-white/60">{setupProgress.completed}/{setupProgress.total} steps complete · {setupProgress.message}{#if setupProgress.detail}<span class="mt-0.5 block text-white/50">{setupProgress.detail}</span>{/if}</small>{/if}</span></div>

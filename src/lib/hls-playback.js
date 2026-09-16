@@ -4,9 +4,10 @@ import { playbackSetupProgress, readPlaybackSetup } from './playback-setup.js';
 export function playbackSource(video, initial, loadHls = () => import('hls.js')) {
   let key, dispose = () => {};
   function update(options) {
-    const nextKey = `${options.url}:${options.hlsUrl}:${options.start}`;
+    const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}`;
     if (key === nextKey) return;
     key = nextKey; dispose(false);
+    if (options.active === false) { video.pause(); return; }
     let closed = false, hls, sessionUrl, heartbeat, buffered = false;
     const controller = new AbortController();
     const post = path => fetch(path, { method: 'POST', keepalive: true }).catch(() => {});

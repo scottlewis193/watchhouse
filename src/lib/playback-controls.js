@@ -104,7 +104,7 @@ export function nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob) {
   if (!autoPlayNext) return 'none';
   if (!nextMedia) return 'resolve';
   if (nextJob?.status === 'ready') return 'play';
-  if (nextJob?.status === 'error') return 'retry';
+  if (nextJob?.status === 'error' || nextJob?.status === 'cancelled') return 'retry';
   return 'wait';
 }
 

@@ -141,3 +141,41 @@ test('fatal playlist errors retain HTTP status and session identity for diagnosi
     assert.equal(errors.length, 1);
   } finally { source.destroy(); globalThis.window = oldWindow; }
 });
+
+test('retained video pauses during episode preparation and restarts the source for a same-position retry', async t => {
+  const requests = [], instances = [];
+  t.mock.method(globalThis, 'fetch', async url => {
+    requests.push(url);
+    return { ok: true, json: async () => ({ sessionUrl: `/session/${requests.length}`, playlistUrl: '/playlist.m3u8' }) };
+  });
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  class Hls {
+    static isSupported = () => true;
+    static Events = { ERROR: 'error', FRAG_BUFFERED: 'buffered' };
+    constructor() { instances.push(this); }
+    on() {}
+    attachMedia(video) { this.video = video; }
+    loadSource() {}
+    destroy() { this.destroyed = true; }
+  }
+  let pauses = 0, resets = 0;
+  const video = { pause() { pauses++; }, removeAttribute() {}, load() { resets++; } };
+  const options = { active: true, attempt: 0, url: '/stream/1', hlsUrl: '/hls/1', start: 0, onError: assert.fail };
+  const source = playbackSource(video, options, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    source.update({ active: false, attempt: 0 });
+    await setImmediate();
+    assert.equal(pauses, 1);
+    assert.equal(instances[0].destroyed, true);
+    assert.equal(instances.length, 1, 'preparation must not attach an empty source');
+    source.update({ ...options, url: '/stream/2', hlsUrl: '/hls/2' });
+    await setImmediate();
+    source.update({ ...options, url: '/stream/2', hlsUrl: '/hls/2', attempt: 1 });
+    await setImmediate();
+    assert.equal(instances.length, 3, 'same-position recovery must create a fresh source');
+    assert.ok(instances.every(instance => instance.video === video), 'all sources use the established video element');
+    assert.equal(resets, 0);
+  } finally { source.destroy(); globalThis.window = oldWindow; }
+});
