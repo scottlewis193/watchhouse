@@ -33,7 +33,7 @@ test('cold growing Matroska resumes by seeking through available bytes with matc
     baseline = await createHlsSession({root,produce:directory=>startHlsConversion({mode:'cached-convert',sourcePath:input,strategy:'remux',release:'SDR'}, {},40.123,directory)});
     await baseline.ready();
     for (const type of ['v','a']) {
-      const hashes = async s => (await run('ffmpeg',['-v','error','-i',join(s.directory,'index.m3u8'),'-map',`0:${type}:0`,`-frames:${type}`,'24','-f','framemd5','-'])).stdout.split('\n').filter(l=>l&&!l.startsWith('#')).map(l=>l.split(',').slice(2).join(','));
+      const hashes = async s => (await run('ffmpeg',['-v','error','-live_start_index','0','-i',join(s.directory,'index.m3u8'),'-map',`0:${type}:0`,`-frames:${type}`,'24','-f','framemd5','-'])).stdout.split('\n').filter(l=>l&&!l.startsWith('#')).map(l=>l.split(',').slice(2).join(','));
       assert.deepEqual(await hashes(session),await hashes(baseline), `${type} output and timing must match a normal accurate seek`);
     }
   } finally { await session?.close(); await baseline?.close(); server?.closeAllConnections(); if(server)await new Promise(r=>server.close(r)); await rm(root,{recursive:true,force:true}); }

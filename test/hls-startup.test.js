@@ -27,7 +27,7 @@ test('HLS fills its initial buffer promptly without changing the resumed video',
     baseline = await createHlsSession({ root, produce: directory => startHlsConversion({ ...job }, {}, 10, directory, () => {}, async () => ['-readrate', '1.5']) });
     await baseline.ready();
     // Only input pacing changes; compare decoded output against the old pace.
-    const hashes = async (path, seek = []) => (await run('ffmpeg', ['-v', 'error', ...seek, '-i', path, '-map', '0:v:0', '-frames:v', '25', '-f', 'framemd5', '-'])).stdout.split('\n').filter(line => line && !line.startsWith('#')).map(line => line.split(',').at(-1).trim());
+    const hashes = async (path, seek = []) => (await run('ffmpeg', ['-v', 'error', ...seek, '-live_start_index', '0', '-i', path, '-map', '0:v:0', '-frames:v', '25', '-f', 'framemd5', '-'])).stdout.split('\n').filter(line => line && !line.startsWith('#')).map(line => line.split(',').at(-1).trim());
     assert.deepEqual(await hashes(playlist), await hashes(join(baseline.directory, 'index.m3u8')));
     const probe = JSON.parse((await run('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', playlist])).stdout);
     assert.deepEqual(probe.streams.map(stream => stream.codec_type).sort(), ['audio', 'video']);

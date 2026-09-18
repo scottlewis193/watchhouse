@@ -40,3 +40,13 @@ test('bounds sampling and interruption history during repeated retries', () => {
   assert.equal(events[0].samples.length, 30);
   assert.equal(events[0].samples[0].at, 10000);
 });
+
+test('slow successful starts export bounded milestones without an interruption and redact secrets', () => {
+  const trace = createPlaybackTrace();
+  for (let i=0;i<120;i++) trace.event('fragment', {sequence:i});
+  const report = trace.report({job:{apiKey:'private',events:[{message:'Failed https://private.example/path?token=private'}]}});
+  assert.equal(report.events.length,100);
+  assert.equal(report.interruptions.length,0);
+  assert.equal(report.job.apiKey,'<REDACTED>');
+  assert.equal(report.job.events[0].message,'Failed <REDACTED_URL>');
+});

@@ -59,7 +59,7 @@ export function createMediaStateStore(path, { now = () => Date.now() } = {}) {
   }
 
   function mutate(change) {
-    writes = writes.then(async () => { const state = await load(); change(state); await save(state); return publicState(state); });
+    writes = writes.catch(() => {}).then(async () => { const state = await load(); change(state); await save(state); return publicState(state); });
     return writes;
   }
 

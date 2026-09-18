@@ -4,16 +4,16 @@ import { playbackSetupProgress, readPlaybackSetup } from './playback-setup.js';
 export function playbackSource(video, initial, loadHls = () => import('hls.js')) {
   let key, dispose = () => {};
   function update(options) {
-    const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}`;
+    const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}:${options.audioTrack}`;
     if (key === nextKey) return;
     key = nextKey; dispose(false);
     if (options.active === false) { video.pause(); return; }
-    let closed = false, hls, sessionUrl, heartbeat, buffered = false;
+    let closed = false, hls, sessionUrl, heartbeat, buffered = false, localRecoveries = 0, recoveryPending = false, recoveryTimer, setupTimer;
     const controller = new AbortController();
     const post = path => fetch(path, { method: 'POST', keepalive: true }).catch(() => {});
     const stop = (resetMedia = true) => {
       if (closed) return;
-      closed = true; controller.abort(); clearInterval(heartbeat);
+      closed = true; controller.abort(); clearInterval(heartbeat); clearTimeout(recoveryTimer); clearTimeout(setupTimer);
       hls?.destroy();
       // Keep the established media element intact while replacing an episode
       // or seek source. An explicit load() here discards its autoplay context
@@ -24,41 +24,73 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     };
     dispose = stop;
     window.addEventListener('pagehide', stop);
+    options.onEvent?.('source-request', { start: options.start });
     options.onProgress?.(options.hlsUrl ? playbackSetupProgress(0) : null);
     if (!options.hlsUrl) { video.src = options.url; return; }
     // Resolve failures as data until the session response can be cleaned up.
     const library = Promise.resolve().then(loadHls).then(value => ({ value }), error => ({ error }));
+    setupTimer = setTimeout(() => { if (!closed) { options.onError('Playback preparation timed out. Try again.', { code: 'PLAYBACK_TIMEOUT' }); stop(); } }, 330000);
     void (async () => {
-      const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start }), signal: controller.signal });
+      const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack }), signal: controller.signal });
       const session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
       if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code });
+      clearTimeout(setupTimer);
       sessionUrl = session.sessionUrl;
       if (closed) { void post(`${sessionUrl}/stop`); return; }
+      options.onTracks?.({ tracks: session.tracks || [], selectedAudioTrack: session.selectedAudioTrack, captionsAvailable: session.captionsAvailable });
       if (Number.isFinite(session.duration) && session.duration > 0) options.onDuration?.(session.duration);
-      heartbeat = setInterval(() => void post(`${sessionUrl}/heartbeat`), 15000);
+      heartbeat = setInterval(() => void fetch(`${sessionUrl}/heartbeat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paused: video.paused, position: video.currentTime }), signal: controller.signal }).catch(() => {}), 5000);
       const loaded = await library;
       if (closed) return;
       if (loaded.error) throw loaded.error;
       const { default: Hls } = loaded.value;
       // Prefer MSE: Chromium may advertise native HLS yet reject its segments.
       if (!Hls.isSupported()) {
-        if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = session.playlistUrl; return; }
+        if (video.canPlayType('application/vnd.apple.mpegurl')) { video.addEventListener?.('error', () => options.onError('Segmented playback encountered a browser media error.', { sessionUrl }), { signal: controller.signal }); video.src = session.playlistUrl; return; }
         throw new Error('This browser cannot play segmented video.');
       }
-      hls = new Hls({ startPosition: 0, backBufferLength: 30, maxBufferLength: 30, maxMaxBufferLength: 60, maxLiveSyncPlaybackRate: 1 });
+      hls = new Hls(playbackBufferConfig(typeof navigator === 'undefined' ? {} : navigator));
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (!data.fatal || closed) return;
+        if (closed) return;
         const httpStatus = Number(data.response?.code || data.networkDetails?.status) || null;
-        const status = httpStatus ? ` (HTTP ${httpStatus})` : '';
-        options.onError(`Segmented playback failed: ${data.details}${status}`, {
-          hlsDetails: data.details, httpStatus, sessionUrl
-        });
+        const evidence = { hlsDetails: data.details, httpStatus, sessionUrl };
+        if (data.type) evidence.hlsType = data.type;
+        options.onEvent?.('hls-error', { ...evidence, fatal: Boolean(data.fatal) });
+        if (!data.fatal || recoveryPending) return;
+        const fail = () => { if (!closed) options.onError(`Segmented playback failed: ${data.details}${httpStatus ? ` (HTTP ${httpStatus})` : ''}`, evidence); };
+        if (!data.type || localRecoveries >= 2 || httpStatus && ![408, 429, 500, 502, 503, 504].includes(httpStatus)) { fail(); return; }
+        recoveryPending = true;
+        void (async () => {
+          try {
+            const response = await fetch(`${sessionUrl}/status`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
+            const health = await response.json();
+            if (closed) return;
+            if (!response.ok || health.failed || health.closed) { fail(); return; }
+            localRecoveries++;
+            options.onEvent?.('hls-recovery', { type: data.type, attempt: localRecoveries });
+            if (data.type === Hls.ErrorTypes?.NETWORK_ERROR) hls.startLoad(video.currentTime);
+            else if (data.type === Hls.ErrorTypes?.MEDIA_ERROR) hls.recoverMediaError();
+            else { fail(); return; }
+            clearTimeout(recoveryTimer); recoveryTimer = setTimeout(fail, 10000);
+          } catch { fail(); }
+          finally { recoveryPending = false; }
+        })();
       });
+      if (Hls.Events.FRAG_LOADED) hls.on(Hls.Events.FRAG_LOADED, (_event, data) => {
+        if (!closed) options.onEvent?.('hls-fragment', { sequence: data.frag?.sn, bytes: data.frag?.stats?.total, loadMs: data.frag?.stats?.loading ? data.frag.stats.loading.end - data.frag.stats.loading.start : null });
+      });
+      const recovered = () => { clearTimeout(recoveryTimer); };
+      video.addEventListener?.('playing', recovered, { signal: controller.signal });
       hls.on(Hls.Events.FRAG_BUFFERED, () => { if (!closed && !buffered) { buffered = true; options.onProgress?.(playbackSetupProgress(3)); } });
       hls.attachMedia(video);
       hls.loadSource(session.playlistUrl);
-    })().catch(error => { if (!closed) options.onError(error.message, { code: error.code }); });
+    })().catch(error => { clearTimeout(setupTimer); if (!closed) options.onError(error.message, { code: error.code }); });
   }
   update(initial);
   return { update, destroy: () => dispose() };
+}
+
+export function playbackBufferConfig(environment = {}) {
+  const constrained = Boolean(environment.connection?.saveData) || Number(environment.deviceMemory) > 0 && Number(environment.deviceMemory) <= 2;
+  return { startPosition: 0, backBufferLength: constrained ? 15 : 30, maxBufferLength: constrained ? 15 : 30, maxMaxBufferLength: constrained ? 30 : 60, maxBufferSize: (constrained ? 30 : 60) * 1000 * 1000, maxLiveSyncPlaybackRate: 1 };
 }

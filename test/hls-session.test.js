@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, access, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHlsSession } from '../src/lib/server/hls-session.js';
@@ -178,4 +178,43 @@ test('extended resume preparation still stops on inactivity or its hard deadline
       } finally { await session.close(); }
     }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('admission limits release slots after producer setup fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-admission-'));
+  let finish;
+  try {
+    const pending = createHlsSession({root,maxSessions:1,produce:()=>new Promise(resolve=>{finish=resolve;})});
+    await new Promise(resolve=>setTimeout(resolve,20));
+    await assert.rejects(createHlsSession({root,maxSessions:1,produce:()=>assert.fail('must not start another converter')}),{code:'PLAYBACK_BUSY'});
+    finish({completion:Promise.resolve(),stop:async()=>{}});
+    const session=await pending; await session.close();
+    const replacement=await createHlsSession({root,maxSessions:1,produce:async()=>({completion:Promise.resolve(),stop:async()=>{}})});
+    await replacement.close();
+  } finally { await rm(root,{recursive:true,force:true}); }
+});
+
+test('paused and far-ahead producers stop growing and resume near the playhead', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-pause-')); const states=[];
+  const session=await createHlsSession({root,produce:async()=>({completion:Promise.resolve(),stop:async()=>{},position:()=>100,setPaused:value=>states.push(value)})});
+  try {
+    session.playbackState({paused:true,position:90});
+    session.playbackState({paused:false,position:0});
+    session.playbackState({paused:false,position:60});
+    assert.deepEqual(states,[true,true,false]);
+  } finally {await session.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('temporary output exceeding its quota closes the converter and removes assets', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-quota-')); let stopped=0,finish;
+  const closed=new Promise(resolve=>finish=resolve);
+  const session=await createHlsSession({root,maxBytes:4,checkMs:10,onClose:finish,produce:async directory=>{
+    await writeFile(join(directory,'segment-000000.m4s'),'oversized');
+    return {completion:Promise.resolve(),stop:async()=>{stopped++;}};
+  }});
+  try {
+    await Promise.race([closed,new Promise((_,reject)=>setTimeout(()=>reject(new Error('Quota not enforced')),1000))]);
+    assert.equal(stopped,1); assert.equal(session.health().closed,true);
+    assert.deepEqual(await readdir(root),[]);
+  } finally {await session.close();await rm(root,{recursive:true,force:true});}
 });

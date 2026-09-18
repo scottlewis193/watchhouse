@@ -65,3 +65,8 @@ test('split progress records and server errors are decoded correctly', async () 
 test('an incomplete preparation response cannot be mistaken for a ready session', async () => {
   await assert.rejects(readPlaybackSetup(new Response('{"type":"progress","completed":1}\n', { headers: { 'content-type': 'application/x-ndjson' } })), /before the video was ready/);
 });
+
+test('streamed setup preserves source rejection identity', async () => {
+  const response = new Response('{"type":"error","error":"Source rejected","code":"SOURCE_UNAVAILABLE"}\n', {headers:{'content-type':'application/x-ndjson'}});
+  await assert.rejects(readPlaybackSetup(response), {code:'SOURCE_UNAVAILABLE'});
+});

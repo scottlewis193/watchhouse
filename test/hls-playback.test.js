@@ -179,3 +179,30 @@ test('retained video pauses during episode preparation and restarts the source f
     assert.equal(resets, 0);
   } finally { source.destroy(); globalThis.window = oldWindow; }
 });
+
+test('fatal transient network errors reuse a healthy converter session before escalating', async t => {
+  const requests=[], errors=[]; let errorHandler,loads=0;
+  t.mock.method(globalThis,'fetch',async url=>{requests.push(url); return {ok:true,json:async()=>url.endsWith('/status')?{failed:false,closed:false}:{sessionUrl:'/healthy',playlistUrl:'/playlist'}};});
+  const oldWindow=globalThis.window; globalThis.window={addEventListener(){},removeEventListener(){}};
+  class Hls {
+    static isSupported=()=>true;
+    static Events={ERROR:'error',FRAG_BUFFERED:'buffered'};
+    static ErrorTypes={NETWORK_ERROR:'networkError',MEDIA_ERROR:'mediaError'};
+    on(event,callback){if(event==='error') errorHandler=callback;}
+    attachMedia(){} loadSource(){} destroy(){} startLoad(position){assert.equal(position,12);loads++;}
+  }
+  const source=playbackSource({currentTime:12,removeAttribute(){},load(){}},{hlsUrl:'/hls',start:0,onError:(...args)=>errors.push(args)},async()=>({default:Hls}));
+  try {
+    await setImmediate();
+    for(let i=0;i<3;i++){errorHandler(null,{fatal:true,type:'networkError',details:'fragLoadError',response:{code:503}});await setImmediate();}
+    assert.equal(loads,2); assert.equal(errors.length,1);
+    assert.equal(requests.filter(url=>url==='/hls').length,1);
+  } finally {source.destroy();globalThis.window=oldWindow;}
+});
+
+test('constrained buffer profiles respect data saving without altering media quality', async () => {
+  const {playbackBufferConfig}=await import('../src/lib/hls-playback.js');
+  assert.equal(playbackBufferConfig().maxBufferLength,30);
+  assert.equal(playbackBufferConfig({connection:{saveData:true}}).maxBufferLength,15);
+  assert.equal(playbackBufferConfig({deviceMemory:2}).maxMaxBufferLength,30);
+});

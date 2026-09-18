@@ -1,8 +1,8 @@
 <script>
-  let { playback = null, nextJob = null, video = null, credits = null, interruptions = [], embedded = false } = $props();
+  let { playback = null, nextJob = null, video = null, credits = null, interruptions = [], report = null, embedded = false } = $props();
 
   function downloadTrace() {
-    const blob = new Blob([JSON.stringify({ version: 1, interruptions }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(report || { version: 1, interruptions }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url; link.download = 'watchhouse-playback-diagnostics.json';
@@ -69,9 +69,9 @@
     <section class="lg:col-span-2">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Playback interruptions</h3>
-        <button class="btn btn-xs" disabled={!interruptions.length} onclick={downloadTrace}>Download diagnostic report</button>
+        <button class="btn btn-xs" disabled={!report && !interruptions.length} onclick={downloadTrace}>Download diagnostic report</button>
       </div>
-      <p class="mt-2 text-base-content/55">Keeps the last 20 interruptions while this page is open, including player samples leading up to each one. Download before reloading or leaving the page.</p>
+      <p class="mt-2 text-base-content/55">Keeps the last 20 interruptions while this page is open, including player samples leading up to each one. Reports include startup and server milestones. Download before reloading or leaving the page.</p>
       {#if interruptions.length}
         <ol class="mt-3 max-h-64 space-y-4 overflow-y-auto">
           {#each [...interruptions].reverse() as interruption}

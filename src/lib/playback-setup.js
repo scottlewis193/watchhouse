@@ -19,7 +19,7 @@ export async function readPlaybackSetup(response, onProgress) {
   function consume(line) {
     if (!line.trim()) return;
     const event = JSON.parse(line);
-    if (event.type === 'error') throw new Error(event.error);
+    if (event.type === 'error') throw Object.assign(new Error(event.error), { code: event.code });
     if (event.type === 'progress') onProgress?.(playbackSetupProgress(event.completed, event));
     if (event.type === 'ready') session = event.session;
   }

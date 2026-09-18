@@ -14,6 +14,8 @@ import { createReleaseHealthStore, releaseIdentity } from './release-health.js';
 import { createMediaStateStore } from './media-state.js';
 import { stopConversion } from './conversion-process.js';
 import { waitForDrain } from './stream-drain.js';
+import { conversionAdmission } from './conversion-admission.js';
+import { playbackTracks, extractCaptions } from './playback-tracks.js';
 import { createHlsSession, hlsOutputArgs } from './hls-session.js';
 import { createHlsPacing } from './hls-pacing.js';
 import { createPosterPreparation } from './poster-preparation.js';
@@ -443,7 +445,14 @@ export function archiveFilenames(archives) {
     return part ? `${base}.part${String(Number(part[1])).padStart(2, '0')}.rar` : name;
   });
 }
-function run(command, args, cwd, job) { return new Promise((resolve, reject) => {
+async function run(command, args, cwd, job) {
+  const controller = new AbortController();
+  const removeQueuedCancel = job ? onDownloadCancel(job, () => controller.abort()) : () => {};
+  let release = () => {};
+  try {
+    if (command === 'ffmpeg') release = await conversionAdmission.acquire({ foreground: !job?.backgroundFor && !job?.prepareAhead, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(30000)]) });
+    removeQueuedCancel();
+    return await new Promise((resolve, reject) => {
   throwIfDownloadCancelled(job);
   const child = spawn(command, args, { cwd }); let stderr = '', settled = false;
   const removeCancelHandler = job ? onDownloadCancel(job, () => child.kill('SIGTERM')) : () => {};
@@ -454,7 +463,9 @@ function run(command, args, cwd, job) { return new Promise((resolve, reject) => 
     try { throwIfDownloadCancelled(job); } catch (error) { reject(error); return; }
     code === 0 ? resolve() : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`));
   }));
-}); }
+});
+  } finally { removeQueuedCancel(); release(); }
+}
 function runOutput(command, args, cwd, signal) { return new Promise((resolve, reject) => { const child = spawn(command, args, { cwd, signal }); let stdout = '', stderr = ''; child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data); child.on('error', reject); child.on('close', code => code === 0 ? resolve(stdout) : reject(new Error(`${command} failed: ${stderr.trim() || `exited ${code}`}`))); }); }
 // Prefer unprivileged render nodes, but some appliance distributions expose
 // only the primary DRM card. The entrypoint grants the app either device's
@@ -969,10 +980,10 @@ function frameRate(stream) {
   return 0;
 }
 
-export async function inspectPlaybackSource(input, untaggedAudioTrack = 2, { fullTimeline = false, repairVideoTimeline = false } = {}) {
+export async function inspectPlaybackSource(input, untaggedAudioTrack = 2, { fullTimeline = false, repairVideoTimeline = false, audioIndex: selectedAudioIndex } = {}) {
   const interval = fullTimeline ? [] : ['-read_intervals', '0%+20'];
-  const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', ...interval, '-show_packets', '-show_entries', 'packet=stream_index,dts_time:format=duration:stream=index,codec_type,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name', '-of', 'json', input]));
-  const audioIndex = preferredAudioStream(probe.streams || [], untaggedAudioTrack);
+  const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', ...interval, '-show_packets', '-show_entries', 'packet=stream_index,dts_time:format=duration:stream=index,codec_type,codec_name,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name', '-of', 'json', input]));
+  const audioIndex = selectedAudioIndex ?? preferredAudioStream(probe.streams || [], untaggedAudioTrack);
   const video = probe.streams?.find(stream => stream.codec_type === 'video');
   const issue = playbackTimelineIssue(probe.packets || [], video?.index, audioIndex);
   if (issue && !(issue.type === 'video-only' && repairVideoTimeline && frameRate(video))) {
@@ -998,17 +1009,17 @@ export async function validateOfflinePlaybackRecord(record, settings = {}, inspe
 
 const playbackInspections = createValidatedPreparationCache();
 function playbackInspection(job, settings, input) {
-  const source = job.mode === 'cached-convert' ? job : job.file;
+  const source = ['cached-convert', 'cached'].includes(job.mode) ? job : job.file;
   const scope = playbackScope(settings);
   return playbackInspections.get(source, scope, async publish => {
       const persistent = job.mode !== 'cached-convert' && !job.progressiveArchive && settings.usenetHost;
       const saved = persistent && await playbackPersistence.getProbe(source, settings).catch(() => null);
-      if (saved && (saved.audioIndex === null || Number.isInteger(saved.audioIndex) && saved.audioIndex >= 0) && Number.isFinite(saved.duration) && saved.duration >= 0) { publish(saved); return saved; }
+      if (saved && Array.isArray(saved.tracks) && (saved.audioIndex === null || Number.isInteger(saved.audioIndex) && saved.audioIndex >= 0) && Number.isFinite(saved.duration) && saved.duration >= 0) { publish(saved); return saved; }
       jobEvent(job, 'metadata-start', 'Reading source audio and duration metadata.');
       const inputOptions = job.progressiveArchive && !job.archiveSource?.complete ? ['-seekable', '0'] : [];
-      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
+      const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type,codec_name,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
       const video = probe.streams?.find(stream => stream.codec_type === 'video');
-      const metadata = { audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0, videoFrameRate: frameRate(video) };
+      const metadata = { tracks: playbackTracks(probe.streams), audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0, videoFrameRate: frameRate(video) };
       const videoIndex = video?.index;
       publish(metadata);
       jobEvent(job, 'metadata-ready', 'Source audio and duration identified.');
@@ -1023,8 +1034,8 @@ function playbackInspection(job, settings, input) {
   }, settings.signal);
 }
 
-export async function startHlsConversion(job, settings, start, directory, onProgress = () => {}, getPacing = hlsPacing, getInspection = playbackInspection) {
-  const cached = job.mode === 'cached-convert';
+export async function startHlsConversion(job, settings, start, directory, onProgress = () => {}, getPacing = hlsPacing, getInspection = playbackInspection, { audioTrack } = {}) {
+  const cached = ['cached-convert', 'cached'].includes(job.mode);
   let rangeSource;
   const requestedStrategy = seekPlaybackStrategy(job.strategy === 'raw' ? 'remux' : job.strategy, start);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
@@ -1034,7 +1045,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const forwardSeek = growing && start > 0 && videoType(job.file.subject) === 'video/x-matroska';
     rangeSource = !cached ? await openPostedRangeServer(job, settings, undefined, { forwardSeek }) : null;
     if (!cached && !rangeSource) throw new Error('This release lacks the byte layout required for segmented playback. Try preparing a downloaded copy.');
-    const input = cached ? job.sourcePath : rangeSource.url;
+    const input = cached ? job.sourcePath || job.path : rangeSource.url;
     const inspection = getInspection(job, settings, input);
     const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing && !forwardSeek ? start : 0)]);
     const repairVideoFrameRate = settings.repairVideoTimeline ? metadata.videoFrameRate : null;
@@ -1042,7 +1053,15 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap);
     if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
     if (job.media?.type === 'tv') assertCompleteEpisodeDuration(metadata.duration, Number(job.media.durationHint));
-    const { audioIndex } = metadata;
+    let { audioIndex } = metadata;
+    job.playbackTracks = metadata.tracks || [];
+    job.selectedAudioTrack = audioIndex;
+    if (audioTrack !== undefined && audioTrack !== null) {
+      if (!Number.isInteger(audioTrack) || !job.playbackTracks.some(track => track.type === 'audio' && track.index === audioTrack)) throw Object.assign(new Error('The selected audio track is unavailable.'), { code: 'INVALID_AUDIO_TRACK' });
+      // A newly selected language needs the same opening timeline checks as the default track.
+      await inspectPlaybackSource(input, settings.untaggedAudioTrack, { audioIndex: audioTrack, repairVideoTimeline: settings.repairVideoTimeline });
+      audioIndex = audioTrack; job.selectedAudioTrack = audioIndex;
+    }
     job.sourceDuration = metadata.duration;
     const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration, repairVideoFrameRate);
     if (growing) {
@@ -1063,11 +1082,12 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     if (audioIndex !== null) mapped.splice(mapped.indexOf('-movflags'), 0, '-map', `0:${audioIndex}`);
     // Browser MSE rejects AAC program-config-element layouts emitted for some surround sources.
     mapped.splice(mapped.indexOf('-movflags'), 0, '-ac', '2');
-    const args = hlsOutputArgs(mapped, directory);
+    const segmentSeconds = strategy === 'remux' ? 4 : 2;
+    const args = hlsOutputArgs(mapped, directory, segmentSeconds);
     // Skip discarded input and fill two segments promptly, then pace at 1.5x.
     args.splice(args.indexOf('-i'), 0, ...pacing);
-    if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', 'expr:gte(t,n_forced*4)');
-    producer = startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start));
+    if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', `expr:gte(t,n_forced*${segmentSeconds})`);
+    producer = await startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start), settings.signal);
     jobEvent(job, 'encoding-start', 'Preparing the first playback segments.', { start });
     onProgress(1);
     // Encoding may run while we check the timeline. No playlist/session is
@@ -1081,12 +1101,12 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   } catch (error) {
     await producer?.stop();
     await rangeSource?.close();
-    if (job.progressiveArchive && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code) && !settings.signal?.aborted) {
+    if (job.progressiveArchive && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
       job.progressiveArchiveDisabled = true;
       await prepareArchive(job, settings, job.archives);
       if (job.status !== 'ready') throw new Error(job.message || 'Archive fallback failed.');
       for (const name of await readdir(directory)) if (/^(index\.m3u8|init\.mp4|segment-\d+\.m4s)(\.tmp)?$/.test(name)) await rm(join(directory, name), { force: true });
-      return startHlsConversion(job, settings, start, directory, onProgress, getPacing, getInspection);
+      return startHlsConversion(job, settings, start, directory, onProgress, getPacing, getInspection, { audioTrack });
     }
     if (['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code) && !cached) {
       job.rejectedReleases ||= new Set();
@@ -1098,14 +1118,24 @@ export async function startHlsConversion(job, settings, start, directory, onProg
       await recoverPlaybackSource(job, settings);
       // Remove speculative assets before a replacement writes its playlist.
       for (const name of await readdir(directory)) if (/^(index\.m3u8|init\.mp4|segment-\d+\.m4s)(\.tmp)?$/.test(name)) await rm(join(directory, name), { force: true });
-      return startHlsConversion(job, settings, start, directory, onProgress, getPacing, getInspection);
+      return startHlsConversion(job, settings, start, directory, onProgress, getPacing, getInspection, { audioTrack });
     }
     throw error;
   }
 }
-function startHlsProducer(args, rangeSource, expectedDuration = 0) {
-  const child = spawn('ffmpeg', args);
-  let stderr = '', closed = false;
+async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal) {
+  const release = await conversionAdmission.acquire({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
+  const child = spawn('ffmpeg', ['-progress', 'pipe:3', ...args], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+  let stderr = '', closed = false, paused = false, outputPosition = 0, progress = '';
+  child.stdio[3].on('data', chunk => {
+    progress += chunk;
+    let newline;
+    while ((newline = progress.indexOf('\n')) >= 0) {
+      const line = progress.slice(0, newline); progress = progress.slice(newline + 1);
+      if (line.startsWith('out_time_us=')) outputPosition = Math.max(outputPosition, Number(line.slice(12)) / 1000000 || 0);
+    }
+    progress = progress.slice(-1024);
+  });
   child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8000); });
   child.stdin.on('error', () => {});
   const exited = once(child, 'close'); void exited.catch(() => {});
@@ -1113,10 +1143,13 @@ function startHlsProducer(args, rangeSource, expectedDuration = 0) {
     try {
       const [code] = await exited;
       if (!closed && !conversionSucceeded(code, stderr, 1, { httpReconnect: Boolean(rangeSource) })) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
-    } finally { stopConversion(child); await rangeSource?.close(); }
+    } finally { release(); stopConversion(child); await rangeSource?.close(); }
   })();
   void completion.catch(() => {});
-  return { completion, expectedDuration, async stop() { closed = true; stopConversion(child); await completion.catch(() => {}); } };
+  return { completion, expectedDuration, position: () => outputPosition, setPaused(value) {
+    if (closed || process.platform === 'win32' || paused === value || child.exitCode !== null) return;
+    if (child.kill(value ? 'SIGSTOP' : 'SIGCONT')) paused = value;
+  }, async stop() { closed = true; if (paused) child.kill('SIGCONT'); stopConversion(child); await completion.catch(() => {}); } };
 }
 
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
@@ -1796,17 +1829,53 @@ export async function handleRequest(req, res) {
       const job = await startOfflineMediaDownload({ ...next, title: parent.media.title }, settings, parent.id);
       return json(res, 200, { job: job ? publicOfflineJob(job) : null });
     }
-    const hlsMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/hls(?:\/([\w-]+)\/(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s|stop|heartbeat))?$/);
+    const cancelMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/cancel$/);
+    if (req.method === 'POST' && cancelMatch) {
+      const job = playbackJobs.get(cancelMatch[1]);
+      if (!job || job.offlineDownload || job.prepareAhead) return json(res, 404, { error: 'Playback preparation not found.' });
+      cancelDownloadJob(job);
+      for (const entry of hlsSessions.values()) if (entry.jobId === job.id) await entry.session.close();
+      return json(res, 200, { cancelled: Boolean(job.cancelled) });
+    }
+    const trackMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/tracks$/);
+    if (req.method === 'GET' && trackMatch) {
+      const job = playbackJobs.get(trackMatch[1]);
+      if (!job || job.status !== 'ready') return json(res, 404, { error: 'Playback is unavailable.' });
+      if (!job.playbackTracks && (job.sourcePath || job.path)) {
+        const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=index,codec_type,codec_name:stream_tags=language,title', '-of', 'json', job.sourcePath || job.path], undefined, AbortSignal.timeout(10000)));
+        job.playbackTracks = playbackTracks(probe.streams); job.selectedAudioTrack = preferredAudioStream(probe.streams);
+      }
+      return json(res, 200, { tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: Boolean(job.sourcePath || job.path || job.archiveSource?.complete) });
+    }
+    const captionMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/captions\/(\d+)\.vtt$/);
+    if (req.method === 'GET' && captionMatch) {
+      const job = playbackJobs.get(captionMatch[1]), index = Number(captionMatch[2]);
+      if (!job || !job.playbackTracks?.some(track => track.type === 'captions' && track.supported && track.index === index)) return json(res, 404, { error: 'Caption track unavailable.' });
+      let source, retained;
+      const controller = new AbortController();
+      res.on('close', () => controller.abort());
+      try {
+        if (job.sourcePath || job.path) source = job.sourcePath || job.path;
+        else if (job.archiveSource?.complete) { retained = job.archiveSource.retain(); source = retained.url; }
+        else return json(res, 409, { error: 'Embedded captions are available once this video finishes downloading. You can open a local WebVTT file now.' });
+        const start = Number(url.searchParams.get('start') || 0);
+        if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid caption position.' });
+        const text = await extractCaptions(source, index, start, controller.signal);
+        res.writeHead(200, { 'content-type': 'text/vtt; charset=utf-8', 'cache-control': 'private, max-age=3600' }); return res.end(text);
+      } finally { retained?.close(); }
+    }
+    const hlsMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/hls(?:\/([\w-]+)\/(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s|stop|heartbeat|status))?$/);
     if (hlsMatch) {
       const [, jobId, sessionId, asset] = hlsMatch;
       const job = playbackJobs.get(jobId);
       if (!job) return json(res, 404, { error: 'Playback session not found.' });
       if (req.method === 'POST' && !sessionId) {
         await recoverPlaybackSource(job, await readSettings());
-        if (job.status !== 'ready' || !['direct', 'cached-convert'].includes(job.mode)) return json(res, 409, { error: 'Conversion is not ready.' });
+        if (job.status !== 'ready' || !['direct', 'cached-convert', 'cached'].includes(job.mode)) return json(res, 409, { error: 'Conversion is not ready.' });
         const input = await body(req), start = Number(input.start || 0);
         if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid playback position.' });
         const id = randomUUID(), settings = await readSettings();
+        const preparationController = new AbortController(); settings.signal = preparationController.signal;
         let session, cancelled = false, delivered = false, progressTimer, reportedCompleted = 0, lastProgress = '';
         const streaming = req.headers.accept?.includes('application/x-ndjson');
         const report = (completed, details = {}) => {
@@ -1817,7 +1886,7 @@ export async function handleRequest(req, res) {
           const serialized = JSON.stringify(event);
           if (serialized !== lastProgress) { lastProgress = serialized; res.write(serialized + '\n'); }
         };
-        req.on('close', () => { if (!delivered) { cancelled = true; void session?.close().catch(() => {}); } });
+        req.on('close', () => { if (!delivered) { cancelled = true; preparationController.abort(); void session?.close().catch(() => {}); } });
         if (streaming) {
           res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
           report(0);
@@ -1825,7 +1894,7 @@ export async function handleRequest(req, res) {
           progressTimer.unref();
         }
         try {
-          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report), onClose: () => hlsSessions.delete(id) });
+          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report, undefined, undefined, { audioTrack: input.audioTrack }), onClose: () => hlsSessions.delete(id) });
           hlsSessions.set(id, { jobId, session });
           if (cancelled) { await session.close(); return; }
           // Growing archives must read through the resume prefix. Keep useful
@@ -1836,19 +1905,20 @@ export async function handleRequest(req, res) {
           jobEvent(job, 'segments-ready', 'First playback segment is ready.');
           if (cancelled) return;
           delivered = true;
-          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}`, duration: job.sourceDuration || 0 };
+          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}`, duration: job.sourceDuration || 0, tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: Boolean(job.sourcePath || job.path || job.archiveSource?.complete) };
           if (streaming) { report(2); return res.end(JSON.stringify({ type: 'ready', session: result }) + '\n'); }
           return json(res, 200, result);
         } catch (error) {
           await session?.close();
-          if (streaming) { if (!cancelled) res.end(JSON.stringify({ type: 'error', error: error.message }) + '\n'); return; }
+          if (streaming) { if (!cancelled) res.end(JSON.stringify({ type: 'error', error: error.message, code: error.code }) + '\n'); return; }
           throw error;
         } finally { clearInterval(progressTimer); }
       }
       const entry = hlsSessions.get(sessionId);
       if (!entry || entry.jobId !== jobId) return json(res, 404, { error: 'Playback segments have expired.' });
       if (req.method === 'POST' && asset === 'stop') { await entry.session.close(); return json(res, 200, { stopped: true }); }
-      if (req.method === 'POST' && asset === 'heartbeat') { entry.session.touch(); return json(res, 200, {}); }
+      if (req.method === 'POST' && asset === 'heartbeat') { entry.session.touch(); entry.session.playbackState(await body(req)); return json(res, 200, {}); }
+      if (req.method === 'GET' && asset === 'status') { entry.session.touch(); return json(res, 200, entry.session.health()); }
       if (['GET', 'HEAD'].includes(req.method) && /\.(m3u8|mp4|m4s)$/.test(asset)) {
         return await serveHlsAsset(req, res, entry.session, asset);
       }
@@ -1936,6 +2006,6 @@ export async function handleRequest(req, res) {
     json(res, 404, { error: 'Not found.' });
   } catch (error) {
     if (res.headersSent) res.destroy(error);
-    else json(res, error.status === 429 ? 429 : 500, { error: error.message || 'Unexpected server error.', ...(error.code === 'SOURCE_UNAVAILABLE' ? { code: error.code } : {}) });
+    else json(res, error.status === 429 ? 429 : 500, { error: error.message || 'Unexpected server error.', ...(error.code ? { code: error.code } : {}) });
   }
 }

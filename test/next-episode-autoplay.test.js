@@ -15,7 +15,7 @@ function episodeState(status = 'preparing') {
   const timers = new Map();
   let timerId = 0;
   const state = {
-    ...controls, Date: { now: () => 40000 },
+    ...controls, AbortSignal, Date: { now: () => 40000 },
     nextMedia: { type: 'tv', id: 1, season: 1, episode: 2 },
     currentMedia: { type: 'tv', id: 1, season: 1, episode: 1 },
     nextJob: { id: 'next', status }, downloadNextEpisode: false,
@@ -94,9 +94,13 @@ test('cancelling the countdown prevents a later ready poll from advancing', asyn
 });
 
 test('a failed polling request does not strand an elapsed countdown', async () => {
-  const { state } = episodeState();
+  const { state, timers } = episodeState();
   state.api.get = async () => { throw new Error('Network unavailable'); };
   await state.pollNextEpisode('next', 1);
   state.tickUpNextCountdown();
+  assert.equal(state.starts.length, 0, 'transient failure retains preparation');
+  assert.ok(timers.has(state.nextPollTimer));
+  state.api.get = async () => ({ id: 'next', status: 'ready' });
+  await state.pollNextEpisode('next', 1);
   assert.equal(state.starts.length, 1);
 });

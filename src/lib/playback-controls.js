@@ -3,6 +3,7 @@ export function canUseFallback(playback) {
 }
 
 export function streamInterruptionAction(playback, automaticRetries = 0, retryLimit = 3) {
+  if (playback?.mode === 'cached-convert' && playback.status === 'ready') return automaticRetries < retryLimit ? 'retry' : 'error';
   if (!canUseFallback(playback)) return 'error';
   return Math.max(0, Number(automaticRetries) || 0) < Math.max(0, Number(retryLimit) || 0) ? 'retry' : 'offer';
 }

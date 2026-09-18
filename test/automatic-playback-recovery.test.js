@@ -36,6 +36,7 @@ function recoveryState(retries = 0) {
     poll: async (...args) => { polls.push(args); }, refreshDiagnostics() {},
     restartStream: position => { state.restartedAt = position; }
   };
+  Object.assign(state, { seekPaused: false, seekTimer: null, buffering: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} } });
   runInNewContext(handlers, state);
   return { state, requests, polls };
 }
