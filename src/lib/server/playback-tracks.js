@@ -18,7 +18,8 @@ export function playbackTracks(streams = []) {
 export async function extractCaptions(path, index, start = 0, signal) {
   const release = await conversionAdmission.acquire({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000) });
   try {
-  const { stdout } = await execute('ffmpeg', ['-nostdin', '-v', 'error', '-i', path, '-map', `0:${index}`, '-c:s', 'webvtt', '-f', 'webvtt', 'pipe:1'], { signal, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
+  // Keep source cue timestamps aligned with the playback seek offset.
+  const { stdout } = await execute('ffmpeg', ['-nostdin', '-v', 'error', '-copyts', '-i', path, '-map', `0:${index}`, '-c:s', 'webvtt', '-f', 'webvtt', 'pipe:1'], { signal, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
   return captionsAtOffset(stdout, start);
   } finally { release(); }
 }

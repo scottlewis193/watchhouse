@@ -23,7 +23,7 @@ test('real multi-track source selects the requested language and converts text c
   try{
     const input=join(root,'tracks.mkv'),captions=join(root,'captions.srt');
     await writeFile(captions,'1\n00:00:01,000 --> 00:00:03,000\nEarly\n\n2\n00:00:06,000 --> 00:00:08,000\nLater\n');
-    await run('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=25:duration=10','-f','lavfi','-i','sine=frequency=440:duration=10','-f','lavfi','-i','sine=frequency=880:duration=10','-i',captions,'-map','0:v','-map','1:a','-map','2:a','-map','3:s','-c:v','libx264','-preset','ultrafast','-c:a','aac','-c:s','srt','-metadata:s:a:0','language=eng','-metadata:s:a:1','language=fra',input]);
+    await run('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=25:duration=10','-f','lavfi','-i','sine=frequency=440:duration=10','-f','lavfi','-i','sine=frequency=880:duration=10','-i',captions,'-map','0:v','-map','1:a','-map','2:a','-map','3:s','-c:v','libx264','-preset','ultrafast','-c:a','aac','-c:s','srt','-metadata:s:a:0','language=eng','-metadata:s:a:1','language=fra','-output_ts_offset','0.125',input]);
     const job={mode:'cached-convert',sourcePath:input,strategy:'remux',release:'SDR',events:[]};
     session=await createHlsSession({root,produce:directory=>startHlsConversion(job,{},0,directory,undefined,undefined,undefined,{audioTrack:2})});await session.ready();
     const probe=JSON.parse((await run('ffprobe',['-v','error','-show_entries','stream=codec_type:stream_tags=language','-of','json',join(session.directory,'index.m3u8')])).stdout);
@@ -38,7 +38,19 @@ test('real multi-track source selects the requested language and converts text c
     const frequency=risingCrossings/(pcm.length/2/8000);
     assert.ok(Math.abs(frequency-880)<30,`expected the French 880 Hz track, got ${frequency.toFixed(1)} Hz`);
     const text=await extractCaptions(input,3,5);
-    assert.ok(text.includes('Later'));assert.ok(!text.includes('Early'));assert.ok(text.includes('00:00:01.000'));
+    assert.ok(text.includes('Later'));assert.ok(!text.includes('Early'));
+    // AAC encoder priming can shift all Matroska timestamps depending on FFmpeg.
+    // Compare against the muxed source cue instead of assuming it stayed at 6 s.
+    const sourceCaptions=JSON.parse((await run('ffprobe',['-v','error','-select_streams','s:0','-show_packets','-show_entries','packet=pts_time,duration_time','-of','json',input])).stdout);
+    const laterPacket=sourceCaptions.packets[1];
+    assert.ok(laterPacket,'the fixture must contain the later subtitle packet');
+    const cue=text.match(/((?:\d{2,}:)?\d{2}:\d{2}\.\d{3})\s+-->\s+((?:\d{2,}:)?\d{2}:\d{2}\.\d{3})/);
+    assert.ok(cue,'the extracted caption must contain a timed cue');
+    const seconds=value=>value.split(':').reduce((total,part)=>total*60+Number(part),0);
+    const expectedStart=Number(laterPacket.pts_time)-5;
+    const expectedEnd=expectedStart+Number(laterPacket.duration_time);
+    assert.ok(Math.abs(seconds(cue[1])-expectedStart)<0.002,'caption start must match the source timestamp minus the seek offset');
+    assert.ok(Math.abs(seconds(cue[2])-expectedEnd)<0.002,'caption end must preserve the source duration');
     const started=performance.now();session.playbackState({paused:true,position:0});await session.close();
     assert.ok(performance.now()-started<1500,'a paused converter must still stop promptly');
   }finally{await session?.close();await rm(root,{recursive:true,force:true});}
