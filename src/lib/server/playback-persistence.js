@@ -5,7 +5,7 @@ import { offlineMediaKey } from '../offline.js';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 export const playbackScope = settings => digest(JSON.stringify([
-  1, settings.usenetHost, Number(settings.usenetPort || 563), settings.usenetUser, settings.usenetPass,
+  2, settings.usenetHost, Number(settings.usenetPort || 563), settings.usenetUser, settings.usenetPass,
   settings.indexerUrl, settings.indexerKey, `${settings.manualReleaseSelection ? 'manual:' : ''}${settings.playbackQuality || 'balanced'}`, Number(settings.untaggedAudioTrack) || 2,
   Boolean(settings.repairVideoTimeline), Boolean(settings.frameInterpolation)
 ]));

@@ -65,7 +65,14 @@ test('downloaded media can validate the full timeline instead of only its openin
     const repair = await inspectPlaybackSource(path, 2, { fullTimeline: true, repairVideoTimeline: true });
     assert.equal(repair.repairVideoFrameRate, 25);
     const repaired = join(root, 'repaired.mp4');
-    await run('ffmpeg', ffmpegArgs('transcode', path, repaired, false, 0, 2, false, false, null, repair.repairVideoFrameRate));
+    const args = ffmpegArgs('transcode', path, repaired, false, 0, 2, false, false, null, repair.repairVideoFrameRate);
+    // Lossless encoding lets us detect blended pixels independently of encoding loss.
+    args[args.indexOf('-crf') + 1] = '0';
+    await run('ffmpeg', args);
+    const hashes = async input => (await run('ffmpeg', ['-v','error','-i',input,'-map','0:v:0','-f','framemd5','-'])).stdout.split('\n').filter(line => /^0,/.test(line)).map(line => line.split(',').at(-1).trim());
+    const sourceHashes = new Set(await hashes(path));
+    const repairedHashes = await hashes(repaired);
+    assert.ok(repairedHashes.every(hash => sourceHashes.has(hash)), 'repair must repeat source frames without synthesizing blended pixels');
     await assert.doesNotReject(inspectPlaybackSource(repaired, 2, { fullTimeline: true }));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -103,4 +110,18 @@ test('repair mode keeps direct playback segmented instead of requiring a full ca
     await session.ready();
     await assert.doesNotReject(inspectPlaybackSource(join(session.directory, 'index.m3u8'), 2, { fullTimeline: true }));
   } finally { await session?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('repair enabled leaves healthy video frames untouched', {timeout: 15000}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'healthy-video-repair-'));
+  let session;
+  try {
+    const input = join(root, 'healthy.mkv');
+    await run('ffmpeg',['-v','error','-f','lavfi','-i','testsrc2=size=160x90:rate=25:duration=4','-c:v','libx264','-preset','ultrafast',input]);
+    const job = {mode:'cached-convert', sourcePath:input, strategy:'remux', release:'SDR', events:[]};
+    session = await createHlsSession({root, produce: directory => startHlsConversion(job, {repairVideoTimeline:true}, 0, directory)});
+    await session.ready();
+    const hashes = async path => (await run('ffmpeg',['-v','error','-i',path,'-map','0:v:0','-frames:v','25','-f','framemd5','-'])).stdout.split('\n').filter(line=>/^0,/.test(line)).map(line=>line.split(',').at(-1).trim());
+    assert.deepEqual(await hashes(join(session.directory,'index.m3u8')), await hashes(input), 'healthy frames must remain identical with repair enabled');
+  } finally { await session?.close(); await rm(root,{recursive:true,force:true}); }
 });

@@ -128,3 +128,9 @@ that episode and restarts once at the current position with native-frame-rate
 conversion. The global preference stays enabled for future playback. A visible
 message and an `interpolation-fallback` diagnostic event explain the downgrade.
 Ordinary bounded recovery remains available if native playback also fails.
+
+Timeline repair now runs only after validation identifies a video-only timestamp
+gap. Healthy streams retain their original frames. Missing video intervals use
+FFmpeg's fps filter to repeat source frames rather than blend neighbouring
+images. The preparation-cache version was advanced to discard legacy decisions.
+Optional motion-compensated frame interpolation remains a separate preference.

@@ -578,7 +578,7 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
   const nvenc = transcodeVideo && !frameInterpolation && acceleration?.kind === 'nvenc';
   const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi'] : [];
   const filters = [
-    ...(repairTimeline ? [`minterpolate=fps=${repairRate}:mi_mode=blend`] : []),
+    ...(repairTimeline ? [`fps=${repairRate}:round=near`] : []),
     ...(toneMap ? [`zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`] : vaapi ? ['scale_vaapi=format=nv12'] : []),
     ...(frameInterpolation ? ['minterpolate=fps=60:mi_mode=mci'] : [])
   ];
@@ -1036,6 +1036,7 @@ function playbackInspection(job, settings, input) {
       if (issue && !(issue.type === 'video-only' && settings.repairVideoTimeline && metadata.videoFrameRate)) {
         throw Object.assign(new Error('This release has a gap in its opening audio and video timeline. Trying another release.'), { code: 'INVALID_MEDIA_TIMELINE' });
       }
+      if (issue?.type === 'video-only') metadata.repairVideoFrameRate = metadata.videoFrameRate;
       jobEvent(job, 'timeline-validated', 'Opening audio and video timeline validated.');
       if (persistent) await playbackPersistence.setProbe(source, settings, metadata).catch(() => {});
       return metadata;
@@ -1056,11 +1057,10 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const input = cached ? job.sourcePath || job.path : rangeSource.url;
     const inspection = getInspection(job, settings, input);
     const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing && !forwardSeek ? start : 0)]);
-    const repairVideoFrameRate = settings.repairVideoTimeline ? metadata.videoFrameRate : null;
-    const interpolate = Boolean(settings.frameInterpolation) && (!metadata.videoFrameRate || metadata.videoFrameRate < 60);
-    const strategy = repairVideoFrameRate || interpolate ? 'transcode' : requestedStrategy;
-    const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap, interpolate);
-    if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
+    // Repair decisions require the timeline result, not merely the source FPS.
+    // Ordinary playback retains speculative conversion while validation runs.
+    if (settings.repairVideoTimeline) await inspection.validated;
+    let repairVideoFrameRate = settings.repairVideoTimeline ? metadata.repairVideoFrameRate || null : null;
     if (job.media?.type === 'tv') assertCompleteEpisodeDuration(metadata.duration, Number(job.media.durationHint));
     let { audioIndex } = metadata;
     job.playbackTracks = metadata.tracks || [];
@@ -1068,8 +1068,16 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     if (audioTrack !== undefined && audioTrack !== null) {
       if (!Number.isInteger(audioTrack) || !job.playbackTracks.some(track => track.type === 'audio' && track.index === audioTrack)) throw Object.assign(new Error('The selected audio track is unavailable.'), { code: 'INVALID_AUDIO_TRACK' });
       // A newly selected language needs the same opening timeline checks as the default track.
-      await inspectPlaybackSource(input, settings.untaggedAudioTrack, { audioIndex: audioTrack, repairVideoTimeline: settings.repairVideoTimeline });
+      const selectedInspection = await inspectPlaybackSource(input, settings.untaggedAudioTrack, { audioIndex: audioTrack, repairVideoTimeline: settings.repairVideoTimeline });
+      if (settings.repairVideoTimeline) repairVideoFrameRate = selectedInspection.repairVideoFrameRate || null;
       audioIndex = audioTrack; job.selectedAudioTrack = audioIndex;
+    }
+    const interpolate = Boolean(settings.frameInterpolation) && (!metadata.videoFrameRate || metadata.videoFrameRate < 60);
+    const strategy = repairVideoFrameRate || interpolate ? 'transcode' : requestedStrategy;
+    const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap, interpolate);
+    if (repairVideoFrameRate) {
+      job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
+      jobEvent(job, 'timeline-repair', 'A video timestamp gap was detected. Repeating frames to preserve audio timing.');
     }
     job.sourceDuration = metadata.duration;
     const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration, repairVideoFrameRate, interpolate);

@@ -146,7 +146,7 @@
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.repairVideoTimeline} />
-            <span><span class="block text-sm font-medium">Repair video timeline gaps</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Normalise video timing while streaming instead of downloading the complete release first. Downloaded copies are fully scanned and repaired only when a video timestamp hole is found while audio continues. Uses additional CPU and is disabled by default.</span></span>
+            <span><span class="block text-sm font-medium">Repair video timeline gaps</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Repair detected video timestamp gaps while audio continues by repeating frames, without blending neighbouring images. Healthy streams retain their original frames. Downloaded copies receive a full timeline scan. Repairs use additional CPU; disabled by default.</span></span>
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3">
