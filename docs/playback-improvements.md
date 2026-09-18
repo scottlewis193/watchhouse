@@ -111,3 +111,20 @@ caption loading, a 390-pixel layout without horizontal overflow, and fullscreen
 entry/exit. Picture-in-picture was rejected by the in-app browser; the dismissible
 unsupported message was verified, so successful PiP on other browsers remains
 unverified. These checks are distinct from production endurance testing.
+
+
+Frame interpolation is an optional Playback setting, disabled by default. New
+playback sessions can use motion-compensated intermediate frames at 60 FPS via
+[FFmpeg minterpolate](https://ffmpeg.org/ffmpeg-filters.html#minterpolate).
+Interpolation forces software processing and can increase buffering and create
+motion artefacts. HLS sources already at 60 FPS or above retain their native rate.
+Offline copies retain their original frame rate; opted-in viewing of cached
+copies uses a fresh conversion session. Preference changes apply on the next
+playback start/restart and separate preparation-cache scopes.
+
+Interpolated HLS preparation has a 15-second first-segment budget. If preparation
+exceeds that budget or playback stalls, the player disables interpolation for
+that episode and restarts once at the current position with native-frame-rate
+conversion. The global preference stays enabled for future playback. A visible
+message and an `interpolation-fallback` diagnostic event explain the downgrade.
+Ordinary bounded recovery remains available if native playback also fails.

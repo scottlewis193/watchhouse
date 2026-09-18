@@ -4,7 +4,7 @@ import { playbackSetupProgress, readPlaybackSetup } from './playback-setup.js';
 export function playbackSource(video, initial, loadHls = () => import('hls.js')) {
   let key, dispose = () => {};
   function update(options) {
-    const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}:${options.audioTrack}`;
+    const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}:${options.audioTrack}:${options.frameInterpolation}`;
     if (key === nextKey) return;
     key = nextKey; dispose(false);
     if (options.active === false) { video.pause(); return; }
@@ -31,7 +31,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     const library = Promise.resolve().then(loadHls).then(value => ({ value }), error => ({ error }));
     setupTimer = setTimeout(() => { if (!closed) { options.onError('Playback preparation timed out. Try again.', { code: 'PLAYBACK_TIMEOUT' }); stop(); } }, 330000);
     void (async () => {
-      const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack }), signal: controller.signal });
+      const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack, frameInterpolation: options.frameInterpolation }), signal: controller.signal });
       const session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
       if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code });
       clearTimeout(setupTimer);

@@ -144,7 +144,7 @@ export function creditDetectionStatus({ enabled, autoPlayNext, playing, hasNextE
   return { ...result, eligible: true, state: 'eligible', label: 'Sampling frames for credits' };
 }
 
-export function videoPlaybackStats(current, previous = null, minimumSampleMs = 250) {
+export function videoPlaybackStats(current, previous = null, minimumSampleMs = 5000) {
   const total = Math.max(0, Number(current?.total) || 0);
   const dropped = Math.min(total, Math.max(0, Number(current?.dropped) || 0));
   const at = Number(current?.at) || 0;
@@ -154,7 +154,9 @@ export function videoPlaybackStats(current, previous = null, minimumSampleMs = 2
   const elapsed = at - previous.at;
   if (elapsed < minimumSampleMs) return { fps: null, total, dropped, droppedPercent, sample: previous };
   const renderedFrames = Math.max(0, (total - dropped) - (previous.total - previous.dropped));
-  return { fps: renderedFrames * 1000 / elapsed, total, dropped, droppedPercent, sample };
+  const recentTotal = total - previous.total;
+  const recentDropped = dropped - previous.dropped;
+  return { fps: renderedFrames * 1000 / elapsed, total, dropped, droppedPercent, recentDropped, recentDroppedPercent: recentTotal ? recentDropped / recentTotal * 100 : 0, sampleMs: elapsed, sample };
 }
 
 export function audioPlaybackHealth(current, previous = null, minimumSampleMs = 8000) {

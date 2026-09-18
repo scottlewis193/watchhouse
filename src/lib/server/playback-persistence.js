@@ -7,7 +7,7 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 export const playbackScope = settings => digest(JSON.stringify([
   1, settings.usenetHost, Number(settings.usenetPort || 563), settings.usenetUser, settings.usenetPass,
   settings.indexerUrl, settings.indexerKey, `${settings.manualReleaseSelection ? 'manual:' : ''}${settings.playbackQuality || 'balanced'}`, Number(settings.untaggedAudioTrack) || 2,
-  Boolean(settings.repairVideoTimeline)
+  Boolean(settings.repairVideoTimeline), Boolean(settings.frameInterpolation)
 ]));
 export const playbackRetention = settings => Math.min(168, Math.max(1, Number(settings.cacheRetentionHours) || 24)) * 3600000;
 const sourceIds = new WeakMap();

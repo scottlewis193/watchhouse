@@ -54,9 +54,16 @@
         <dt class="text-base-content/50">Playback</dt><dd>{video?.event || 'Waiting for player'}{video?.paused === false ? ' · playing' : ' · paused'}</dd>
         <dt class="text-base-content/50">Position</dt><dd>{Math.round(video?.currentTime || 0)}s / {Number.isFinite(video?.duration) ? `${Math.round(video.duration)}s` : 'unknown'}</dd>
         <dt class="text-base-content/50">Frame size</dt><dd>{video?.videoWidth && video?.videoHeight ? `${video.videoWidth} × ${video.videoHeight}` : 'Not reported'}</dd>
-        <dt class="text-base-content/50">Rendered FPS</dt><dd>{Number.isFinite(video?.fps) ? `${video.fps.toFixed(1)} fps` : 'Measuring…'}</dd>
+        <dt class="text-base-content/50">Rendered FPS</dt><dd>{Number.isFinite(video?.fps) ? `${video.fps.toFixed(1)} fps · ${video.frameSampleSeconds.toFixed(1)}s average` : video?.paused ? 'Paused' : 'Measuring…'}</dd>
         <dt class="text-base-content/50">Video frames</dt><dd>{Number.isFinite(video?.totalFrames) ? video.totalFrames.toLocaleString() : 'Unavailable'}</dd>
-        <dt class="text-base-content/50">Dropped</dt><dd>{Number.isFinite(video?.droppedFrames) ? `${video.droppedFrames.toLocaleString()} (${video.droppedFramePercent.toFixed(2)}%)` : 'Unavailable'}</dd>
+        <dt class="text-base-content/50">Recent dropped</dt><dd>{Number.isFinite(video?.recentDroppedFrames) ? `${video.recentDroppedFrames.toLocaleString()} (${video.recentDroppedFramePercent.toFixed(2)}%) · last ${video.frameSampleSeconds.toFixed(1)}s sample` : video?.paused ? 'Paused' : 'Measuring…'}</dd>
+        <dt class="text-base-content/50">Total dropped</dt><dd>{Number.isFinite(video?.droppedFrames) ? `${video.droppedFrames.toLocaleString()} (${video.droppedFramePercent.toFixed(2)}%)` : 'Unavailable'}</dd>
+        <dt class="text-base-content/50">Frame timing</dt><dd>{video?.frameTiming?.supported === false ? 'Unavailable in this browser' : video?.frameTiming?.state || 'Measuring…'} · last 10s</dd>
+        <dt class="text-base-content/50">Presentation</dt><dd>{video?.frameTiming?.samples ? `${video.frameTiming.displayMedianMs.toFixed(1)}ms median / ${video.frameTiming.displayMaxMs.toFixed(1)}ms max` : 'Measuring…'}</dd>
+        <dt class="text-base-content/50">Source timing</dt><dd>{video?.frameTiming?.samples ? `${video.frameTiming.sourceMedianMs.toFixed(1)}ms median / ${video.frameTiming.sourceMaxMs.toFixed(1)}ms max` : 'Measuring…'}</dd>
+        <dt class="text-base-content/50">Long intervals</dt><dd>{video?.frameTiming?.samples ? `${video.frameTiming.longDisplayIntervals} · over 2.5× median` : 'Measuring…'}</dd>
+        <dt class="text-base-content/50">Callback gaps</dt><dd>{video?.frameTiming?.supported ? `${video.frameTiming.skippedCallbacks} unobserved frames` : 'Unavailable'}</dd>
+        <dt class="text-base-content/50">Callback delay</dt><dd>{Number.isFinite(video?.frameTiming?.callbackLateMaxMs) ? `${video.frameTiming.callbackLateMaxMs.toFixed(1)}ms max · observer delay` : 'Measuring…'}</dd>
         <dt class="text-base-content/50">Buffered</dt><dd>{video?.buffered || '—'}</dd>
         <dt class="text-base-content/50">Smart credits</dt><dd>{credits?.label || 'Waiting for playback data'}</dd>
         <dt class="text-base-content/50">Credit sample</dt><dd>{credits?.sample ? `dark ${percent(credits.sample.darkFraction)} · bright ${percent(credits.sample.brightFraction)} · edges ${percent(credits.sample.edgeDensity)}` : 'No frame sampled yet'}</dd>
@@ -71,7 +78,7 @@
         <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Playback interruptions</h3>
         <button class="btn btn-xs" disabled={!report && !interruptions.length} onclick={downloadTrace}>Download diagnostic report</button>
       </div>
-      <p class="mt-2 text-base-content/55">Keeps the last 20 interruptions while this page is open, including player samples leading up to each one. Reports include startup and server milestones. Download before reloading or leaving the page.</p>
+      <p class="mt-2 text-base-content/55">Keeps the last 20 interruptions while this page is open, including player samples leading up to each one. Reports include startup, buffering events and recent frame timing. Presentation times are browser estimates; callback gaps and delays do not prove dropped frames. Download before reloading or leaving the page.</p>
       {#if interruptions.length}
         <ol class="mt-3 max-h-64 space-y-4 overflow-y-auto">
           {#each [...interruptions].reverse() as interruption}

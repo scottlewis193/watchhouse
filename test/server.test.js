@@ -679,11 +679,30 @@ test('shows Up Next only during the final 30 seconds of the full runtime', () =>
 test('reports rendered FPS and dropped-frame totals from browser playback counters', () => {
   const initial = videoPlaybackStats({ at: 1_000, total: 100, dropped: 5 });
   assert.deepEqual(initial, { fps: null, total: 100, dropped: 5, droppedPercent: 5, sample: { at: 1_000, total: 100, dropped: 5 } });
-  const measured = videoPlaybackStats({ at: 2_000, total: 130, dropped: 8 }, initial.sample);
+  const measured = videoPlaybackStats({ at: 6_000, total: 250, dropped: 20 }, initial.sample);
   assert.equal(measured.fps, 27);
-  assert.equal(measured.total, 130);
-  assert.equal(measured.dropped, 8);
-  assert.equal(Math.round(measured.droppedPercent * 100) / 100, 6.15);
+  assert.equal(measured.total, 250);
+  assert.equal(measured.dropped, 20);
+  assert.equal(measured.droppedPercent, 8);
+  assert.equal(measured.recentDropped, 15);
+  assert.equal(measured.recentDroppedPercent, 10);
+  assert.equal(measured.sampleMs, 5000);
+});
+
+test('FPS sampling ignores short event bursts and resets when counters restart', () => {
+  const initial = videoPlaybackStats({ at: 1000, total: 100, dropped: 4 });
+  for (const [at, total] of [[1250, 107], [2100, 127], [5800, 220]]) {
+    const short = videoPlaybackStats({ at, total, dropped: 4 }, initial.sample);
+    assert.equal(short.fps, null);
+    assert.equal(short.sample, initial.sample);
+  }
+  const measured = videoPlaybackStats({ at: 6100, total: 227, dropped: 4 }, initial.sample);
+  assert.ok(Math.abs(measured.fps - 25) < 0.2);
+  assert.equal(measured.recentDropped, 0);
+  assert.equal(measured.recentDroppedPercent, 0);
+  const reset = videoPlaybackStats({ at: 6200, total: 0, dropped: 0 }, measured.sample);
+  assert.equal(reset.fps, null);
+  assert.equal(reset.sample.total, 0);
 });
 
 test('detects audio decoding stopping while video playback keeps advancing', () => {

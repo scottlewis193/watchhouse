@@ -119,3 +119,17 @@ test('repeated partial episode endings automatically reach preparation without u
   assert.equal(state.continuePlaybackOnReady, true);
   assert.equal(state.playbackRecovery, null);
 });
+
+test('an interpolation buffering timeout downgrades once instead of repeating the expensive conversion', () => {
+  const { state } = recoveryState();
+  state.playback.frameInterpolation = true;
+  state.interpolationDisabled = false;
+  state.playerControlError = '';
+  state.handlePlaybackInterruption('buffering-timeout', 'No advancing frames.');
+  assert.equal(state.interpolationDisabled, true);
+  assert.equal(state.restartedAt, 140);
+  assert.equal(state.automaticStreamRetries, 0);
+  assert.match(state.playerControlError, /original frame rate/i);
+  state.handlePlaybackInterruption('buffering-timeout', 'Still stalled.');
+  assert.equal(state.automaticStreamRetries, 1, 'ordinary recovery remains bounded after interpolation is disabled');
+});

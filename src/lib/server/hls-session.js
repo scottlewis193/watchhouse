@@ -88,7 +88,7 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
         }
         await delay(100);
       }
-      throw new Error('Timed out preparing playback segments.');
+      throw Object.assign(new Error('Timed out preparing playback segments.'), { code: 'PLAYBACK_SEGMENT_TIMEOUT' });
     }
     function playbackState(state = {}) {
       if (typeof state.paused === 'boolean') paused = state.paused;
@@ -115,6 +115,6 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
     monitor.unref();
     touch();
     return { directory, ready, read, touch, close, playbackState,
-      health: () => ({ failed: Boolean(failure), closed, completed, bytes, paused, position: producer.position?.() || 0 }) };
+      health: () => ({ failed: Boolean(failure), closed, completed, bytes, paused, interpolated: Boolean(producer.interpolated), position: producer.position?.() || 0 }) };
   } catch (error) { release(); if (directory) await rm(directory, { recursive: true, force: true }); throw error; }
 }

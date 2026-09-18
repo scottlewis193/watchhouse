@@ -1,6 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte';
   import { createProgressWriter } from '$lib/progress-writer.js';
+  import { frameTiming } from '$lib/frame-timing.js';
   import { playbackSource } from '$lib/hls-playback.js';
   import { playbackSetupProgress } from '$lib/playback-setup.js';
   import { goto, replaceState } from '$app/navigation';
@@ -30,9 +31,11 @@
   let fallbackPending = false;
   let seekPaused = false, seekTimer, statusFailures = 0, lastAdvancedPosition = 0, lastDiagnosticAt = 0, firstAdvancedSource = '';
   let audioTracks = $state([]), captionTracks = $state([]), selectedAudioTrack = $state(null), selectedCaptionTrack = $state('off'), captionsAvailable = $state(false);
+  let interpolationDisabled = $state(false);
   let buffering = $state(false), pictureInPictureAvailable = $state(false), playerControlError = $state('');
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
   let bufferedRanges = $state([]);
+  let frameTimingStats = $state(null);
   let videoDiagnostics = $state(null), creditDiagnostics = $state(null);
   let interruptionHistory = $state([]);
   let setupProgress = $state(null);
@@ -47,7 +50,7 @@
   });
   let backgroundTimer, backgroundReporting = false, backgroundTarget = null, backgroundTargetKey = "", backgroundDownloadKey = "";
   let readinessController;
-  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, playerRevealTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, audioFrameSample = null, automaticStreamRetries = 0, measuredVideoFps = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, creditSampleCount = 0, creditEvidence = [], lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
+  let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, playerRevealTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, audioFrameSample = null, automaticStreamRetries = 0, measuredFrameStats = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, creditSampleCount = 0, creditEvidence = [], lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
   let playbackUi = $derived(playbackPresentation({ ready: playback?.status === 'ready', warming: resumeStarting, restarting: streamRestarting, revealing: playerRevealing }));
   const playbackRequests = createPlaybackRequestGuard();
   const nextEpisodePreparation = createNextEpisodePreparationController();
@@ -205,7 +208,7 @@
     currentPlaybackRequestToken = requestToken;
     try {
       void savePlaybackProgress(true);
-      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; nextEpisodePreparation.reset(); continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; creditSampleCount = 0; creditEvidence = []; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredVideoFps = null;
+      clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; nextEpisodePreparation.reset(); continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; creditSampleCount = 0; creditEvidence = []; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredFrameStats = null;
       if (selectedMedia.type === 'tv') {
         selectedSeason = String(selectedMedia.season);
         selectedEpisode = String(selectedMedia.episode);
@@ -216,7 +219,7 @@
       audioTracks = []; captionTracks = []; selectedAudioTrack = null; selectedCaptionTrack = 'off'; captionsAvailable = false;
       sourceDuration = 0;
       clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer);
-      restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; resumeStreamOffset = 0; resumeStarting = false; streamRestarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; seekPaused = false; buffering = false; statusFailures = 0; lastAdvancedPosition = 0; clearTimeout(seekTimer); seekTimer = null; playerPosition = 0; bufferedRanges = []; playerDuration = 0; seekPreview = null; audioFrameSample = null; automaticStreamRetries = 0;
+      restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; resumeStreamOffset = 0; resumeStarting = false; streamRestarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; seekPaused = false; interpolationDisabled = false; buffering = false; statusFailures = 0; lastAdvancedPosition = 0; clearTimeout(seekTimer); seekTimer = null; playerPosition = 0; bufferedRanges = []; playerDuration = 0; seekPreview = null; audioFrameSample = null; automaticStreamRetries = 0;
       clearTimeout(interruptionTimer); showPlayerControls();
       playback = preparedJob || { status: 'selecting', message: 'Finding the best available release…', progress: 3 };
       let early;
@@ -500,7 +503,7 @@
   }
 
   function flushPlaybackProgress() { void savePlaybackProgress(true); }
-  function diagnosticReport() { return playbackTrace.report({ job: playback?.diagnostics, status: playback?.status, mode: playback?.mode, video: videoDiagnostics }); }
+  function diagnosticReport() { return playbackTrace.report({ job: playback?.diagnostics, status: playback?.status, mode: playback?.mode, video: videoDiagnostics, frameTiming: frameTimingStats }); }
 
   function restorePlaybackProgress() {
     const key = itemKey(currentMedia), entry = progressFor(currentMedia);
@@ -623,6 +626,13 @@
     // Keep one recovery request in flight rather than replacing its token.
     if (fallbackPending && playbackRequests.isCurrent(fallbackPending)) return;
     if (playback?.status !== 'ready') return;
+    if (playback.frameInterpolation && !interpolationDisabled && (reason === 'buffering-timeout' || evidence.code === 'INTERPOLATION_TOO_SLOW')) {
+      interpolationDisabled = true;
+      playerControlError = 'Frame interpolation could not sustain playback. Continuing at the original frame rate for this episode.';
+      playbackTrace.event('interpolation-fallback', { reason, position: currentPlaybackPosition() });
+      restartStream(currentPlaybackPosition());
+      return;
+    }
     if (['PLAYBACK_BUSY', 'PLAYBACK_STORAGE_LIMIT', 'INVALID_AUDIO_TRACK'].includes(evidence.code)) { playback = { ...playback, status: 'error', message }; return; }
     const action = evidence.code === 'SOURCE_UNAVAILABLE' ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries);
     if (playbackDiagnostics) {
@@ -808,9 +818,13 @@
     const droppedFrames = Number(quality?.droppedVideoFrames ?? player.webkitDroppedFrameCount);
     let frameStats = {};
     if (Number.isFinite(totalFrames) && Number.isFinite(droppedFrames)) {
-      const stats = videoPlaybackStats({ at: performance.now(), total: totalFrames, dropped: droppedFrames }, videoFrameSample);
-      if (stats.sample !== videoFrameSample) { videoFrameSample = stats.sample; measuredVideoFps = stats.fps; }
-      frameStats = { fps: measuredVideoFps, totalFrames: stats.total, droppedFrames: stats.dropped, droppedFramePercent: stats.droppedPercent };
+      if (player.paused || player.seeking) { videoFrameSample = null; measuredFrameStats = null; }
+      const stats = videoPlaybackStats({ at, total: totalFrames, dropped: droppedFrames }, videoFrameSample);
+      if (!player.paused && !player.seeking && stats.sample !== videoFrameSample) {
+        videoFrameSample = stats.sample;
+        measuredFrameStats = { fps: stats.fps, recentDroppedFrames: stats.recentDropped, recentDroppedFramePercent: stats.recentDroppedPercent, frameSampleSeconds: stats.sampleMs / 1000 };
+      }
+      frameStats = { ...measuredFrameStats, totalFrames: stats.total, droppedFrames: stats.dropped, droppedFramePercent: stats.droppedPercent };
     }
     const audioBytes = Number(player.webkitAudioDecodedByteCount);
     videoDiagnostics = { event, readyState: player.readyState, networkState: player.networkState, paused: player.paused, currentTime: player.currentTime, duration: player.duration, videoWidth: player.videoWidth, videoHeight: player.videoHeight, buffered: ranges.join(', '), ...(Number.isFinite(audioBytes) ? { audioDecodedBytes: audioBytes } : {}), error: player.error ? `MediaError ${player.error.code}${player.error.message ? `: ${player.error.message}` : ''}` : '', ...frameStats };
@@ -847,7 +861,7 @@
         seekTimer = null; seekPreview = null;
         resumeStreamOffset = target;
         playerPosition = 0; bufferedRanges = [];
-        videoFrameSample = null; measuredVideoFps = null;
+        videoFrameSample = null; measuredFrameStats = null;
         beginPlaybackWarmup(true);
         if (!paused) continuePlaybackOnReady = true;
       }, 150);
@@ -1038,12 +1052,12 @@
           {#if playbackDiagnostics && diagnosticsOpen}
             <aside id="player-diagnostics" class="player-diagnostics-panel" aria-label="Playback diagnostics">
               <div class="player-diagnostics-header"><div><p class="player-eyebrow">Live technical data</p><h2>Playback diagnostics</h2></div><button class="player-diagnostics-close" onclick={() => { diagnosticsOpen = false; }} aria-label="Close playback diagnostics">×</button></div>
-              <PlaybackDiagnostics {playback} {nextJob} report={diagnosticReport()} video={videoDiagnostics} credits={creditDiagnostics} interruptions={interruptionHistory} embedded />
+              <PlaybackDiagnostics {playback} {nextJob} report={diagnosticReport()} video={{ ...videoDiagnostics, frameTiming: frameTimingStats }} credits={creditDiagnostics} interruptions={interruptionHistory} embedded />
             </aside>
           {/if}
           <!-- Keep the video element through episode preparation so browser playback permission survives. -->
           <!-- svelte-ignore a11y_media_has_caption -->
-          <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} playsinline preload="auto" use:playbackSource={{ active: playback?.status === 'ready', attempt: streamAttempt, url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, audioTrack: selectedAudioTrack, onTracks: updatePlaybackTracks, onEvent: (type, details) => playbackTrace.event(type, details), onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: value => { setupProgress = value; }, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); if (!playback?.hlsUrl) handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { if (!playback?.hlsUrl) void loadCachedTracks(); updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}>
+          <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} playsinline preload="auto" use:frameTiming={{ key: `${playback?.id}:${streamAttempt}:${resumeStreamOffset}:${selectedAudioTrack}`, onSample: sample => { frameTimingStats = sample; const { intervals, ...summary } = sample; playbackTrace.event('frame-timing', summary); } }} use:playbackSource={{ active: playback?.status === 'ready', attempt: streamAttempt, url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, audioTrack: selectedAudioTrack, frameInterpolation: interpolationDisabled ? false : undefined, onTracks: updatePlaybackTracks, onEvent: (type, details) => playbackTrace.event(type, details), onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: value => { setupProgress = value; }, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); if (!playback?.hlsUrl) handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onseeking={() => { videoFrameSample = null; measuredFrameStats = null; captureVideoDiagnostics('seeking'); }} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { if (!playback?.hlsUrl) void loadCachedTracks(); updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}>
             {#if selectedCaptionTrack !== 'off'}<track kind="subtitles" label="Captions" src={`/api/play/${playback.id}/captions/${selectedCaptionTrack}.vtt?start=${resumeStreamOffset}`} default onload={enableCaptions} onerror={() => { playerControlError = 'Could not load captions. Try another caption track.'; }} />{/if}
           </video>
           {#if playback?.status === 'ready'}
@@ -1111,7 +1125,7 @@
     {/if}
 
     {#if playbackDiagnostics && interruptionHistory.length && playback?.status !== 'ready'}
-      <PlaybackDiagnostics {playback} {nextJob} report={diagnosticReport()} video={videoDiagnostics} credits={creditDiagnostics} interruptions={interruptionHistory} />
+      <PlaybackDiagnostics {playback} {nextJob} report={diagnosticReport()} video={{ ...videoDiagnostics, frameTiming: frameTimingStats }} credits={creditDiagnostics} interruptions={interruptionHistory} />
     {/if}
 
     {#if guideOpen && (media.type === 'tv' || releaseChoices.length)}

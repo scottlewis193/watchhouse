@@ -14,6 +14,7 @@ import { createReleaseHealthStore, releaseIdentity } from './release-health.js';
 import { createMediaStateStore } from './media-state.js';
 import { stopConversion } from './conversion-process.js';
 import { waitForDrain } from './stream-drain.js';
+import { validateOpeningVideoDecode } from './video-decode-validation.js';
 import { conversionAdmission } from './conversion-admission.js';
 import { playbackTracks, extractCaptions } from './playback-tracks.js';
 import { createHlsSession, hlsOutputArgs } from './hls-session.js';
@@ -153,7 +154,7 @@ const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {})
 cacheSweep.unref();
 export function publicSettings(settings) {
   const { indexerKey, usenetPass, tmdbToken, omdbKey, watchmodeKey, ...safe } = settings;
-  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, repairVideoTimeline: false, ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
+  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, repairVideoTimeline: false, frameInterpolation: false, ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
 }
 export function connectionTestSettings(saved, entered = {}) {
   return { ...saved, ...Object.fromEntries(Object.entries(entered).filter(([, value]) => value !== '')) };
@@ -543,16 +544,21 @@ export function playbackAccelerationLabel(strategy, toneMap = false, acceleratio
   if (acceleration?.kind === 'vaapi') return toneMap ? 'GPU encode · CPU HDR tone mapping' : 'GPU · VAAPI decode + encode';
   return toneMap ? 'CPU · HDR tone mapping' : 'CPU · software transcode';
 }
-async function configurePlaybackAcceleration(job, strategy, toneMap = false) {
-  const acceleration = ['raw', 'remux'].includes(strategy) ? null : await availableVideoAcceleration();
-  const label = playbackAccelerationLabel(strategy, toneMap, acceleration);
+export function playbackNeedsToneMapping(job) {
+  // Prepared browser copies already went through tone mapping when downloaded.
+  const source = job.sourcePath || job.path || '';
+  return releaseDynamicRange(job.release) !== 'sdr' && !source.endsWith('.browser.mp4');
+}
+async function configurePlaybackAcceleration(job, strategy, toneMap = false, interpolate = false) {
+  const acceleration = interpolate || ['raw', 'remux'].includes(strategy) ? null : await availableVideoAcceleration();
+  const label = interpolate ? 'CPU · 60 FPS motion interpolation' : playbackAccelerationLabel(strategy, toneMap, acceleration);
   if (job.videoAcceleration !== label) {
     job.videoAcceleration = label;
     jobEvent(job, 'acceleration', label);
   }
   return acceleration;
 }
-export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null, repairVideoFrameRate = null) {
+export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null, repairVideoFrameRate = null, frameInterpolation = false) {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
   const englishMetadataMaps = [
     '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:m:language:en-US:?', '0:a:m:language:en-GB:?',
@@ -567,13 +573,14 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
     ? ['-reconnect', '1', '-reconnect_delay_max', '2', '-rw_timeout', '15000000'] : [];
   const repairRate = Number(repairVideoFrameRate);
   const repairTimeline = Number.isFinite(repairRate) && repairRate > 0;
-  const transcodeVideo = strategy !== 'remux' || toneMap || repairTimeline;
-  const vaapi = transcodeVideo && acceleration?.kind === 'vaapi';
-  const nvenc = transcodeVideo && acceleration?.kind === 'nvenc';
+  const transcodeVideo = strategy !== 'remux' || toneMap || repairTimeline || frameInterpolation;
+  const vaapi = transcodeVideo && !frameInterpolation && acceleration?.kind === 'vaapi';
+  const nvenc = transcodeVideo && !frameInterpolation && acceleration?.kind === 'nvenc';
   const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi'] : [];
   const filters = [
     ...(repairTimeline ? [`minterpolate=fps=${repairRate}:mi_mode=blend`] : []),
-    ...(toneMap ? [`zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`] : vaapi ? ['scale_vaapi=format=nv12'] : [])
+    ...(toneMap ? [`zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`] : vaapi ? ['scale_vaapi=format=nv12'] : []),
+    ...(frameInterpolation ? ['minterpolate=fps=60:mi_mode=mci'] : [])
   ];
   const filter = filters.join(',');
   const filterArgs = filter ? ['-vf', filter] : [];
@@ -626,22 +633,22 @@ async function optimizeCachedVideo(job, path, settings = {}) {
   const inspection = await inspectPlaybackSource(path, job.untaggedAudioTrack, { fullTimeline: true, repairVideoTimeline: Boolean(settings.repairVideoTimeline) });
   const repairVideoFrameRate = inspection.repairVideoFrameRate || null;
   if (repairVideoFrameRate) jobEvent(job, 'timeline-repair', 'A video timestamp hole was found. Rebuilding the missing interval against the audio clock.');
-  if (job.backgroundFor && !repairVideoFrameRate) return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy: await cachedPlaybackStrategy(path, job.release), timelineValidated: true };
+  if (job.backgroundFor && !repairVideoFrameRate) return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy: await cachedPlaybackStrategy(path, job.release), timelineValidated: true, decodeValidated: true };
   const strategy = repairVideoFrameRate ? 'transcode' : await cachedPlaybackStrategy(path, job.release);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   // Timeline interpolation is a software filter; keep hardware frames out of
   // this rare repair path so it behaves consistently on every host.
   const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap);
   if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
-  if (strategy === 'raw') return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration, timelineValidated: true };
+  if (strategy === 'raw') return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration, timelineValidated: true, decodeValidated: true };
   if (repairVideoFrameRate || shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
     await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration, repairVideoFrameRate), job.directory || ROOT, job);
     await validatePreparedEpisode(job, browserPath);
     await inspectPlaybackSource(browserPath, job.untaggedAudioTrack, { fullTimeline: true });
-    return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration, timelineValidated: true, timelineRepaired: Boolean(repairVideoFrameRate) };
+    return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration, timelineValidated: true, decodeValidated: true, timelineRepaired: Boolean(repairVideoFrameRate) };
   }
-  return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy, videoAcceleration: job.videoAcceleration, timelineValidated: true };
+  return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy, videoAcceleration: job.videoAcceleration, timelineValidated: true, decodeValidated: true };
 }
 export async function audioSafeOfflineRecord(record, inspectStrategy = cachedPlaybackStrategy) {
   if (record.mode !== 'cached' || !record.path) return record;
@@ -989,6 +996,7 @@ export async function inspectPlaybackSource(input, untaggedAudioTrack = 2, { ful
   if (issue && !(issue.type === 'video-only' && repairVideoTimeline && frameRate(video))) {
     throw Object.assign(new Error('This release has a gap in its audio and video timeline. Trying another release.'), { code: 'INVALID_MEDIA_TIMELINE' });
   }
+  if (fullTimeline) await validateOpeningVideoDecode(input);
   const duration = Number(probe.format?.duration);
   return {
     audioIndex,
@@ -998,13 +1006,13 @@ export async function inspectPlaybackSource(input, untaggedAudioTrack = 2, { ful
 }
 
 export async function validateOfflinePlaybackRecord(record, settings = {}, inspect = inspectPlaybackSource) {
-  if (record.timelineValidated) return record;
+  if (record.timelineValidated && record.decodeValidated) return record;
   const metadata = await inspect(record.sourcePath || record.path, Number(settings.untaggedAudioTrack) || 2, {
     fullTimeline: true,
     ...(settings.repairVideoTimeline ? { repairVideoTimeline: true } : {})
   });
   if (metadata?.repairVideoFrameRate) return { ...record, timelineRepairRequired: true, repairVideoFrameRate: metadata.repairVideoFrameRate };
-  return { ...record, timelineValidated: true };
+  return { ...record, timelineValidated: true, decodeValidated: true };
 }
 
 const playbackInspections = createValidatedPreparationCache();
@@ -1038,7 +1046,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   const cached = ['cached-convert', 'cached'].includes(job.mode);
   let rangeSource;
   const requestedStrategy = seekPlaybackStrategy(job.strategy === 'raw' ? 'remux' : job.strategy, start);
-  const toneMap = releaseDynamicRange(job.release) !== 'sdr';
+  const toneMap = playbackNeedsToneMapping(job);
   let producer;
   try {
     const growing = job.progressiveArchive && !job.archiveSource?.complete;
@@ -1049,8 +1057,9 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const inspection = getInspection(job, settings, input);
     const [metadata, pacing] = await Promise.all([inspection.metadata, getPacing(growing && !forwardSeek ? start : 0)]);
     const repairVideoFrameRate = settings.repairVideoTimeline ? metadata.videoFrameRate : null;
-    const strategy = repairVideoFrameRate ? 'transcode' : requestedStrategy;
-    const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap);
+    const interpolate = Boolean(settings.frameInterpolation) && (!metadata.videoFrameRate || metadata.videoFrameRate < 60);
+    const strategy = repairVideoFrameRate || interpolate ? 'transcode' : requestedStrategy;
+    const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap, interpolate);
     if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
     if (job.media?.type === 'tv') assertCompleteEpisodeDuration(metadata.duration, Number(job.media.durationHint));
     let { audioIndex } = metadata;
@@ -1063,7 +1072,8 @@ export async function startHlsConversion(job, settings, start, directory, onProg
       audioIndex = audioTrack; job.selectedAudioTrack = audioIndex;
     }
     job.sourceDuration = metadata.duration;
-    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration, repairVideoFrameRate);
+    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration, repairVideoFrameRate, interpolate);
+    if (interpolate) jobEvent(job, 'frame-interpolation', 'Generating motion-compensated intermediate frames at 60 FPS.');
     if (growing) {
       // Matroska can build a seek index from available clusters. Ignore its
       // tail index so accurate input seeking never waits for full extraction.
@@ -1088,6 +1098,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     args.splice(args.indexOf('-i'), 0, ...pacing);
     if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', `expr:gte(t,n_forced*${segmentSeconds})`);
     producer = await startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start), settings.signal);
+    producer.interpolated = interpolate;
     jobEvent(job, 'encoding-start', 'Preparing the first playback segments.', { start });
     onProgress(1);
     // Encoding may run while we check the timeline. No playlist/session is
@@ -1154,11 +1165,11 @@ async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal)
 
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
   const rangeSource = start > 0 || job.progressiveArchive ? await openPostedRangeServer(job, settings) : null;
-  const strategy = seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
-  const toneMap = releaseDynamicRange(job.release) !== 'sdr';
-  const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap);
+  const strategy = settings.frameInterpolation ? 'transcode' : seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
+  const toneMap = playbackNeedsToneMapping(job);
+  const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap, Boolean(settings.frameInterpolation));
   const growing = job.progressiveArchive && !job.archiveSource?.complete;
-  const args = ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource) && !growing, toneMap, acceleration);
+  const args = ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource) && !growing, toneMap, acceleration, null, Boolean(settings.frameInterpolation));
   if (growing) args.splice(args.indexOf('-i'), 0, '-seekable', '0');
   const child = spawn('ffmpeg', args); let stderr = '';
   const exited = once(child, 'close'); void exited.catch(() => {});
@@ -1175,9 +1186,9 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
   finally { await rangeSource?.close(); }
 }
 async function streamCachedConversion(req, res, job, settings, start = 0) {
-  const toneMap = releaseDynamicRange(job.release) !== 'sdr';
-  const acceleration = await configurePlaybackAcceleration(job, job.strategy, toneMap);
-  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration)); let stderr = '';
+  const toneMap = playbackNeedsToneMapping(job);
+  const acceleration = await configurePlaybackAcceleration(job, settings.frameInterpolation ? 'transcode' : job.strategy, toneMap, Boolean(settings.frameInterpolation));
+  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath || job.path, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration, null, Boolean(settings.frameInterpolation))); let stderr = '';
   const exited = once(child, 'close'); void exited.catch(() => {});
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {});
@@ -1399,6 +1410,7 @@ async function savedPlanAvailable(plan, settings) {
   finally { client.close(); }
 }
 export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null } = {}) {
+  job.frameInterpolation = Boolean(settings.frameInterpolation);
   try {
     if (job.progressiveArchive && job.rejectedReleases?.has(job.releaseKey || job.release)) {
       await job.archiveSource?.close(); delete job.archiveSource; delete job.progressiveArchive; delete job.file;
@@ -1509,12 +1521,12 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             }
           }
         } else jobEvent(job, 'release-rejected', 'No supported video or archive was found.', { release: release.title });
-      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
+      } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
     if (!archiveChoices.length) throw new Error('No compatible video release was found.');
     if (progressive) job.progressiveArchiveDisabled = true;
     if (job.rejectedReleases?.size && !job.downloadReplacement) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
-    let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
+    let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { if (isDownloadCancelled(job, error)) { job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
 }
 async function startOfflineMediaDownload(media, settings, backgroundFor = null) {
@@ -1532,7 +1544,7 @@ async function startOfflineMediaDownload(media, settings, backgroundFor = null) 
     try {
       await preparePlayback(job, backgroundFor ? { ...settings, backgroundJob: job } : settings);
       if (job.status === 'ready' && !job.cancelled) {
-        records.set(key, { key, media: job.media, status: 'ready', mode: job.mode, path: job.path, sourcePath: job.sourcePath, directory: job.directory, mime: job.mime, strategy: job.strategy, release: job.release || '', backgroundDownload: Boolean(job.backgroundFor), timelineValidated: Boolean(job.timelineValidated), timelineRepaired: Boolean(job.timelineRepaired), downloadedAt: Date.now() });
+        records.set(key, { key, media: job.media, status: 'ready', mode: job.mode, path: job.path, sourcePath: job.sourcePath, directory: job.directory, mime: job.mime, strategy: job.strategy, release: job.release || '', backgroundDownload: Boolean(job.backgroundFor), timelineValidated: Boolean(job.timelineValidated), decodeValidated: Boolean(job.decodeValidated), timelineRepaired: Boolean(job.timelineRepaired), downloadedAt: Date.now() });
         await writeOfflineRecords();
       }
       return job;
@@ -1595,7 +1607,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     const source = record.sourcePath || record.path;
     setJob(job, 'optimizing', 'Preparing the downloaded copy for reliable offline playback…', 95);
     const optimized = await optimizeCachedVideo({ ...job, offlineDownload: true, release: record.release, directory: record.directory }, source, settings);
-    const updated = { ...record, ...optimized, mode: 'cached', timelineValidated: true };
+    const updated = { ...record, ...optimized, mode: 'cached', timelineValidated: true, decodeValidated: true };
     delete updated.sourcePath;
     delete updated.timelineRepairRequired;
     delete updated.repairVideoFrameRate;
@@ -1607,7 +1619,7 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
   }
 }
-function publicJob(job) { const { archiveResume, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, title: media.title, hlsUrl: job.status === 'ready' && ['direct', 'cached-convert'].includes(job.mode) ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { archiveResume, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode, title: media.title, hlsUrl: job.status === 'ready' && (['direct', 'cached-convert'].includes(job.mode) || job.frameInterpolation && job.mode === 'cached') ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };
@@ -1714,7 +1726,8 @@ export async function handleRequest(req, res) {
       const record = (await readOfflineRecords()).get(decodeURIComponent(offlineStreamMatch[1]));
       if (!record || record.status !== 'ready') return json(res, 404, { error: 'This title is not available offline.' });
       const local = await audioSafeOfflineRecord(record);
-      if (local.mode === 'cached-convert') return await streamCachedConversion(req, res, local, await readSettings());
+      const settings = await readSettings();
+      if (local.mode === 'cached-convert' || settings.frameInterpolation) return await streamCachedConversion(req, res, local, settings);
       return await serveLocalVideo(req, res, local);
     }
     if (req.method === 'POST' && url.pathname === '/api/usenet/test') {
@@ -1777,7 +1790,7 @@ export async function handleRequest(req, res) {
           const validated = await validateOfflinePlaybackRecord(offline, playbackSettings);
           if (validated !== offline) { offline = validated; records.set(offline.key, offline); await writeOfflineRecords(); }
         } catch (error) {
-          if (error.code !== 'INVALID_MEDIA_TIMELINE') throw error;
+          if (!['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) throw error;
           records.set(offline.key, { ...offline, status: 'error', message: error.message });
           await writeOfflineRecords();
           if (offline.release) await releaseHealth.reject(playbackSettings, media, offline.release);
@@ -1791,12 +1804,12 @@ export async function handleRequest(req, res) {
         if (local.timelineRepairRequired || (local.mode === 'cached-convert' && !offline.backgroundDownload)) {
           const existing = [...playbackJobs.values()].find(candidate => candidate.offlineKey === offline.key && !['ready', 'error'].includes(candidate.status));
           if (existing) return json(res, 202, publicJob(existing));
-          const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', message: local.timelineRepairRequired ? 'Repairing a video timeline gap against the audio clock…' : 'Preparing the downloaded copy for reliable offline playback…', progress: 95, created: Date.now(), mode: 'cached-convert', sourcePath: local.sourcePath || local.path, mime: 'video/mp4', strategy: local.timelineRepairRequired ? 'transcode' : local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
+          const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', frameInterpolation: Boolean(playbackSettings.frameInterpolation), message: local.timelineRepairRequired ? 'Repairing a video timeline gap against the audio clock…' : 'Preparing the downloaded copy for reliable offline playback…', progress: 95, created: Date.now(), mode: 'cached-convert', sourcePath: local.sourcePath || local.path, mime: 'video/mp4', strategy: local.timelineRepairRequired ? 'transcode' : local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
           playbackJobs.set(job.id, job);
           void finalizeExistingOfflineRecord(offline, job, playbackSettings);
           return json(res, 202, publicJob(job));
         }
-        const job = { id: randomUUID(), media: { ...media }, status: 'ready', message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
+        const job = { id: randomUUID(), media: { ...media }, status: 'ready', frameInterpolation: Boolean(playbackSettings.frameInterpolation), message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
         playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
       }
       const settings = playbackSettings || await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
@@ -1875,6 +1888,8 @@ export async function handleRequest(req, res) {
         const input = await body(req), start = Number(input.start || 0);
         if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid playback position.' });
         const id = randomUUID(), settings = await readSettings();
+        // A session may opt out without modifying the saved user preference.
+        if (input.frameInterpolation === false) settings.frameInterpolation = false;
         const preparationController = new AbortController(); settings.signal = preparationController.signal;
         let session, cancelled = false, delivered = false, progressTimer, reportedCompleted = 0, lastProgress = '';
         const streaming = req.headers.accept?.includes('application/x-ndjson');
@@ -1899,7 +1914,7 @@ export async function handleRequest(req, res) {
           if (cancelled) { await session.close(); return; }
           // Growing archives must read through the resume prefix. Keep useful
           // extraction alive, but bound both inactivity and total preparation.
-          await session.ready(job.progressiveArchive ? {
+          await session.ready(session.health().interpolated ? { maxWaitMs: 15000 } : job.progressiveArchive ? {
             progress: () => job.archiveSource?.available || 0, maxWaitMs: 300000
           } : undefined);
           jobEvent(job, 'segments-ready', 'First playback segment is ready.');
@@ -1909,7 +1924,12 @@ export async function handleRequest(req, res) {
           if (streaming) { report(2); return res.end(JSON.stringify({ type: 'ready', session: result }) + '\n'); }
           return json(res, 200, result);
         } catch (error) {
+          const interpolated = session?.health().interpolated;
           await session?.close();
+          if (interpolated && error.code === 'PLAYBACK_SEGMENT_TIMEOUT') {
+            error.code = 'INTERPOLATION_TOO_SLOW';
+            error.message = 'Frame interpolation could not prepare segments fast enough.';
+          }
           if (streaming) { if (!cancelled) res.end(JSON.stringify({ type: 'error', error: error.message, code: error.code }) + '\n'); return; }
           throw error;
         } finally { clearInterval(progressTimer); }
@@ -1942,7 +1962,15 @@ export async function handleRequest(req, res) {
       if (['GET', 'HEAD'].includes(req.method) && playMatch[2] === 'stream') {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get('start')) || 0));
         jobEvent(job, 'stream-request', start ? `Browser requested playback from ${Math.round(start)}s.` : 'Browser requested the video stream.');
-        if (job.status !== 'ready') return json(res, 409, { error: 'Video is not ready yet.' }); if (job.mode === 'cached') return await serveLocalVideo(req, res, job); if (req.method === 'HEAD') { res.writeHead(200, { 'content-type': job.mode === 'cached-convert' || job.strategy !== 'raw' || start ? 'video/mp4' : videoType(job.file.subject), 'cache-control': 'no-store' }); return res.end(); } if (job.mode === 'cached-convert') return await streamCachedConversion(req, res, job, await readSettings(), start); if (job.strategy !== 'raw' || start) return await streamConverted(req, res, job, await readSettings(), start, start && job.strategy === 'raw' ? 'remux' : '');
+        if (job.status !== 'ready') return json(res, 409, { error: 'Video is not ready yet.' });
+        const settings = await readSettings();
+        if (job.mode === 'cached' && !settings.frameInterpolation) return await serveLocalVideo(req, res, job);
+        if (req.method === 'HEAD') {
+          res.writeHead(200, { 'content-type': settings.frameInterpolation || job.mode === 'cached-convert' || job.strategy !== 'raw' || start ? 'video/mp4' : videoType(job.file.subject), 'cache-control': 'no-store' });
+          return res.end();
+        }
+        if (['cached', 'cached-convert'].includes(job.mode)) return await streamCachedConversion(req, res, job, settings, start);
+        if (settings.frameInterpolation || job.strategy !== 'raw' || start) return await streamConverted(req, res, job, settings, start, start && job.strategy === 'raw' ? 'remux' : '');
         let closed = false; req.on('close', () => { closed = true; });
         res.writeHead(200, { 'content-type': videoType(job.file.subject), 'content-disposition': `inline; filename="${filename(job.file.subject, 'video')}"`, 'cache-control': 'no-store' });
         try { await streamPostedFile(job.file, await readSettings(), async chunk => { if (closed) throw new Error('Playback connection closed.'); if (res.write(chunk) === false && res.waitForDrain) await res.waitForDrain(); }, connectNntp, job.prefetchedSegments); }

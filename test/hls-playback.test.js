@@ -206,3 +206,30 @@ test('constrained buffer profiles respect data saving without altering media qua
   assert.equal(playbackBufferConfig({connection:{saveData:true}}).maxBufferLength,15);
   assert.equal(playbackBufferConfig({deviceMemory:2}).maxMaxBufferLength,30);
 });
+
+test('interpolation opt-out recreates only the session and sends the native-frame override', async t => {
+  const requests = [], instances = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, json: async () => ({sessionUrl: '/session', playlistUrl: '/playlist'}) };
+  });
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  class Hls {
+    static isSupported = () => true;
+    static Events = {ERROR: 'error'};
+    constructor() { instances.push(this); }
+    on() {} attachMedia() {} loadSource() {} destroy() {}
+  }
+  const options = {hlsUrl: '/hls', start: 311, onError: assert.fail};
+  const source = playbackSource({removeAttribute() {}, load() {}}, options, async () => ({default: Hls}));
+  try {
+    await setImmediate();
+    source.update({...options, frameInterpolation: false});
+    await setImmediate();
+    assert.equal(instances.length, 2);
+    const sessions = requests.filter(request => request.url === '/hls');
+    assert.equal(JSON.parse(sessions[0].options.body).frameInterpolation, undefined);
+    assert.deepEqual(JSON.parse(sessions[1].options.body), {start: 311, frameInterpolation: false});
+  } finally { source.destroy(); globalThis.window = oldWindow; }
+});
