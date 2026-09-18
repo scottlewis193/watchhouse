@@ -29,7 +29,14 @@ test('real multi-track source selects the requested language and converts text c
     const probe=JSON.parse((await run('ffprobe',['-v','error','-show_entries','stream=codec_type:stream_tags=language','-of','json',join(session.directory,'index.m3u8')])).stdout);
     assert.equal(job.selectedAudioTrack,2);assert.equal(job.playbackTracks.filter(t=>t.type==='audio').length,2);
     assert.equal(probe.streams.filter(s=>s.codec_type==='audio').length,1);
-    assert.equal(probe.streams.find(s=>s.codec_type==='audio').tags.language,'fra');
+    // HLS language tags vary between FFmpeg versions; check the selected audio itself.
+    const {stdout:pcm}=await run('ffmpeg',['-v','error','-i',join(session.directory,'index.m3u8'),'-map','0:a:0','-t','1','-ac','1','-ar','8000','-f','s16le','pipe:1'],{encoding:'buffer'});
+    let risingCrossings=0;
+    for(let offset=2;offset<pcm.length;offset+=2){
+      if(pcm.readInt16LE(offset-2)<=0 && pcm.readInt16LE(offset)>0) risingCrossings++;
+    }
+    const frequency=risingCrossings/(pcm.length/2/8000);
+    assert.ok(Math.abs(frequency-880)<30,`expected the French 880 Hz track, got ${frequency.toFixed(1)} Hz`);
     const text=await extractCaptions(input,3,5);
     assert.ok(text.includes('Later'));assert.ok(!text.includes('Early'));assert.ok(text.includes('00:00:01.000'));
     const started=performance.now();session.playbackState({paused:true,position:0});await session.close();
