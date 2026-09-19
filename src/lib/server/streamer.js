@@ -628,12 +628,11 @@ async function validatePreparedEpisode(job, path) {
   const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', path]));
   assertCompleteEpisodeDuration(Number(probe.format?.duration), Number(job.media.durationHint));
 }
-async function optimizeCachedVideo(job, path, settings = {}) {
+export async function optimizeCachedVideo(job, path, settings = {}) {
   await validatePreparedEpisode(job, path);
   const inspection = await inspectPlaybackSource(path, job.untaggedAudioTrack, { fullTimeline: true, repairVideoTimeline: Boolean(settings.repairVideoTimeline) });
   const repairVideoFrameRate = inspection.repairVideoFrameRate || null;
   if (repairVideoFrameRate) jobEvent(job, 'timeline-repair', 'A video timestamp hole was found. Rebuilding the missing interval against the audio clock.');
-  if (job.backgroundFor && !repairVideoFrameRate) return { sourcePath: path, mime: 'video/mp4', mode: 'cached-convert', strategy: await cachedPlaybackStrategy(path, job.release), timelineValidated: true, decodeValidated: true };
   const strategy = repairVideoFrameRate ? 'transcode' : await cachedPlaybackStrategy(path, job.release);
   const toneMap = releaseDynamicRange(job.release) !== 'sdr';
   // Timeline interpolation is a software filter; keep hardware frames out of
@@ -1809,7 +1808,7 @@ export async function handleRequest(req, res) {
         posterPreparation.cancel();
         const local = await audioSafeOfflineRecord(offline);
         playbackSettings ||= await readSettings();
-        if (local.timelineRepairRequired || (local.mode === 'cached-convert' && !offline.backgroundDownload)) {
+        if (local.timelineRepairRequired || local.mode === 'cached-convert') {
           const existing = [...playbackJobs.values()].find(candidate => candidate.offlineKey === offline.key && !['ready', 'error'].includes(candidate.status));
           if (existing) return json(res, 202, publicJob(existing));
           const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', frameInterpolation: Boolean(playbackSettings.frameInterpolation), message: local.timelineRepairRequired ? 'Repairing a video timeline gap against the audio clock…' : 'Preparing the downloaded copy for reliable offline playback…', progress: 95, created: Date.now(), mode: 'cached-convert', sourcePath: local.sourcePath || local.path, mime: 'video/mp4', strategy: local.timelineRepairRequired ? 'transcode' : local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };

@@ -126,7 +126,7 @@
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.downloadNextEpisode} />
-            <span><span class="block text-sm font-medium">Download the next episode while watching</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Uses a spare connection when playback has at least 30 seconds buffered. Pauses when playback needs priority. Keeps completed episodes in Downloads until you delete them. Video conversion waits until you play the episode; archive-only releases and manual release selection are skipped.</span></span>
+            <span><span class="block text-sm font-medium">Download the next episode while watching</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Uses a spare connection when playback has at least 30 seconds buffered. Pauses when playback needs priority. Prepares a browser-ready copy before marking the episode ready. Keeps completed episodes in Downloads until you delete them; archive-only releases and manual release selection are skipped.</span></span>
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
