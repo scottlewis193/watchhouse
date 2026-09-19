@@ -2,7 +2,8 @@ export function canUseFallback(playback) {
   return playback?.mode === 'direct' && playback.status === 'ready';
 }
 
-export function streamInterruptionAction(playback, automaticRetries = 0, retryLimit = 3) {
+export function streamInterruptionAction(playback, automaticRetries = 0, retryLimit = 3, reason = '') {
+  if (playback?.mode === 'cached' && playback.status === 'ready' && reason === 'buffering-timeout') return automaticRetries < retryLimit ? 'retry' : 'error';
   if (playback?.mode === 'cached-convert' && playback.status === 'ready') return automaticRetries < retryLimit ? 'retry' : 'error';
   if (!canUseFallback(playback)) return 'error';
   return Math.max(0, Number(automaticRetries) || 0) < Math.max(0, Number(retryLimit) || 0) ? 'retry' : 'offer';

@@ -112,3 +112,12 @@ test('repeated waiting events do not postpone recovery and cached conversion has
   for (const callback of timers.values()) callback();
   assert.equal(state.interruptions,1);
 });
+
+test('a downloaded copy that stops advancing gets a buffering watchdog', () => {
+  const { state, timers } = playerState();
+  state.playback.mode = 'cached';
+  state.handleStartupBuffering({ type: 'waiting' });
+  assert.equal(timers.size, 1);
+  for (const callback of timers.values()) callback();
+  assert.equal(state.interruptions, 1);
+});

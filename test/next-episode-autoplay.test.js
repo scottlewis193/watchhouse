@@ -84,6 +84,16 @@ for (const status of ['ready', 'cancelled']) test(`an elapsed countdown advances
   assert.equal(state.starts[0][1], status === 'ready' ? state.nextJob : null);
 });
 
+test('next-episode download handoff selects the saved copy and keeps autoplay', () => {
+  const { state } = episodeState('ready');
+  state.downloadNextEpisode = true;
+  state.tickUpNextCountdown();
+  assert.equal(state.starts.length, 1);
+  assert.equal(state.starts[0][0], state.nextMedia);
+  assert.equal(state.starts[0][1], null);
+  assert.equal(state.starts[0][3], true);
+});
+
 test('cancelling the countdown prevents a later ready poll from advancing', async () => {
   const { state } = episodeState();
   state.api.get = async () => ({ id: 'next', status: 'ready' });

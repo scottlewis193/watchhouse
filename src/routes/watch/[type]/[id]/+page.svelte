@@ -561,12 +561,12 @@
     if (!playbackSettled) resumeStarting = true;
     const timeline = controlTimeline(), stalledAt = currentPlaybackPosition();
     lastAdvancedPosition = stalledAt;
-    if (!['direct', 'cached-convert'].includes(playback?.mode)) return;
+    if (!['direct', 'cached-convert', 'cached'].includes(playback?.mode)) return;
     if (interruptionTimer) return;
     interruptionTimer = setTimeout(() => {
       interruptionTimer = null;
       if (!player || player.paused || seekPaused) return;
-      if (Math.abs(currentPlaybackPosition() - stalledAt) < 0.5) handlePlaybackInterruption('buffering-timeout', 'The direct stream stopped making progress.', { triggerEvent: event?.type || 'buffering', stalledAt, timeoutMs: playbackSettled ? 10000 : 45000 });
+      if (Math.abs(currentPlaybackPosition() - stalledAt) < 0.5) handlePlaybackInterruption('buffering-timeout', 'The video stopped making progress.', { triggerEvent: event?.type || 'buffering', stalledAt, timeoutMs: playbackSettled ? 10000 : 45000 });
     }, playbackSettled ? 10000 : 45000);
   }
   function handlePause() {
@@ -601,7 +601,13 @@
     try { await player.play(); }
     catch { playbackNeedsAction = true; }
   }
-  function offerPlaybackRecovery(message, sourceUnavailable = false) {
+  function offerPlaybackRecovery(message, sourceUnavailable = false, reason = '') {
+    if (playback?.mode === 'cached' && reason === 'buffering-timeout') {
+      clearTimeout(interruptionTimer); settlePlaybackWarmup(); playing = false;
+      playbackRecovery = { message: 'The downloaded video stopped making progress. You can retry from the same place.', cached: true, position: currentPlaybackPosition() };
+      void savePlaybackProgress(true);
+      return;
+    }
     if (!canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. Try a different release or check this browser’s codec support.' }; return; }
     clearTimeout(interruptionTimer); settlePlaybackWarmup(); playing = false;
     playbackRecovery = { message, sourceUnavailable, position: currentPlaybackPosition() };
@@ -612,7 +618,9 @@
     clearTimeout(interruptionTimer); clearTimeout(startupStableTimer);
     playbackTrace.event('stream-restart', { position });
     bufferedRanges = [];
-    resumeStreamOffset = Math.max(0, position || 0); lastAdvancedPosition = resumeStreamOffset;
+    resumeStreamOffset = hasGrowingStreamDuration(playback?.mode) ? Math.max(0, position || 0) : 0;
+    if (playback?.mode === 'cached') recoveryPosition = Math.max(0, position || 0);
+    lastAdvancedPosition = Math.max(0, position || 0);
     audioFrameSample = null;
     streamAttempt++;
     beginPlaybackWarmup(true);
@@ -634,7 +642,7 @@
       return;
     }
     if (['PLAYBACK_BUSY', 'PLAYBACK_STORAGE_LIMIT', 'INVALID_AUDIO_TRACK'].includes(evidence.code)) { playback = { ...playback, status: 'error', message }; return; }
-    const action = evidence.code === 'SOURCE_UNAVAILABLE' ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries);
+    const action = evidence.code === 'SOURCE_UNAVAILABLE' ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries, 3, reason);
     if (playbackDiagnostics) {
       interruptionHistory = playbackTrace.interrupt(traceSource(), {
         reason, message, evidence, action, retriesBefore: automaticStreamRetries,
@@ -645,7 +653,7 @@
       }, traceSample());
     }
     if (action === 'offer' && canUseFallback(playback)) { void fallback(); return; }
-    if (action !== 'retry') { offerPlaybackRecovery(message, evidence.code === 'SOURCE_UNAVAILABLE'); return; }
+    if (action !== 'retry') { offerPlaybackRecovery(message, evidence.code === 'SOURCE_UNAVAILABLE', reason); return; }
     automaticStreamRetries++;
     restartStream(currentPlaybackPosition());
   }
@@ -1071,7 +1079,7 @@
             {/if}
             {#if playbackRecovery}
               <div class="player-modal absolute inset-0 z-30 text-white">
-                <div class="player-modal-panel player-modal-panel-alert"><p class="player-eyebrow">Stream interrupted</p><h2>How would you like to continue?</h2><p>{playbackRecovery.message}</p><div class="player-modal-actions"><!-- A rejected source cannot be repaired by retrying or downloading the same file. -->{#if !playbackRecovery.sourceUnavailable}<button class="player-popup-button player-popup-button-primary" onclick={retryDirectStream}>Retry stream</button>{/if}<button class="player-popup-button" onclick={() => void fallback()}>{playbackRecovery.sourceUnavailable ? 'Download another release' : 'Download & resume'}</button></div></div>
+                <div class="player-modal-panel player-modal-panel-alert"><p class="player-eyebrow">Stream interrupted</p><h2>How would you like to continue?</h2><p>{playbackRecovery.message}</p><div class="player-modal-actions"><!-- A rejected source cannot be repaired by retrying or downloading the same file. -->{#if !playbackRecovery.sourceUnavailable}<button class="player-popup-button player-popup-button-primary" onclick={retryDirectStream}>{playbackRecovery.cached ? 'Retry video' : 'Retry stream'}</button>{/if}{#if !playbackRecovery.cached}<button class="player-popup-button" onclick={() => void fallback()}>{playbackRecovery.sourceUnavailable ? 'Download another release' : 'Download & resume'}</button>{/if}</div></div>
               </div>
             {:else if playbackNeedsAction}
               <div class="player-modal absolute inset-0 z-30 text-white">

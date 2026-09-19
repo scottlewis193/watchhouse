@@ -9,6 +9,7 @@ const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelt
 const ast = parse(source);
 const names = ['handlePlaybackInterruption', 'offerPlaybackRecovery', 'fallback', 'showReadyPlayback', 'restorePlaybackProgress', 'attemptAutomaticPlayback', 'controlTimeline', 'handleEnded'];
 const handlers = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name)).map(node => source.slice(node.start, node.end)).join('\n');
+const restartHandler = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && node.id.name === 'restartStream').map(node => source.slice(node.start, node.end)).join('\n');
 
 function recoveryState(retries = 0) {
   const requests = [], polls = [];
@@ -103,6 +104,63 @@ test('a prepared-file failure is terminal instead of repeatedly downloading repl
   state.playback.mode = 'cached';
   state.handlePlaybackInterruption('media-error', 'Browser codec unsupported');
   assert.equal(state.playback.status, 'error');
+  assert.equal(requests.length, 0);
+});
+
+test('a downloaded copy retries a transient stall at the same playhead', () => {
+  const { state, requests } = recoveryState();
+  state.playback.mode = 'cached';
+  state.resumeStreamOffset = 0;
+  state.player.currentTime = 140;
+  state.handlePlaybackInterruption('buffering-timeout', 'No advancing frames');
+  assert.equal(state.restartedAt, 140);
+  assert.equal(state.automaticStreamRetries, 1);
+  assert.equal(requests.length, 0);
+});
+
+test('reloading a downloaded copy restores the saved playhead after metadata arrives', () => {
+  const { state } = recoveryState();
+  state.playback.mode = 'cached';
+  state.resumeStreamOffset = 0;
+  state.player.currentTime = 140;
+  state.bufferedRanges = [];
+  state.streamAttempt = 0;
+  state.playbackTrace = { event() {} };
+  runInNewContext(restartHandler, state);
+
+  state.restartStream(140);
+  assert.equal(state.recoveryPosition, 140);
+  assert.equal(state.resumeStreamOffset, 0);
+  assert.equal(state.streamAttempt, 1);
+
+  state.player.currentTime = 0;
+  state.restorePlaybackProgress();
+  assert.equal(state.player.currentTime, 140);
+});
+
+test('recovery choices cover direct, converting, and downloaded playback', () => {
+  for (const [mode, reason, retries, expected] of [
+    ['direct', 'buffering-timeout', 0, 'retry'],
+    ['direct', 'buffering-timeout', 3, 'offer'],
+    ['cached-convert', 'buffering-timeout', 0, 'retry'],
+    ['cached-convert', 'buffering-timeout', 3, 'error'],
+    ['cached', 'buffering-timeout', 0, 'retry'],
+    ['cached', 'buffering-timeout', 3, 'error'],
+    ['cached', 'media-error', 0, 'error']
+  ]) {
+    assert.equal(streamInterruptionAction({ mode, status: 'ready' }, retries, 3, reason), expected, `${mode} ${reason} after ${retries} retries`);
+  }
+});
+
+test('an exhausted downloaded copy offers a local retry without re-downloading', () => {
+  const { state, requests } = recoveryState(3);
+  state.playback.mode = 'cached';
+  state.resumeStreamOffset = 0;
+  state.player.currentTime = 140;
+  state.handlePlaybackInterruption('buffering-timeout', 'The video stopped making progress.');
+  assert.equal(state.playback.status, 'ready');
+  assert.equal(state.playbackRecovery?.cached, true);
+  assert.equal(state.playbackRecovery?.position, 140);
   assert.equal(requests.length, 0);
 });
 
