@@ -88,7 +88,7 @@ function titleTokens(value) {
 }
 
 export function releaseTitleMatches(release, media) {
-  const expectedTitles = titleVariants(media?.title).map(titleTokens);
+  const expectedTitles = [media?.title, ...(media?.alternativeTitles || [])].flatMap(titleVariants).map(titleTokens);
   if (!expectedTitles.length) return true;
   // For episodes, the series name precedes the episode tag. Text after it can
   // be an episode title belonging to an entirely different show.

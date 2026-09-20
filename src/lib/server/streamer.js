@@ -1294,9 +1294,22 @@ async function catalogueMovieRuntime(settings, titleId) {
 async function catalogueTitleDetails(settings, type, titleId) {
   return mapTmdbTitleDetails(await tmdbRequest(settings, `${type}/${titleId}`, { language: 'en-GB' }), type);
 }
-export async function findReleases(settings, media, includeYear = true, { request = fetch } = {}) {
+export async function catalogueAlternativeTitles(settings, media, { request = tmdbRequest } = {}) {
+  if (!settings.tmdbToken || !Number.isInteger(Number(media.id)) || Number(media.id) <= 0 || !['movie', 'tv'].includes(media.type)) return [];
+  const payload = await request(settings, `${media.type}/${media.id}/alternative_titles`);
+  const entries = media.type === 'movie' ? payload.titles : payload.results;
+  if (!Array.isArray(entries)) return [];
+  const priority = { GB: 0, US: 1, CA: 2, AU: 3, NZ: 4, IE: 5 };
+  return [...entries]
+    .sort((a, b) => (priority[a.iso_3166_1] ?? 6) - (priority[b.iso_3166_1] ?? 6))
+    .map(entry => String(entry.title || '').trim())
+    .filter(title => title.length >= 4 && /[a-z]/i.test(title))
+    .filter((title, index, titles) => titles.findIndex(other => other.toLowerCase() === title.toLowerCase()) === index)
+    .slice(0, 8);
+}
+export async function findReleases(settings, media, includeYear = true, { request = fetch, alternativeTitles = catalogueAlternativeTitles } = {}) {
   const episodic = media.type === 'tv' && media.season && media.episode;
-  const searches = titleVariants(media.title).map(async title => {
+  const searchTitle = async title => {
     const endpoint = indexerEndpoint(settings.indexerUrl);
     endpoint.searchParams.set('t', episodic && !includeYear ? 'search' : media.type === 'movie' ? 'movie' : 'tvsearch');
     endpoint.searchParams.set('q', episodic && !includeYear ? `${title} ${episodeTag(media)}` : `${title} ${media.type === 'movie' && includeYear ? media.year || '' : ''}`.trim());
@@ -1326,11 +1339,24 @@ export async function findReleases(settings, media, includeYear = true, { reques
       if (Number.isFinite(total) ? offset >= total : page.length < 100) break;
     }
     return [...releases.values()];
-  });
-  const attempts = await Promise.allSettled(searches), successful = attempts.filter(attempt => attempt.status === 'fulfilled');
-  if (!successful.length) throw attempts[0].reason;
-  const releases = successful.flatMap(attempt => attempt.value);
-  return rankReleases([...new Map(releases.map(release => [release.nzbUrl || release.title, release])).values()], media, { playbackQuality: settings.playbackQuality });
+  };
+  const search = async titles => {
+    const attempts = await Promise.allSettled(titles.map(searchTitle));
+    const successful = attempts.filter(attempt => attempt.status === 'fulfilled');
+    if (!successful.length) throw attempts[0].reason;
+    return successful.flatMap(attempt => attempt.value);
+  };
+  const primaryTitles = titleVariants(media.title);
+  const primary = await search(primaryTitles);
+  const unique = releases => [...new Map(releases.map(release => [release.nzbUrl || release.title, release])).values()];
+  const ranked = rankReleases(unique(primary), media, { playbackQuality: settings.playbackQuality });
+  if (ranked.length || !settings.tmdbToken || !media.id) return ranked;
+  const aliases = await alternativeTitles(settings, media).catch(() => { settings.signal?.throwIfAborted(); return []; });
+  settings.signal?.throwIfAborted();
+  const extraTitles = [...new Set(aliases.flatMap(titleVariants))].filter(title => !primaryTitles.includes(title)).slice(0, 8);
+  if (!extraTitles.length) return rankReleases(unique(primary), { ...media, alternativeTitles: aliases }, { playbackQuality: settings.playbackQuality });
+  const additional = await search(extraTitles).catch(error => { settings.signal?.throwIfAborted(); return []; });
+  return rankReleases(unique([...primary, ...additional]), { ...media, alternativeTitles: aliases }, { playbackQuality: settings.playbackQuality });
 }
 async function loadNzb(release, settings, signal) {
   const target = new URL(release.nzbUrl); if (!target.searchParams.has('apikey')) target.searchParams.set('apikey', settings.indexerKey);
