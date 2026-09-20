@@ -41,6 +41,7 @@ declare module '$env/static/private' {
 	export const SHELL: string;
 	export const npm_command: string;
 	export const LSCOLORS: string;
+	export const CODEX_APP_TITLE: string;
 	export const HYPRLAND_CMD: string;
 	export const XDG_CONFIG_DIRS: string;
 	export const LESS: string;
@@ -237,6 +238,7 @@ declare module '$env/dynamic/private' {
 		SHELL: string;
 		npm_command: string;
 		LSCOLORS: string;
+		CODEX_APP_TITLE: string;
 		HYPRLAND_CMD: string;
 		XDG_CONFIG_DIRS: string;
 		LESS: string;

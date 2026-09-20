@@ -1309,9 +1309,9 @@ export async function catalogueAlternativeTitles(settings, media, { request = tm
 }
 export async function findReleases(settings, media, includeYear = true, { request = fetch, alternativeTitles = catalogueAlternativeTitles } = {}) {
   const episodic = media.type === 'tv' && media.season && media.episode;
-  const searchTitle = async title => {
+  const searchTitle = async (title, mode) => {
     const endpoint = indexerEndpoint(settings.indexerUrl);
-    endpoint.searchParams.set('t', episodic && !includeYear ? 'search' : media.type === 'movie' ? 'movie' : 'tvsearch');
+    endpoint.searchParams.set('t', mode);
     endpoint.searchParams.set('q', episodic && !includeYear ? `${title} ${episodeTag(media)}` : `${title} ${media.type === 'movie' && includeYear ? media.year || '' : ''}`.trim());
     if (episodic && includeYear) { endpoint.searchParams.set('season', media.season); endpoint.searchParams.set('ep', media.episode); }
     endpoint.searchParams.set('apikey', settings.indexerKey); endpoint.searchParams.set('limit', '100');
@@ -1340,23 +1340,34 @@ export async function findReleases(settings, media, includeYear = true, { reques
     }
     return [...releases.values()];
   };
-  const search = async titles => {
-    const attempts = await Promise.allSettled(titles.map(searchTitle));
+  const search = async (titles, mode) => {
+    const attempts = await Promise.allSettled(titles.map(title => searchTitle(title, mode)));
     const successful = attempts.filter(attempt => attempt.status === 'fulfilled');
     if (!successful.length) throw attempts[0].reason;
     return successful.flatMap(attempt => attempt.value);
   };
+  const fallbackSearch = async (titles, mode) => search(titles, mode).catch(() => { settings.signal?.throwIfAborted(); return []; });
+  const mode = episodic && !includeYear ? 'search' : media.type === 'movie' ? 'movie' : 'tvsearch';
   const primaryTitles = titleVariants(media.title);
-  const primary = await search(primaryTitles);
+  const primary = await search(primaryTitles, mode);
   const unique = releases => [...new Map(releases.map(release => [release.nzbUrl || release.title, release])).values()];
-  const ranked = rankReleases(unique(primary), media, { playbackQuality: settings.playbackQuality });
+  const rank = (releases, selection = media) => rankReleases(unique(releases), selection, { playbackQuality: settings.playbackQuality });
+  let candidates = primary;
+  let ranked = rank(candidates);
+  if (!ranked.length && media.type === 'movie') {
+    candidates = [...candidates, ...await fallbackSearch(primaryTitles, 'search')];
+    ranked = rank(candidates);
+  }
   if (ranked.length || !settings.tmdbToken || !media.id) return ranked;
   const aliases = await alternativeTitles(settings, media).catch(() => { settings.signal?.throwIfAborted(); return []; });
   settings.signal?.throwIfAborted();
   const extraTitles = [...new Set(aliases.flatMap(titleVariants))].filter(title => !primaryTitles.includes(title)).slice(0, 8);
-  if (!extraTitles.length) return rankReleases(unique(primary), { ...media, alternativeTitles: aliases }, { playbackQuality: settings.playbackQuality });
-  const additional = await search(extraTitles).catch(error => { settings.signal?.throwIfAborted(); return []; });
-  return rankReleases(unique([...primary, ...additional]), { ...media, alternativeTitles: aliases }, { playbackQuality: settings.playbackQuality });
+  const selection = { ...media, alternativeTitles: aliases };
+  if (!extraTitles.length) return rank(candidates, selection);
+  candidates = [...candidates, ...await fallbackSearch(extraTitles, mode)];
+  ranked = rank(candidates, selection);
+  if (!ranked.length && media.type === 'movie') ranked = rank([...candidates, ...await fallbackSearch(extraTitles, 'search')], selection);
+  return ranked;
 }
 async function loadNzb(release, settings, signal) {
   const target = new URL(release.nzbUrl); if (!target.searchParams.has('apikey')) target.searchParams.set('apikey', settings.indexerKey);

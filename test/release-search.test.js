@@ -4,6 +4,22 @@ import { catalogueAlternativeTitles, findReleases } from '../src/lib/server/stre
 const media = { type: 'tv', title: 'Silo', season: 1, episode: 1 };
 const settings = { indexerUrl: 'https://indexer.example', indexerKey: 'test' };
 const xml = (start, count, total) => `<rss><newznab:response offset="${start}" total="${total}" />${Array.from({length:count}, (_, i) => `<item><title>Silo.S01E01.1080p.H264.Release${start+i}</title><enclosure url="https://indexer.example/nzb/${start+i}" /></item>`).join('')}</rss>`;
+test('falls back to general indexer search when movie search returns no releases', async () => {
+  const queries = [];
+  const releases = await findReleases(settings, { id: 671, type: 'movie', title: "Harry Potter and the Philosopher's Stone", year: '2001' }, true, {
+    request: async url => {
+      const mode = url.searchParams.get('t');
+      const query = url.searchParams.get('q');
+      queries.push([mode, query]);
+      const item = mode === 'search' && query === 'Harry Potter and the Philosophers Stone 2001'
+        ? '<item><title>Harry.Potter.and.the.Philosophers.Stone.2001.1080p.WEB-DL</title><enclosure url="https://indexer.example/nzb/movie" /></item>'
+        : '';
+      return { ok: true, text: async () => `<rss><newznab:response offset="0" total="${item ? 1 : 0}" />${item}</rss>` };
+    }
+  });
+  assert.ok(queries.some(([mode, query]) => mode === 'search' && query === 'Harry Potter and the Philosophers Stone 2001'));
+  assert.deepEqual(releases.map(release => release.title), ['Harry.Potter.and.the.Philosophers.Stone.2001.1080p.WEB-DL']);
+});
 test('finds Sorcerer’s Stone releases when the selected film uses the Philosopher’s Stone title', async () => {
   const queries = [];
   const releases = await findReleases(settings, { type: 'movie', title: "Harry Potter and the Philosopher's Stone", year: '2001' }, true, {
@@ -26,14 +42,18 @@ test('searches catalogue alternative titles and accepts their release names', as
     alternativeTitles: async () => ['The International Title'],
     request: async url => {
       const query = url.searchParams.get('q');
-      queried.push(query);
+      queried.push([url.searchParams.get('t'), query]);
       const item = query.startsWith('The International Title')
         ? '<item><title>The.International.Title.2024.1080p.WEB-DL</title><enclosure url="https://indexer.example/nzb/alternate" /></item>'
         : '';
       return { ok: true, text: async () => `<rss><newznab:response offset="0" total="${item ? 1 : 0}" />${item}</rss>` };
     }
   });
-  assert.deepEqual(queried, ['The Original Title 2024', 'The International Title 2024']);
+  assert.deepEqual(queried, [
+    ['movie', 'The Original Title 2024'],
+    ['search', 'The Original Title 2024'],
+    ['movie', 'The International Title 2024']
+  ]);
   assert.deepEqual(releases.map(release => release.title), ['The.International.Title.2024.1080p.WEB-DL']);
 });
 test('reads movie and series alternative titles from their catalogue endpoints', async () => {
