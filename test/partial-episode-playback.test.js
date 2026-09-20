@@ -12,7 +12,7 @@ const handlers = ast.instance.content.body.filter(node => node.type === 'Functio
 function partialEpisode(sourceDuration = 71) {
   const state = {
     ...controls, sourceDuration, playerPosition: 71, playerDuration: 71,
-    resumeStreamOffset: 0, seekPreview: null, playing: true,
+    resumeStreamOffset: 0, seekPreview: null, playing: true, pendingBufferedRecovery: null,
     playback: { status: 'ready', mode: 'direct' }, player: { currentTime: 71 },
     currentMedia: { type: 'tv', season: 2, episode: 5, durationHint: 22 * 60 },
     progressFor: () => ({ duration: 71 }), captureVideoDiagnostics() {},

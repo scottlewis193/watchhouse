@@ -9,7 +9,7 @@ const ast = parse(source);
 const handler = ast.instance.content.body.find(n => n.type === 'FunctionDeclaration' && n.id.name === 'seekToPosition');
 function fixture(paused = true) {
   let warmups = 0, scheduled = 0;
-  const state = { seekTimer:null,seekPaused:false,continuePlaybackOnReady:false, player: {paused,currentTime:20,buffered:{length:1,start:()=>0,end:()=>60}}, playback:{mode:'direct'}, resumeStreamOffset:100, seekPreview:null, playerPosition:20, bufferedRanges:[], videoFrameSample:null, measuredVideoFps:null, savePlaybackProgress:async()=>{}, hasGrowingStreamDuration, controlTimeline:()=>({duration:1400}), beginPlaybackWarmup:()=>warmups++, setTimeout:()=>++scheduled, clearTimeout(){} };
+  const state = { seekTimer:null,seekPaused:false,continuePlaybackOnReady:false, player: {paused,currentTime:20,buffered:{length:1,start:()=>0,end:()=>60}}, playback:{mode:'direct'}, resumeStreamOffset:100, seekPreview:null, playerPosition:20, bufferedRanges:[], videoFrameSample:null, measuredVideoFps:null, preparedSession:null, clearBufferedSourceRecovery(){}, savePlaybackProgress:async()=>{}, hasGrowingStreamDuration, controlTimeline:()=>({duration:1400}), beginPlaybackWarmup:()=>warmups++, setTimeout:()=>++scheduled, clearTimeout(){} };
   runInNewContext(source.slice(handler.start,handler.end),state);
   return {state,get warmups(){return warmups;},get scheduled(){return scheduled;}};
 }

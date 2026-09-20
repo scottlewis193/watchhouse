@@ -14,7 +14,7 @@ function playerState() {
   const state = {
     player: { paused: false, play: async () => { state.plays++; } },
     plays: 0, interruptions: 0, playing: true, playbackSettled: true,
-    playback: { mode: 'direct', status: 'ready' }, playbackNeedsAction: false, playbackRecovery: null,
+    playback: { mode: 'direct', status: 'ready' }, playbackNeedsAction: false, playbackRecovery: null, pendingBufferedRecovery: null,
     continuePlaybackOnReady: false, resumeStarting: false,
     interruptionTimer: null, startupStableTimer: null, controlHideTimer: null,
     controlsVisible: false, stopBackgroundPlayback() {}, captureVideoDiagnostics() {},
@@ -82,6 +82,18 @@ test('server fallback leaves stale ready playback and follows download progress'
   assert.equal(state.recoveryPosition, 318);
   assert.equal(state.continuePlaybackOnReady, true, 'server-side fallback must retain autoplay intent');
   assert.deepEqual(polls, [['job', 1, 0]]);
+});
+
+test('status polling leaves buffered video playing while its replacement is preparing', async () => {
+  const { state, timers } = playerState();
+  state.playback.id = 'job';
+  state.pendingBufferedRecovery = { start: 129 };
+  state.playbackRequests = { isCurrent: () => true };
+  state.api = { get: async () => ({ id: 'job', status: 'selecting', message: 'Checking another release' }) };
+  state.poll = () => assert.fail('Preparation must not take over the active buffered player');
+  await state.refreshDiagnostics('job', 1);
+  assert.equal(state.playback.status, 'ready');
+  assert.equal(timers.size, 1);
 });
 
 
