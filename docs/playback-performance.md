@@ -557,3 +557,37 @@ limit. Production opening now has a bounded 120-second allowance, avoiding a
 premature full-download fallback while the provider opens the archive. This
 does not promise fast cold starts. Live warm-resume verification remains the
 last check after restarting the development server.
+
+## Larger archive reads for deep resumes (2026-09-20)
+
+Progressive extraction now fetches 16 MiB per steady-state archive range,
+up from 8 MiB. Long resumes still need their preceding archive bytes, but this
+halves the number of sequential provider range requests needed to reach a given
+offset. The small opening reads remain unchanged. The larger 32 MiB candidate
+exceeded the helper's reduced-memory regression limit; 16 MiB passed it.
+
+The targeted extraction, incomplete-archive HLS, forward-seek, and memory tests
+pass. A live click-to-first-frame measurement against a film has not been made,
+so the actual latency improvement depends on provider round-trip time and
+throughput. The full suite passed 341 of 342 tests at this stage; the remaining background
+download fixture independently fails because this host's VAAPI encoder cannot
+process its MPEG-4 input.
+
+## Direct ranges from stored RAR volumes (2026-09-20)
+
+A saved time is not a reliable byte offset in a variable-bitrate film. For
+stored RAR4 and RAR5 volumes, the server now validates the volume headers and
+maps the contained video byte ranges to archive byte ranges. FFmpeg reads the
+opening timeline and seeks using the video's container metadata; the source
+fetches only the requested archive ranges. A late-film HLS fixture skips the
+middle of the archived video and prepares a segment at 135 seconds. This removes
+the need to extract the whole prefix before playback for this layout.
+
+The mapping is used only when every volume has a matching, uncompressed video
+part with valid header checksums and a consistent declared size. Other RAR and
+7z layouts retain sequential progressive extraction. A separate full extraction
+starts shortly after the first HLS segment is ready to preserve the archive's end-to-end
+checksum check; failure then invalidates the direct-range source. Fetched Usenet
+articles continue through the existing per-article validation. This has been
+verified with local RAR4/RAR5 and HLS fixtures. A live provider film timing is
+still needed to quantify the gain.

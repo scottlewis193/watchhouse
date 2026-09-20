@@ -8,8 +8,28 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     if (key === nextKey) return;
     key = nextKey; dispose(false);
     if (options.active === false) { video.pause(); return; }
-    let closed = false, hls, sessionUrl, heartbeat, buffered = false, localRecoveries = 0, recoveryPending = false, recoveryTimer, setupTimer;
+    let closed = false, hls, sessionUrl, heartbeat, buffered = false, localRecoveries = 0, recoveryPending = false, networkRecoveryPending = false, recoveryTimer, setupTimer;
     const controller = new AbortController();
+    const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
+    const waitForOnline = () => offline() ? new Promise(resolve => {
+      const done = () => { window.removeEventListener('online', done); controller.signal.removeEventListener('abort', done); resolve(); };
+      window.addEventListener('online', done);
+      controller.signal.addEventListener('abort', done, { once: true });
+      if (!offline() || controller.signal.aborted) done();
+    }) : Promise.resolve();
+    const armSetupTimeout = () => {
+      clearTimeout(setupTimer);
+      setupTimer = setTimeout(() => { if (!closed && !offline()) { options.onError('Playback preparation timed out. Try again.', { code: 'PLAYBACK_TIMEOUT' }); stop(); } }, 330000);
+    };
+    const resumeNetwork = () => {
+      if (!closed && !sessionUrl && setupTimer) armSetupTimeout();
+      if (closed || !networkRecoveryPending || offline() || !hls) return;
+      networkRecoveryPending = false;
+      clearTimeout(recoveryTimer);
+      options.onEvent?.('hls-recovery', { type: 'network', reconnect: true });
+      hls.startLoad(video.currentTime);
+    };
+    window.addEventListener('online', resumeNetwork);
     const post = path => fetch(path, { method: 'POST', keepalive: true }).catch(() => {});
     const stop = (resetMedia = true) => {
       if (closed) return;
@@ -21,6 +41,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       if (resetMedia) { video.removeAttribute('src'); video.load(); }
       if (sessionUrl) void post(`${sessionUrl}/stop`);
       window.removeEventListener('pagehide', stop);
+      window.removeEventListener('online', resumeNetwork);
     };
     dispose = stop;
     window.addEventListener('pagehide', stop);
@@ -29,14 +50,22 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     if (!options.hlsUrl) { video.src = options.url; return; }
     // Resolve failures as data until the session response can be cleaned up.
     const library = Promise.resolve().then(loadHls).then(value => ({ value }), error => ({ error }));
-    setupTimer = setTimeout(() => { if (!closed) { options.onError('Playback preparation timed out. Try again.', { code: 'PLAYBACK_TIMEOUT' }); stop(); } }, 330000);
+    armSetupTimeout();
     void (async () => {
       let session = options.preparedSession;
-      if (!session) {
-        const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack, frameInterpolation: options.frameInterpolation }), signal: controller.signal });
-        session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
-        if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code });
+      while (!session && !closed) {
+        if (offline()) await waitForOnline();
+        if (closed) return;
+        try {
+          const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack, frameInterpolation: options.frameInterpolation }), signal: controller.signal });
+          session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
+          if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code, terminal: true });
+        } catch (error) {
+          if (!offline() || closed || error.terminal) throw error;
+          session = null;
+        }
       }
+      if (closed) { if (session?.sessionUrl) void post(`${session.sessionUrl}/stop`); return; }
       clearTimeout(setupTimer);
       sessionUrl = session.sessionUrl;
       if (closed) { void post(`${sessionUrl}/stop`); return; }
@@ -60,6 +89,11 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
         if (data.type) evidence.hlsType = data.type;
         options.onEvent?.('hls-error', { ...evidence, fatal: Boolean(data.fatal) });
         if (!data.fatal || recoveryPending) return;
+        if (data.type === Hls.ErrorTypes?.NETWORK_ERROR && offline()) {
+          networkRecoveryPending = true;
+          clearTimeout(recoveryTimer);
+          return;
+        }
         const fail = () => { if (!closed) options.onError(`Segmented playback failed: ${data.details}${httpStatus ? ` (HTTP ${httpStatus})` : ''}`, evidence); };
         recoveryPending = true;
         void (async () => {
@@ -78,8 +112,8 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
             if (data.type === Hls.ErrorTypes?.NETWORK_ERROR) hls.startLoad(video.currentTime);
             else if (data.type === Hls.ErrorTypes?.MEDIA_ERROR) hls.recoverMediaError();
             else { fail(); return; }
-            clearTimeout(recoveryTimer); recoveryTimer = setTimeout(fail, 10000);
-          } catch { fail(); }
+            clearTimeout(recoveryTimer); recoveryTimer = setTimeout(() => { if (offline() && data.type === Hls.ErrorTypes?.NETWORK_ERROR) networkRecoveryPending = true; else fail(); }, 10000);
+          } catch { if (offline() && data.type === Hls.ErrorTypes?.NETWORK_ERROR) networkRecoveryPending = true; else fail(); }
           finally { recoveryPending = false; }
         })();
       });

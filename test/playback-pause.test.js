@@ -24,7 +24,7 @@ function playerState() {
     setTimeout: callback => { timers.set(++next, callback); return next; },
     clearTimeout: id => timers.delete(id)
   };
-  Object.assign(state, { seekPaused: false, seekTimer: null, buffering: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} }, traceSource: () => 'fixture', firstAdvancedSource: '' });
+  Object.assign(state, { seekPaused: false, seekTimer: null, buffering: false, connectionLost: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} }, traceSource: () => 'fixture', firstAdvancedSource: '' });
   runInNewContext(handlers, state);
   return { state, timers };
 }
@@ -44,6 +44,17 @@ test('a pending buffering timeout checks whether playback has since paused', () 
   state.player.paused = true;
   for (const callback of timers.values()) callback();
   assert.equal(state.interruptions, 0);
+});
+
+test('an offline stall does not arm the buffering watchdog', () => {
+  const { state, timers } = playerState();
+  state.connectionLost = true;
+  state.handleStartupBuffering({ type: 'waiting' });
+  assert.equal(state.buffering, true);
+  assert.equal(timers.size, 0);
+  state.connectionLost = false;
+  state.handleStartupBuffering({ type: 'online' });
+  assert.equal(timers.size, 1);
 });
 
 test('deep archive preparation keeps the browser watchdog off until HLS segments are ready', () => {

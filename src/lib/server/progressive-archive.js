@@ -21,7 +21,7 @@ export function archiveByteRange(value, size) {
 // masquerade as zero-filled sparse data or an early EOF.
 export async function createProgressiveArchiveSource(input, {
   root, helper = join(process.cwd(), 'scripts', 'progressive-archive.py'),
-  startupTimeoutMs = 30000, idleMs = 30000, archiveReadBytes = 8 * 1024 * 1024, onProgress = () => {}
+  startupTimeoutMs = 30000, idleMs = 30000, archiveReadBytes = 16 * 1024 * 1024, onProgress = () => {}
 }) {
   if (!Number.isSafeInteger(archiveReadBytes) || archiveReadBytes < 64 * 1024 || archiveReadBytes > 64 * 1024 * 1024) throw new Error('Invalid archive read window');
   const directory = await mkdtemp(join(root, 'playback-progressive-'));

@@ -20,6 +20,7 @@ function recoveryState(retries = 0) {
     player: { currentTime: 12, duration: 1400, paused: true, play: async () => { state.plays++; } },
     plays: 0, automaticStreamRetries: retries, playbackDiagnostics: false,
     playbackRecovery: null, playbackNeedsAction: false, playbackSettled: true, pendingBufferedRecovery: null, preparedSession: null,
+    connectionLost: false, interruptedWhileOffline: false,
     continuePlaybackOnReady: false, playing: true, resumeStarting: false,
     resumeStreamOffset: 128, recoveryPosition: 0, resumePlayback: false,
     restoredMediaKey: 'episode', currentPlaybackRequestToken: 1,
@@ -74,6 +75,17 @@ test('ordinary interruptions retain bounded automatic direct-stream retries', ()
   assert.equal(state.restartedAt, 140);
   assert.equal(state.automaticStreamRetries, 1);
   assert.equal(requests.length, 0);
+});
+
+test('an offline interruption waits without spending a retry or starting a fallback', () => {
+  const { state, requests } = recoveryState();
+  state.connectionLost = true;
+  state.playback.hlsUrl = '/hls';
+  state.handlePlaybackInterruption('media-error', 'Network unavailable');
+  assert.equal(state.automaticStreamRetries, 0);
+  assert.equal(state.restartedAt, undefined);
+  assert.equal(state.buffering, true);
+  assert.deepEqual(requests, []);
 });
 
 test('an exhausted HLS preparation uses a downloaded copy instead of restarting extraction', async () => {

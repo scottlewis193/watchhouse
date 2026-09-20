@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { createProgressiveArchiveSource, archiveByteRange } from '../src/lib/server/progressive-archive.js';
+import { inspectStoredRar, tryCreateStoredRarSource } from '../src/lib/server/stored-rar-source.js';
 const execute = promisify(execFile);
 
 test('7z video bytes are playable before the middle of the archive arrives', { timeout: 15000 }, async () => {
@@ -25,7 +26,7 @@ test('7z video bytes are playable before the middle of the archive arrives', { t
     source = await createProgressiveArchiveSource({ size: archive.length, close: async () => {}, async read(start, end) {
       if (start >= 4 * 1024 * 1024 && start < 8 * 1024 * 1024) { middleRequested = true; await held; }
       return archive.subarray(start, end + 1);
-    } }, { root });
+    } }, { root, archiveReadBytes: 8 * 1024 * 1024 });
     const lease = source.retain();
     const response = await fetch(lease.url, { headers: { Range: 'bytes=0-65535' } });
     assert.equal(response.status, 206);
@@ -45,7 +46,7 @@ test('archive range parsing rejects malformed requests and supports suffixes', (
   for (const value of ['bytes=10-', 'bytes=8-2', 'bytes=-0', 'bytes=0-1,3-4']) assert.equal(archiveByteRange(value, 10), null);
 });
 
-test('archive extraction keeps an 8 MB read in one upstream batch', async () => {
+test('archive extraction uses a 16 MB upstream batch for deep resumes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'progressive-read-window-'));
   const helper = join(root, 'helper.py'), reads = [];
   let source;
@@ -57,7 +58,7 @@ test('archive extraction keeps an 8 MB read in one upstream batch', async () => 
       async read(start, end) { reads.push([start, end]); return Buffer.alloc(end - start + 1); }
     }, { root, helper });
     assert.equal(source.complete, true);
-    assert.deepEqual(reads, [[0, 8 * 1024 * 1024 - 1]], 'splitting the read under-fills the configured Usenet connection pool');
+    assert.deepEqual(reads, [[0, 16 * 1024 * 1024 - 1]], 'small sequential reads add provider round trips before a deep resume');
   } finally { await source?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -132,10 +133,11 @@ test('HLS passes real opening timeline validation and produces segments before a
     await execute('7z', ['a', '-t7z', '-mx=0', join(root, 'video.7z'), videoPath]);
     const archive = await readFile(join(root, 'video.7z'));
     assert.ok(archive.length > 8 * 1024 * 1024);
+    // Keep a provider range unavailable even when the default read window grows.
     source = await createProgressiveArchiveSource({ size: archive.length, close: async () => {}, async read(start, end) {
       if (start >= archive.length * 0.7 && end < archive.length - 65536) await held;
       return archive.subarray(start, end + 1);
-    } }, { root });
+    } }, { root, archiveReadBytes: 8 * 1024 * 1024 });
     const job = { media: { type: 'tv', id: 999999, season: 1, episode: 1 }, progressiveArchive: true, archiveSource: source, file: { subject: 'video.mkv' }, release: 'Fixture SDR H264', strategy: 'remux', mode: 'direct', diagnosticsEnabled: true, events: [] };
     const startup = Date.now();
     session = await createHlsSession({ root, produce: directory => startHlsConversion(job, {}, 0, directory) });
@@ -206,6 +208,119 @@ function storedRarVolumes(video) {
   }
   return volumes;
 }
+
+function storedInput(volumes, reads = []) {
+  const offsets = [0];
+  for (const volume of volumes) offsets.push(offsets.at(-1) + volume.length);
+  const archive = Buffer.concat(volumes);
+  return { size: archive.length, volumeOffsets: offsets, close: async () => {}, async read(start, end) {
+    reads.push([start, end]);
+    return archive.subarray(start, end + 1);
+  } };
+}
+
+function rar5Vint(value) {
+  const bytes = [];
+  do { const digit = value % 128; value = Math.floor(value / 128); bytes.push(digit | (value ? 128 : 0)); } while (value);
+  return Buffer.from(bytes);
+}
+function rar5Header(type, flags, body = Buffer.alloc(0), dataSize = 0) {
+  const fields = Buffer.concat([rar5Vint(type), rar5Vint(flags), ...(flags & 2 ? [rar5Vint(dataSize)] : []), body]);
+  const header = Buffer.concat([rar5Vint(fields.length), fields]);
+  const crc = Buffer.alloc(4); crc.writeUInt32LE(crc32(header));
+  return Buffer.concat([crc, header]);
+}
+function storedRar5Volumes(video) {
+  const name = Buffer.from('video.mkv'), volumes = [];
+  for (let offset = 0; offset < video.length; offset += 1024 * 1024) {
+    const data = video.subarray(offset, offset + 1024 * 1024), last = offset + data.length === video.length;
+    const main = rar5Header(1, 0, Buffer.concat([rar5Vint(offset ? 3 : 1), ...(offset ? [rar5Vint(offset / (1024 * 1024))] : [])]));
+    const dataCrc = Buffer.alloc(4); dataCrc.writeUInt32LE(crc32(last ? video : data));
+    const fields = Buffer.concat([rar5Vint(4), rar5Vint(video.length), rar5Vint(0), dataCrc, rar5Vint(0), rar5Vint(1), rar5Vint(name.length), name]);
+    volumes.push(Buffer.concat([Buffer.from('526172211a070100', 'hex'), main,
+      rar5Header(2, 2 | (offset ? 8 : 0) | (last ? 0 : 16), fields, data.length), data, rar5Header(5, 0, rar5Vint(last ? 0 : 1))]));
+  }
+  return volumes;
+}
+
+test('stored RAR maps a deep video range without reading the preceding video', async () => {
+  const video = randomBytes(4 * 1024 * 1024 + 123), reads = [];
+  const source = await tryCreateStoredRarSource(storedInput(storedRarVolumes(video), reads));
+  try {
+    assert.ok(source?.randomAccess);
+    assert.equal(source.metadata.size, video.length);
+    const before = reads.length, start = 3 * 1024 * 1024 + 55;
+    const lease = source.retain();
+    try {
+      const response = await fetch(lease.url, { headers: { Range: `bytes=${start}-${start + 999}` } });
+      assert.equal(response.status, 206);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), video.subarray(start, start + 1000));
+      assert.deepEqual(reads.slice(before).map(([a, b]) => b - a + 1), [1000]);
+    } finally { lease.close(); }
+  } finally { await source?.close(); }
+});
+
+test('stored RAR5 maps video bytes across volume boundaries', async () => {
+  const video = randomBytes(2 * 1024 * 1024 + 321), source = await tryCreateStoredRarSource(storedInput(storedRar5Volumes(video)));
+  try {
+    assert.ok(source?.randomAccess);
+    const lease = source.retain(), start = 1024 * 1024 - 120;
+    try {
+      const response = await fetch(lease.url, { headers: { Range: `bytes=${start}-${start + 999}` } });
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), video.subarray(start, start + 1000));
+    } finally { lease.close(); }
+  } finally { await source?.close(); }
+});
+
+test('deep stored-RAR HLS resume fetches the seek window instead of the film prefix', { timeout: 30000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stored-rar-resume-'));
+  let source, session;
+  try {
+    const path = join(root, 'film.mkv');
+    await execute('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '180', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '8', '-c:a', 'aac', path]);
+    const video = await readFile(path), reads = [];
+    source = await tryCreateStoredRarSource(storedInput(storedRarVolumes(video), reads));
+    assert.ok(source?.randomAccess);
+    const inspected = reads.length;
+    const job = { media: { type: 'movie', id: 99 }, progressiveArchive: true, archiveSource: source, file: { subject: 'film.mkv' }, release: 'SDR', strategy: 'remux', mode: 'direct' };
+    session = await createHlsSession({ root, produce: directory => startHlsConversion(job, {}, 135.123, directory) });
+    await session.ready();
+    assert.match((await session.read('index.m3u8')).toString(), /#EXTINF:/);
+    const middle = reads.slice(inspected).filter(([start, end]) => start > video.length * .2 && end < video.length * .5);
+    assert.equal(middle.length, 0, 'the converter must not download the archived video prefix to seek');
+  } finally { await session?.close(); await source?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('compressed or damaged RAR headers retain the sequential extraction path', async () => {
+  const video = randomBytes(2 * 1024 * 1024), volumes = storedRarVolumes(video);
+  const compressed = volumes.map(volume => Buffer.from(volume));
+  const at = 7 + 13, headerSize = compressed[0].readUInt16LE(at + 5);
+  compressed[0][at + 7 + 18] = 0x33;
+  compressed[0].writeUInt16LE(crc32(compressed[0].subarray(at + 2, at + headerSize)) & 65535, at);
+  assert.equal(await inspectStoredRar(storedInput(compressed)), null);
+  const damaged = volumes.map(volume => Buffer.from(volume));
+  damaged[1][20] ^= 1;
+  assert.equal(await inspectStoredRar(storedInput(damaged)), null);
+  assert.equal(await tryCreateStoredRarSource(storedInput([Buffer.from('377abcaf271c0000', 'hex')])), null);
+});
+
+test('stored RAR verifies after playback starts and rejects a failed archive check', async () => {
+  const video = randomBytes(1024 * 1024 + 1);
+  let calls = 0, finish;
+  const source = await tryCreateStoredRarSource(storedInput(storedRarVolumes(video)), {
+    verify: () => { calls++; return new Promise((_, reject) => { finish = reject; }); }
+  });
+  try {
+    assert.equal(calls, 0, 'verification must not delay opening the video');
+    const first = source.verify(), second = source.verify();
+    assert.equal(first, second);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    finish(new Error('Archive CRC mismatch'));
+    await first;
+    assert.match(source.failure?.message || '', /CRC mismatch/);
+  } finally { await source.close(); }
+});
 
 test('multivolume stored RAR extracts through virtual ranges with matching bytes and CRC', async () => {
   const root = await mkdtemp(join(tmpdir(), 'progressive-rar-'));

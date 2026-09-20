@@ -201,6 +201,123 @@ test('fatal transient network errors reuse a healthy converter session before es
   } finally {source.destroy();globalThis.window=oldWindow;}
 });
 
+test('an offline HLS failure waits for reconnection and resumes the existing session at the playhead', async t => {
+  const oldWindow = globalThis.window, oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const listeners = new Map(), requests = [], errors = [], loads = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { onLine: true } });
+  globalThis.window = {
+    addEventListener(name, callback) { listeners.set(name, callback); },
+    removeEventListener(name) { listeners.delete(name); }
+  };
+  t.mock.method(globalThis, 'fetch', async url => {
+    requests.push(url);
+    return { ok: true, json: async () => ({ sessionUrl: '/existing', playlistUrl: '/playlist' }) };
+  });
+  let errorHandler;
+  class Hls {
+    static isSupported = () => true;
+    static Events = { ERROR: 'error' };
+    static ErrorTypes = { NETWORK_ERROR: 'networkError' };
+    on(event, callback) { if (event === 'error') errorHandler = callback; }
+    attachMedia() {} loadSource() {} destroy() {}
+    startLoad(position) { loads.push(position); }
+  }
+  const video = { currentTime: 1872, paused: false, removeAttribute() {}, load() {} };
+  const source = playbackSource(video, { hlsUrl: '/hls', start: 0, onError: (...args) => errors.push(args) }, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    globalThis.navigator.onLine = false;
+    errorHandler(null, { fatal: true, type: 'networkError', details: 'fragLoadError' });
+    await setImmediate();
+    assert.deepEqual(errors, []);
+    assert.deepEqual(loads, []);
+    assert.equal(requests.includes('/existing/status'), false);
+    globalThis.navigator.onLine = true;
+    listeners.get('online')();
+    assert.deepEqual(loads, [1872]);
+    assert.equal(video.paused, false);
+    assert.equal(requests.filter(url => url === '/hls').length, 1);
+  } finally {
+    source.destroy(); globalThis.window = oldWindow;
+    if (oldNavigator) Object.defineProperty(globalThis, 'navigator', oldNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
+test('playback setup retries after connectivity returns', async t => {
+  const oldWindow = globalThis.window, oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const listeners = new Map(), errors = [], requests = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { onLine: false } });
+  globalThis.window = {
+    addEventListener(name, callback) { listeners.set(name, callback); },
+    removeEventListener(name) { listeners.delete(name); }
+  };
+  t.mock.method(globalThis, 'fetch', async url => {
+    requests.push(url);
+    return { ok: true, json: async () => ({ sessionUrl: '/reconnected', playlistUrl: '/playlist' }) };
+  });
+  let attached = false;
+  class Hls {
+    static isSupported = () => true;
+    static Events = { ERROR: 'error' };
+    on() {} attachMedia() { attached = true; } loadSource() {} destroy() {}
+  }
+  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 900, onError: (...args) => errors.push(args) }, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    assert.equal(requests.includes('/hls'), false);
+    globalThis.navigator.onLine = true;
+    listeners.get('online')();
+    await setImmediate();
+    assert.equal(attached, true);
+    assert.deepEqual(errors, []);
+    assert.equal(requests.filter(url => url === '/hls').length, 1);
+  } finally {
+    source.destroy(); globalThis.window = oldWindow;
+    if (oldNavigator) Object.defineProperty(globalThis, 'navigator', oldNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
+test('an interrupted setup request is retried after reconnecting', async t => {
+  const oldWindow = globalThis.window, oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const listeners = new Map(), errors = [], requests = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { onLine: true } });
+  globalThis.window = {
+    addEventListener(name, callback) { listeners.set(name, callback); },
+    removeEventListener(name) { listeners.delete(name); }
+  };
+  let rejectFirst;
+  t.mock.method(globalThis, 'fetch', url => {
+    requests.push(url);
+    if (url === '/hls' && requests.filter(request => request === '/hls').length === 1) return new Promise((_resolve, reject) => { rejectFirst = reject; });
+    return Promise.resolve({ ok: true, json: async () => ({ sessionUrl: '/reconnected', playlistUrl: '/playlist' }) });
+  });
+  let attached = false;
+  class Hls {
+    static isSupported = () => true;
+    static Events = { ERROR: 'error' };
+    on() {} attachMedia() { attached = true; } loadSource() {} destroy() {}
+  }
+  const source = playbackSource({ removeAttribute() {}, load() {} }, { hlsUrl: '/hls', start: 900, onError: (...args) => errors.push(args) }, async () => ({ default: Hls }));
+  try {
+    globalThis.navigator.onLine = false;
+    rejectFirst(new TypeError('Network connection lost'));
+    await setImmediate();
+    assert.deepEqual(errors, []);
+    assert.equal(requests.filter(url => url === '/hls').length, 1);
+    globalThis.navigator.onLine = true;
+    listeners.get('online')();
+    await setImmediate();
+    assert.equal(attached, true);
+    assert.equal(requests.filter(url => url === '/hls').length, 2);
+  } finally {
+    source.destroy(); globalThis.window = oldWindow;
+    if (oldNavigator) Object.defineProperty(globalThis, 'navigator', oldNavigator);
+    else delete globalThis.navigator;
+  }
+});
+
 test('a rejected source skips local HLS retries and requests release replacement', async t => {
   const errors = []; let onError;
   t.mock.method(globalThis, 'fetch', async url => ({ ok: true, json: async () => url.endsWith('/status')

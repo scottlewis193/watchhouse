@@ -34,7 +34,8 @@
   let seekPaused = false, seekTimer, statusFailures = 0, lastAdvancedPosition = 0, lastDiagnosticAt = 0, firstAdvancedSource = '';
   let audioTracks = $state([]), captionTracks = $state([]), selectedAudioTrack = $state(null), selectedCaptionTrack = $state('off'), captionsAvailable = $state(false);
   let interpolationDisabled = $state(false);
-  let buffering = $state(false), pictureInPictureAvailable = $state(false), playerControlError = $state('');
+  let buffering = $state(false), connectionLost = $state(false), pictureInPictureAvailable = $state(false), playerControlError = $state('');
+  let interruptedWhileOffline = false;
   let playing = $state(false), playerPosition = $state(0), playerDuration = $state(0), seekPreview = $state(null), playerVolume = $state(1), playerMuted = $state(false), fullscreen = $state(false), controlsVisible = $state(true);
   let bufferedRanges = $state([]);
   let frameTimingStats = $state(null);
@@ -61,6 +62,17 @@
 
   onMount(() => {
     offlineMode = !navigator.onLine;
+    connectionLost = !navigator.onLine;
+    const onOffline = () => { connectionLost = true; clearTimeout(interruptionTimer); interruptionTimer = null; };
+    const onOnline = () => {
+      connectionLost = false;
+      if (interruptedWhileOffline && playback?.status === 'ready') {
+        interruptedWhileOffline = false;
+        restartStream(currentPlaybackPosition());
+      } else if (buffering) handleStartupBuffering({ type: 'online' });
+    };
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('online', onOnline);
     pictureInPictureAvailable = Boolean(document.pictureInPictureEnabled);
     if (!media.title || !['movie', 'tv'].includes(media.type) || !Number.isInteger(media.id)) {
       playback = { status: 'error', message: 'This title link is invalid.', progress: 0 };
@@ -68,7 +80,7 @@
     }
     backgroundTimer = setInterval(() => void reportBackgroundPlayback(), 3000);
     void initialise();
-    return () => { clearBufferedSourceRecovery(); clearInterval(backgroundTimer); clearTimeout(seekTimer); stopBackgroundPlayback(); playbackRequests.cancel(); readinessController?.abort(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
+    return () => { window.removeEventListener('offline', onOffline); window.removeEventListener('online', onOnline); clearBufferedSourceRecovery(); clearInterval(backgroundTimer); clearTimeout(seekTimer); stopBackgroundPlayback(); playbackRequests.cancel(); readinessController?.abort(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
   });
 
   async function initialise() {
@@ -574,6 +586,7 @@
     const timeline = controlTimeline(), stalledAt = currentPlaybackPosition();
     lastAdvancedPosition = stalledAt;
     if (!['direct', 'cached-convert', 'cached'].includes(playback?.mode)) return;
+    if (connectionLost && playback?.mode !== 'cached') return;
     // A deep archive resume can take minutes to reach the saved position.
     // The setup request owns that deadline until a playable segment is ready.
     if (playback?.hlsUrl && (!setupProgress || setupProgress.completed < 2)) return;
@@ -709,6 +722,11 @@
     if (fallbackPending && playbackRequests.isCurrent(fallbackPending)) return;
     if (playback?.status !== 'ready') return;
     if (pendingBufferedRecovery) return;
+    if (connectionLost && playback?.mode !== 'cached' && (reason === 'buffering-timeout' || reason === 'media-error')) {
+      interruptedWhileOffline ||= reason === 'media-error' && !playback?.hlsUrl;
+      buffering = true;
+      return;
+    }
     if (playback.frameInterpolation && !interpolationDisabled && (reason === 'buffering-timeout' || evidence.code === 'INTERPOLATION_TOO_SLOW')) {
       interpolationDisabled = true;
       playerControlError = 'Frame interpolation could not sustain playback. Continuing at the original frame rate for this episode.';
@@ -1153,7 +1171,12 @@
           </video>
           {#if playback?.status === 'ready'}
             {@const timeline = controlTimeline()}
-            {#if buffering && playbackSettled}<div class="buffering-status pointer-events-none absolute left-1/2 top-8 z-10 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-sm text-white" role="status">Buffering — keeping your place…</div>{/if}
+            {#if (buffering || connectionLost) && playbackSettled && !playbackUi.showSeekStatus}
+              <div class="buffering-indicator pointer-events-none absolute left-1/2 top-8 z-10 -translate-x-1/2" role="status" aria-label={connectionLost ? 'Connection lost. Waiting to reconnect' : 'Buffering playback'}>
+                <span class="buffering-ring" aria-hidden="true"></span>
+              </div>
+            {/if}
+            {#if connectionLost && playbackSettled}<div class="pointer-events-none absolute left-1/2 top-24 z-10 -translate-x-1/2 rounded-full bg-black/70 px-4 py-2 text-center text-xs text-white" role="status">Connection lost. Waiting to reconnect…</div>{/if}
             {#if buffering && downloaded(currentMedia).available}<button class="absolute right-3 top-16 z-20 rounded bg-black/70 px-3 py-2 text-sm text-white" onclick={useDownloadedCopy}>Use downloaded copy</button>{/if}
             {#if playbackUi.showSeekStatus}
               <div class="pointer-events-none absolute inset-0 z-10 grid place-items-center bg-black/30 text-white" role="status">
@@ -1299,8 +1322,11 @@
   }
   .player-track-active { color: white; border-bottom-color: white; }
 
-  .buffering-status { animation: show-buffering 150ms 600ms both; }
+  .buffering-indicator { display: grid; width: 3.5rem; height: 3.5rem; place-items: center; border: 1px solid rgb(255 255 255 / 16%); border-radius: 50%; background: rgb(0 0 0 / 68%); box-shadow: 0 8px 28px rgb(0 0 0 / 35%); backdrop-filter: blur(12px); animation: show-buffering 150ms 600ms both; }
+  .buffering-ring { width: 1.7rem; height: 1.7rem; border: 2px solid rgb(255 255 255 / 22%); border-top-color: var(--color-primary); border-radius: 50%; animation: spin-buffering .9s linear infinite; }
   @keyframes show-buffering { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes spin-buffering { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .buffering-indicator, .buffering-ring { animation: none; } }
 
   .player-shell:fullscreen {
     width: 100vw;

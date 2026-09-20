@@ -26,7 +26,7 @@ def main():
     except (ImportError, ValueError, OSError):
         pass
     url, output, total = sys.argv[1], sys.argv[2], int(sys.argv[3])
-    extraction_read_size = int(sys.argv[4]) if len(sys.argv) > 4 else 8 * 1024 * 1024
+    extraction_read_size = int(sys.argv[4]) if len(sys.argv) > 4 else 16 * 1024 * 1024
     lib = C.CDLL(ctypes.util.find_library('archive') or 'libarchive.so.13')
     ptr = C.c_void_p
     def api(name, restype, *args):
@@ -72,18 +72,25 @@ def main():
             window = extraction_read_size if grow_read_after and position >= 4 * 1024 * 1024 else read_size
             end = min(total, position + window) - 1
             request = urllib.request.Request(url, headers={'Range': f'bytes={position}-{end}'})
+            buffer = bytearray(end - position + 1)
             with opener.open(request, timeout=30) as response:
                 if response.status != 206:
                     raise RuntimeError('Archive byte-range request failed')
-                payload = response.read(end - position + 2)
-            if len(payload) != end - position + 1:
-                raise RuntimeError('Incomplete archive byte range')
-            buffer = C.create_string_buffer(payload)
-            # The buffer is held until the next read. Passing its address
-            # avoids ctypes cast ownership cycles retaining old 4 MiB buffers.
-            target[0] = C.addressof(buffer)
-            position += len(payload)
-            return len(payload)
+                view = memoryview(buffer)
+                received = 0
+                while received < len(buffer):
+                    count = response.readinto(view[received:])
+                    if not count:
+                        raise RuntimeError('Incomplete archive byte range')
+                    received += count
+                if response.read(1):
+                    raise RuntimeError('Oversized archive byte range')
+            # Keep one writable buffer alive until libarchive requests the next
+            # block. This avoids another full-window allocation and ctypes
+            # ownership cycles on long archive reads.
+            target[0] = C.addressof(C.c_char.from_buffer(buffer))
+            position += len(buffer)
+            return len(buffer)
         except Exception as exc:
             read_error = str(exc)
             return -1

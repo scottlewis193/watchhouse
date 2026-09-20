@@ -31,6 +31,7 @@ import { createTransferCoordinator, createBackgroundNntpClient } from './backgro
 import { downloadPostedFiles } from './archive-download.js';
 import { createArchiveResumeCache } from './archive-resume-cache.js';
 import { createProgressiveArchiveSource } from './progressive-archive.js';
+import { tryCreateStoredRarSource } from './stored-rar-source.js';
 
 const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, 'data', 'settings.json');
@@ -638,11 +639,18 @@ export async function optimizeCachedVideo(job, path, settings = {}) {
   // Timeline interpolation is a software filter; keep hardware frames out of
   // this rare repair path so it behaves consistently on every host.
   const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap);
+  // The encoder probe cannot establish support for decoding this source codec.
+  const selectedAcceleration = acceleration?.kind === 'vaapi' && !['h264', 'hevc'].includes(inspection.videoCodec)
+    ? null : acceleration;
+  if (selectedAcceleration !== acceleration) {
+    job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
+    jobEvent(job, 'acceleration', job.videoAcceleration);
+  }
   if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
   if (strategy === 'raw') return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration, timelineValidated: true, decodeValidated: true };
   if (repairVideoFrameRate || shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
-    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, acceleration, repairVideoFrameRate), job.directory || ROOT, job);
+    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, selectedAcceleration, repairVideoFrameRate), job.directory || ROOT, job);
     await validatePreparedEpisode(job, browserPath);
     await inspectPlaybackSource(browserPath, job.untaggedAudioTrack, { fullTimeline: true });
     return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration, timelineValidated: true, decodeValidated: true, timelineRepaired: Boolean(repairVideoFrameRate) };
@@ -806,7 +814,7 @@ export async function openArchiveByteInput(archives, settings, connect = connect
     // cache eviction cannot close a loader while another request still uses it.
     let reads = Promise.resolve();
     return {
-      size: offsets.at(-1), close,
+      size: offsets.at(-1), volumeOffsets: offsets, close,
       read(start, end, requestSignal) {
         const result = reads.then(async () => {
           signal.throwIfAborted(); requestSignal?.throwIfAborted();
@@ -836,7 +844,20 @@ async function progressiveSource(job, settings) {
     const input = await openArchiveByteInput(job.archives, settings, connectNntp, error => rejectPlaybackSource(job, settings, release, releaseKey, error));
     try {
       await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true });
-      const source = await createProgressiveArchiveSource(input, { root: PLAYBACK_CACHE_ROOT, startupTimeoutMs: 120000 });
+      const source = await tryCreateStoredRarSource(input, { verify: async signal => {
+        // Keep the archive's full-file CRC check, but run it after the first
+        // playable segment instead of making a deep resume wait for its prefix.
+        const checkSettings = { ...settings, signal };
+        const checkInput = await openArchiveByteInput(job.archives, checkSettings, connectNntp,
+          error => rejectPlaybackSource(job, checkSettings, release, releaseKey, error));
+        let check;
+        try {
+          check = await createProgressiveArchiveSource(checkInput, { root: PLAYBACK_CACHE_ROOT, startupTimeoutMs: 120000 });
+          const lease = check.retain();
+          try { await check.completion; }
+          finally { lease.close(); }
+        } finally { if (check) await check.close(); else await checkInput.close(); }
+      } }) || await createProgressiveArchiveSource(input, { root: PLAYBACK_CACHE_ROOT, startupTimeoutMs: 120000 });
       job.archiveSource = source;
       return source;
     } catch (error) { await input.close(); throw error; }
@@ -1005,6 +1026,7 @@ export async function inspectPlaybackSource(input, untaggedAudioTrack = 2, { ful
   const duration = Number(probe.format?.duration);
   return {
     audioIndex,
+    videoCodec: video?.codec_name || null,
     duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
     ...(issue?.type === 'video-only' ? { repairVideoFrameRate: frameRate(video), timelineIssue: issue } : {})
   };
@@ -1032,7 +1054,7 @@ function playbackInspection(job, settings, input) {
       const inputOptions = job.progressiveArchive && !job.archiveSource?.complete ? ['-seekable', '0'] : [];
       const probe = JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-rw_timeout', '15000000', '-show_entries', 'format=duration:stream=index,codec_type,codec_name,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name', '-of', 'json', ...inputOptions, input], undefined, settings.signal));
       const video = probe.streams?.find(stream => stream.codec_type === 'video');
-      const metadata = { tracks: playbackTracks(probe.streams), audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0, videoFrameRate: frameRate(video) };
+      const metadata = { tracks: playbackTracks(probe.streams), audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0, videoFrameRate: frameRate(video), videoCodec: video?.codec_name || null };
       const videoIndex = video?.index;
       publish(metadata);
       jobEvent(job, 'metadata-ready', 'Source audio and duration identified.');
@@ -1079,7 +1101,13 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     }
     const interpolate = Boolean(settings.frameInterpolation) && (!metadata.videoFrameRate || metadata.videoFrameRate < 60);
     const strategy = repairVideoFrameRate || interpolate ? 'transcode' : requestedStrategy;
-    const acceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap, interpolate);
+    const detectedAcceleration = repairVideoFrameRate ? null : await configurePlaybackAcceleration(job, strategy, toneMap, interpolate);
+    const acceleration = detectedAcceleration?.kind === 'vaapi' && !['h264', 'hevc'].includes(metadata.videoCodec)
+      ? null : detectedAcceleration;
+    if (acceleration !== detectedAcceleration) {
+      job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
+      jobEvent(job, 'acceleration', job.videoAcceleration);
+    }
     if (repairVideoFrameRate) {
       job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
       jobEvent(job, 'timeline-repair', 'A video timestamp gap was detected. Repeating frames to preserve audio timing.');
@@ -1125,7 +1153,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   } catch (error) {
     await producer?.stop();
     await rangeSource?.close();
-    if (job.progressiveArchive && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
+    if (job.progressiveArchive && job.archives && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
       job.progressiveArchiveDisabled = true;
       await prepareArchive(job, settings, job.archives);
       if (job.status !== 'ready') throw new Error(job.message || 'Archive fallback failed.');
@@ -1430,7 +1458,9 @@ async function tryProgressiveArchive(job, settings, archives) {
       const source = await progressiveSource(job, settings);
       const suggested = playbackStrategy(source.metadata.name, job.release);
       Object.assign(job, { progressiveArchive: true, file: { subject: source.metadata.name }, strategy: suggested === 'raw' ? 'remux' : suggested, mode: 'direct', status: 'ready', progress: 100, message: 'Archive video is ready for progressive playback.' });
-      jobEvent(job, 'archive-progressive-ready', job.message, { extractedBytes: source.available, totalBytes: source.metadata.size });
+      jobEvent(job, 'archive-progressive-ready', job.message, source.randomAccess
+        ? { randomAccess: true, totalBytes: source.metadata.size }
+        : { extractedBytes: source.available, totalBytes: source.metadata.size });
       return true;
     } catch (error) {
       // Full downloading cannot restore a missing required article or unlock an
@@ -1497,7 +1527,9 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       if (saved && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
         && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
         Object.assign(job, saved, { archiveResume: true, status: 'ready', mode: 'direct', progress: 100, message: 'Reusing the archive video prepared earlier.' });
-        jobEvent(job, 'archive-resume-hit', job.message, { extractedBytes: saved.archiveSource.available, totalBytes: saved.archiveSource.metadata.size });
+        jobEvent(job, 'archive-resume-hit', job.message, saved.archiveSource.randomAccess
+          ? { randomAccess: true, totalBytes: saved.archiveSource.metadata.size }
+          : { extractedBytes: saved.archiveSource.available, totalBytes: saved.archiveSource.metadata.size });
         return;
       }
     }
@@ -1969,6 +2001,13 @@ export async function handleRequest(req, res) {
           } : undefined);
           jobEvent(job, 'segments-ready', 'First playback segment is ready.');
           if (cancelled) return;
+          // Let the browser fetch its first local HLS assets before the
+          // full-file archive check competes for provider connections.
+          if (job.archiveSource?.verify) {
+            const source = job.archiveSource;
+            const timer = setTimeout(() => void source.verify(), 5000);
+            timer.unref();
+          }
           delivered = true;
           const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}`, duration: job.sourceDuration || 0, tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: Boolean(job.sourcePath || job.path || job.archiveSource?.complete) };
           if (streaming) { report(2); return res.end(JSON.stringify({ type: 'ready', session: result }) + '\n'); }
