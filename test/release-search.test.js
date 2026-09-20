@@ -4,6 +4,21 @@ import { findReleases } from '../src/lib/server/streamer.js';
 const media = { type: 'tv', title: 'Silo', season: 1, episode: 1 };
 const settings = { indexerUrl: 'https://indexer.example', indexerKey: 'test' };
 const xml = (start, count, total) => `<rss><newznab:response offset="${start}" total="${total}" />${Array.from({length:count}, (_, i) => `<item><title>Silo.S01E01.1080p.H264.Release${start+i}</title><enclosure url="https://indexer.example/nzb/${start+i}" /></item>`).join('')}</rss>`;
+test('finds Sorcerer’s Stone releases when the selected film uses the Philosopher’s Stone title', async () => {
+  const queries = [];
+  const releases = await findReleases(settings, { type: 'movie', title: "Harry Potter and the Philosopher's Stone", year: '2001' }, true, {
+    request: async url => {
+      const query = url.searchParams.get('q');
+      queries.push(query);
+      const item = /Sorcerers Stone/.test(query)
+        ? '<item><title>Harry.Potter.and.the.Sorcerers.Stone.2001.1080p.BluRay</title><enclosure url="https://indexer.example/nzb/stone" /></item>'
+        : '';
+      return { ok: true, text: async () => `<rss><newznab:response offset="0" total="${item ? 1 : 0}" />${item}</rss>` };
+    }
+  });
+  assert.ok(queries.some(query => /Sorcerers Stone/.test(query)), `Missing alternate-title query: ${queries.join(', ')}`);
+  assert.deepEqual(releases.map(release => release.title), ['Harry.Potter.and.the.Sorcerers.Stone.2001.1080p.BluRay']);
+});
 test('release discovery follows all result pages and retains later uploads', async () => {
   const offsets=[];
   const releases=await findReleases(settings, media, true, {request:async url=>{

@@ -67,8 +67,16 @@ export function episodeTag(media) {
 
 export function titleVariants(title) {
   const original = String(title || '').trim();
-  const withoutApostrophes = original.replace(/['‘’`]/g, '').replace(/\s+/g, ' ').trim();
-  return [...new Set([original, withoutApostrophes].filter(Boolean))];
+  const normalized = titleTokens(original).join(' ');
+  const alternate = normalized === 'harry potter and the philosophers stone'
+    ? "Harry Potter and the Sorcerer's Stone"
+    : normalized === 'harry potter and the sorcerers stone'
+      ? "Harry Potter and the Philosopher's Stone"
+      : '';
+  return [...new Set([original, alternate].flatMap(value => [
+    value,
+    value.replace(/['‘’`]/g, '').replace(/\s+/g, ' ').trim()
+  ]).filter(Boolean))];
 }
 
 function titleTokens(value) {
@@ -80,15 +88,15 @@ function titleTokens(value) {
 }
 
 export function releaseTitleMatches(release, media) {
-  const expected = titleTokens(media?.title);
-  if (!expected.length) return true;
+  const expectedTitles = titleVariants(media?.title).map(titleTokens);
+  if (!expectedTitles.length) return true;
   // For episodes, the series name precedes the episode tag. Text after it can
   // be an episode title belonging to an entirely different show.
   const seriesTitle = media?.type === 'tv'
     ? String(release?.title || '').split(/\b(?:s\d{1,2}[ ._-]*e\d{1,3}|\d{1,2}x\d{1,3})\b/i)[0]
     : release?.title;
   const actual = titleTokens(seriesTitle);
-  return actual.some((_, start) => expected.every((token, offset) => actual[start + offset] === token));
+  return expectedTitles.some(expected => actual.some((_, start) => expected.every((token, offset) => actual[start + offset] === token)));
 }
 
 export function releaseScore(release, media, preferences = {}) {
