@@ -4,7 +4,7 @@ import { playbackSetupProgress, readPlaybackSetup } from './playback-setup.js';
 export function playbackSource(video, initial, loadHls = () => import('hls.js')) {
   let key, dispose = () => {};
   function update(options) {
-    const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}:${options.audioTrack}:${options.frameInterpolation}`;
+    const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}:${options.audioTrack}:${options.frameInterpolation}:${options.preparedSession?.sessionUrl || ''}`;
     if (key === nextKey) return;
     key = nextKey; dispose(false);
     if (options.active === false) { video.pause(); return; }
@@ -31,9 +31,12 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     const library = Promise.resolve().then(loadHls).then(value => ({ value }), error => ({ error }));
     setupTimer = setTimeout(() => { if (!closed) { options.onError('Playback preparation timed out. Try again.', { code: 'PLAYBACK_TIMEOUT' }); stop(); } }, 330000);
     void (async () => {
-      const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack, frameInterpolation: options.frameInterpolation }), signal: controller.signal });
-      const session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
-      if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code });
+      let session = options.preparedSession;
+      if (!session) {
+        const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack, frameInterpolation: options.frameInterpolation }), signal: controller.signal });
+        session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
+        if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code });
+      }
       clearTimeout(setupTimer);
       sessionUrl = session.sessionUrl;
       if (closed) { void post(`${sessionUrl}/stop`); return; }
@@ -58,14 +61,18 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
         options.onEvent?.('hls-error', { ...evidence, fatal: Boolean(data.fatal) });
         if (!data.fatal || recoveryPending) return;
         const fail = () => { if (!closed) options.onError(`Segmented playback failed: ${data.details}${httpStatus ? ` (HTTP ${httpStatus})` : ''}`, evidence); };
-        if (!data.type || localRecoveries >= 2 || httpStatus && ![408, 429, 500, 502, 503, 504].includes(httpStatus)) { fail(); return; }
         recoveryPending = true;
         void (async () => {
           try {
             const response = await fetch(`${sessionUrl}/status`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]) });
             const health = await response.json();
             if (closed) return;
+            if (response.ok && health.sourceRejected) {
+              options.onError('This release has missing or invalid video data. Trying another source.', { ...evidence, code: 'SOURCE_REJECTED' });
+              return;
+            }
             if (!response.ok || health.failed || health.closed) { fail(); return; }
+            if (!data.type || localRecoveries >= 2 || httpStatus && ![408, 429, 500, 502, 503, 504].includes(httpStatus)) { fail(); return; }
             localRecoveries++;
             options.onEvent?.('hls-recovery', { type: data.type, attempt: localRecoveries });
             if (data.type === Hls.ErrorTypes?.NETWORK_ERROR) hls.startLoad(video.currentTime);

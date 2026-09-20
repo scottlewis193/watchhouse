@@ -9,6 +9,16 @@ export function streamInterruptionAction(playback, automaticRetries = 0, retryLi
   return Math.max(0, Number(automaticRetries) || 0) < Math.max(0, Number(retryLimit) || 0) ? 'retry' : 'offer';
 }
 
+export function bufferedRecoveryTarget(ranges, currentTime, offset = 0, overlap = 1) {
+  if (!ranges || !Number.isFinite(currentTime)) return null;
+  for (let index = 0; index < ranges.length; index++) {
+    const start = ranges.start(index), end = ranges.end(index);
+    if (currentTime < start - 0.25 || currentTime >= end || end - currentTime < 2) continue;
+    return offset + Math.max(currentTime, end - overlap);
+  }
+  return null;
+}
+
 export function episodePlaybackMedia(show, season, episodeNumber, episodes) {
   const episode = episodes.find((item) => String(item.number) === String(episodeNumber));
   const selectedSeason = Number(season);

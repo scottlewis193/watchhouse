@@ -20,6 +20,22 @@ test('an invalid article rejects its release and concurrent retries select one r
   } finally { await source.close(); }
 });
 
+test('a missing article during playback rejects the release before the next session', async () => {
+  const job = { file: { subject: 'video.mkv', segments: [{ id: 'one', number: 1, decodedBytes: 4 }, { id: 'missing', number: 2, decodedBytes: 4 }] }, release: 'incomplete', media: { type: 'movie', id: 999999999 }, mode: 'direct', status: 'ready' };
+  const source = await openPostedRangeServer(job, { maxConnections: 1 }, async () => ({
+    async body() { throw Object.assign(new Error('430 No Such Article'), { code: 'USENET_ARTICLE_MISSING' }); },
+    close() {}
+  }));
+  try {
+    await assert.rejects(async () => (await fetch(source.url, { headers: { Range: 'bytes=4-7' } })).arrayBuffer());
+    assert.equal(job.rejectedReleases?.has('incomplete'), true);
+    let replacements = 0;
+    await recoverPlaybackSource(job, {}, async target => { replacements++; target.release = 'complete'; target.status = 'ready'; });
+    assert.equal(replacements, 1);
+    assert.equal(job.release, 'complete');
+  } finally { await source.close(); }
+});
+
 test('source replacement is bounded and respects a manually selected release', async () => {
   for(const extra of [{manualRelease:{}},{rejectedReleases:new Set(['one','two','broken'])}]) {
     const job={release:'broken',rejectedReleases:new Set(['broken']),...extra};

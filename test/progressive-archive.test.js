@@ -92,6 +92,23 @@ test('virtual split-archive ranges map correctly across yEnc volume boundaries',
   } finally { await input.close(); }
 });
 
+test('a later missing archive article reports the failed source for replacement', async () => {
+  const data = Buffer.from('abcdefghijkl');
+  const files = [{ subject: 'movie.7z.001', segments: Array.from({ length: 3 }, (_, index) => ({ id: String(index) })) }];
+  const errors = [];
+  const input = await openArchiveByteInput(files, { maxConnections: 1 }, async () => ({ close() {}, async body(id, line) {
+    if (id === '1') throw Object.assign(new Error('430 No Such Article'), { code: 'USENET_ARTICLE_MISSING' });
+    const begin = Number(id) * 4, chunk = data.subarray(begin, begin + 4);
+    await line(`=ybegin size=${data.length} name=movie.7z.001`);
+    await line(`=ypart begin=${begin + 1} end=${begin + chunk.length}`);
+    await line(encoded(chunk)); await line(`=yend size=${chunk.length}`);
+  } }), error => errors.push(error.code));
+  try {
+    await assert.rejects(input.read(4, 7), { code: 'USENET_ARTICLE_MISSING' });
+    assert.deepEqual(errors, ['USENET_ARTICLE_MISSING']);
+  } finally { await input.close(); }
+});
+
 test('encrypted 7z headers fail promptly and leave no extraction directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'encrypted-7z-'));
   try {

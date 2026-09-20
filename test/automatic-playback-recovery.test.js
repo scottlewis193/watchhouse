@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { parse } from 'svelte/compiler';
-import { canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline } from '../src/lib/playback-controls.js';
+import { readPlaybackSetup } from '../src/lib/playback-setup.js';
+import { bufferedRecoveryTarget, canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline } from '../src/lib/playback-controls.js';
 
 const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
 const ast = parse(source);
@@ -18,13 +19,13 @@ function recoveryState(retries = 0) {
     currentMedia: { title: 'Friday Night Dinner', season: 2, episode: 3 },
     player: { currentTime: 12, duration: 1400, paused: true, play: async () => { state.plays++; } },
     plays: 0, automaticStreamRetries: retries, playbackDiagnostics: false,
-    playbackRecovery: null, playbackNeedsAction: false, playbackSettled: true,
+    playbackRecovery: null, playbackNeedsAction: false, playbackSettled: true, pendingBufferedRecovery: null, preparedSession: null,
     continuePlaybackOnReady: false, playing: true, resumeStarting: false,
     resumeStreamOffset: 128, recoveryPosition: 0, resumePlayback: false,
     restoredMediaKey: 'episode', currentPlaybackRequestToken: 1,
     interruptionTimer: null, startupStableTimer: null, diagnosticPollTimer: null, fallbackPending: false,
     sourceDuration: 1400, clearTimeout() {}, setTimeout() { return 1; },
-    canUseFallback, streamInterruptionAction, hasGrowingStreamDuration,
+    canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, bufferedRecoveryTarget,
     shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline,
     captureVideoDiagnostics() {}, playerPosition: 12, playerDuration: 1400, seekPreview: null,
     currentPlaybackPosition: () => state.player.currentTime + state.resumeStreamOffset,
@@ -35,7 +36,8 @@ function recoveryState(retries = 0) {
     playbackRequests: { begin: () => 2, isCurrent: token => token === 2 },
     api: { post: async url => { requests.push(url); return { id: 's02e03', status: 'downloading', mode: 'direct' }; } },
     poll: async (...args) => { polls.push(args); }, refreshDiagnostics() {},
-    restartStream: position => { state.restartedAt = position; }
+    restartStream: position => { state.restartedAt = position; },
+    prepareBufferedSourceRecovery: () => { state.preparingReplacement = true; }, clearBufferedSourceRecovery() {}
   };
   Object.assign(state, { seekPaused: false, seekTimer: null, buffering: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} } });
   runInNewContext(handlers, state);
@@ -72,6 +74,88 @@ test('ordinary interruptions retain bounded automatic direct-stream retries', ()
   assert.equal(state.restartedAt, 140);
   assert.equal(state.automaticStreamRetries, 1);
   assert.equal(requests.length, 0);
+});
+
+test('a rejected source prepares a replacement while the buffered video remains active', () => {
+  const { state, requests } = recoveryState(3);
+  state.handlePlaybackInterruption('hls-error', 'The source failed', { code: 'SOURCE_REJECTED' });
+  assert.equal(state.preparingReplacement, true);
+  assert.equal(state.restartedAt, undefined);
+  assert.equal(requests.length, 0);
+});
+
+test('a buffered recovery target stays just inside the playable range', () => {
+  const ranges = { length: 1, start: () => 5, end: () => 30 };
+  assert.equal(bufferedRecoveryTarget(ranges, 12, 100), 129);
+  assert.equal(bufferedRecoveryTarget(ranges, 29, 100), null);
+  assert.equal(bufferedRecoveryTarget(ranges, 4, 100), null);
+});
+
+test('a ready replacement waits for the buffered edge before handing playback over', async () => {
+  const names = ['clearBufferedSourceRecovery', 'completeBufferedSourceRecovery', 'prepareBufferedSourceRecovery'];
+  const code = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name)).map(node => source.slice(node.start, node.end)).join('\n');
+  const requests = []; let tick;
+  const state = {
+    playback: { id: 'movie', hlsUrl: '/api/play/movie/hls' },
+    player: { currentTime: 12, paused: false, buffered: { length: 1, start: () => 0, end: () => 30 } },
+    resumeStreamOffset: 100, streamAttempt: 0, pendingBufferedRecovery: null, buffering: false,
+    bufferedRecoveryTarget, readPlaybackSetup, AbortSignal, AbortController,
+    playbackTrace: { event() {} }, interpolationDisabled: false,
+    currentPlaybackPosition: () => state.player.currentTime + 100,
+    setInterval: callback => { tick = callback; return 1; }, clearInterval() {},
+    fetch: async url => { requests.push(url); return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ sessionUrl: '/prepared', playlistUrl: '/prepared/index.m3u8' }) }; },
+    restartStream: (position, session) => { state.handoff = { position, session }; },
+    fallback() { assert.fail('The replacement is ready'); }, handlePlaybackInterruption() {}
+  };
+  runInNewContext(code, state);
+  state.prepareBufferedSourceRecovery();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.handoff, undefined, 'the old buffered source must keep playing');
+  assert.deepEqual(requests, ['/api/play/movie/hls']);
+  state.player.currentTime = 29.1;
+  tick();
+  assert.equal(state.handoff.position, 129);
+  assert.equal(state.handoff.session.sessionUrl, '/prepared');
+  assert.equal(requests.includes('/prepared/stop'), false, 'handoff retains the prepared session');
+});
+
+test('replacement preparation failure leaves buffered playback running until it is exhausted', async () => {
+  const names = ['clearBufferedSourceRecovery', 'completeBufferedSourceRecovery', 'prepareBufferedSourceRecovery'];
+  const code = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name)).map(node => source.slice(node.start, node.end)).join('\n');
+  let tick, fallbacks = 0;
+  const state = {
+    playback: { id: 'movie', hlsUrl: '/api/play/movie/hls' },
+    player: { currentTime: 12, paused: false, buffered: { length: 1, start: () => 0, end: () => 30 } },
+    resumeStreamOffset: 100, streamAttempt: 0, pendingBufferedRecovery: null, buffering: false,
+    bufferedRecoveryTarget, readPlaybackSetup, AbortSignal, AbortController,
+    playbackTrace: { event() {} }, interpolationDisabled: false,
+    currentPlaybackPosition: () => state.player.currentTime + 100,
+    setInterval: callback => { tick = callback; return 1; }, clearInterval() {},
+    fetch: async () => ({ ok: false, headers: { get: () => 'application/json' }, json: async () => ({ error: 'No source', code: 'SOURCE_UNAVAILABLE' }) }),
+    restartStream: () => assert.fail('The failed source must not restart'),
+    fallback: () => { fallbacks++; }, handlePlaybackInterruption() {}
+  };
+  runInNewContext(code, state);
+  state.prepareBufferedSourceRecovery();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fallbacks, 0);
+  state.player.currentTime = 29.1;
+  tick();
+  assert.equal(fallbacks, 1);
+});
+
+test('leaving before handoff releases the unused replacement session', async () => {
+  const node = ast.instance.content.body.find(item => item.type === 'FunctionDeclaration' && item.id.name === 'clearBufferedSourceRecovery');
+  const requests = [], controller = new AbortController();
+  const state = {
+    pendingBufferedRecovery: { controller, timer: 1, session: { sessionUrl: '/unused' } },
+    clearInterval() {}, fetch: async url => { requests.push(url); return { ok: true }; }
+  };
+  runInNewContext(source.slice(node.start, node.end), state);
+  state.clearBufferedSourceRecovery();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(controller.signal.aborted, true);
+  assert.deepEqual(requests, ['/unused/stop']);
 });
 
 test('duplicate media and HLS failures start only one fallback request', async () => {

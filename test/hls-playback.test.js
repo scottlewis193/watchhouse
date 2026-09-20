@@ -135,6 +135,7 @@ test('fatal playlist errors retain HTTP status and session identity for diagnosi
     errorHandler(null, { fatal: false, details: 'levelLoadError', response: { code: 500 } });
     assert.equal(errors.length, 0);
     errorHandler(null, { fatal: true, details: 'levelLoadError', response: { code: 500 } });
+    await setImmediate();
     assert.deepEqual(errors[0], ['Segmented playback failed: levelLoadError (HTTP 500)', { hlsDetails: 'levelLoadError', httpStatus: 500, sessionUrl: '/session/failed' }]);
     source.destroy();
     errorHandler(null, { fatal: true, details: 'levelLoadError' });
@@ -198,6 +199,49 @@ test('fatal transient network errors reuse a healthy converter session before es
     assert.equal(loads,2); assert.equal(errors.length,1);
     assert.equal(requests.filter(url=>url==='/hls').length,1);
   } finally {source.destroy();globalThis.window=oldWindow;}
+});
+
+test('a rejected source skips local HLS retries and requests release replacement', async t => {
+  const errors = []; let onError;
+  t.mock.method(globalThis, 'fetch', async url => ({ ok: true, json: async () => url.endsWith('/status')
+    ? { failed: true, sourceRejected: true } : { sessionUrl: '/rejected', playlistUrl: '/playlist' } }));
+  const oldWindow = globalThis.window; globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  class Hls {
+    static isSupported = () => true;
+    static Events = { ERROR: 'error' };
+    static ErrorTypes = { NETWORK_ERROR: 'networkError' };
+    on(event, callback) { if (event === 'error') onError = callback; }
+    attachMedia() {} loadSource() {} destroy() {}
+    startLoad() { assert.fail('The failed release must not be retried'); }
+  }
+  const source = playbackSource({ currentTime: 120, removeAttribute() {}, load() {} },
+    { hlsUrl: '/hls', start: 120, onError: (...args) => errors.push(args) }, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    onError(null, { fatal: true, type: 'networkError', details: 'levelLoadError', response: { code: 500 } });
+    await setImmediate();
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0][1].code, 'SOURCE_REJECTED');
+  } finally { source.destroy(); globalThis.window = oldWindow; }
+});
+
+test('a prepared replacement session attaches without starting a second conversion', async t => {
+  const requests = [], instances = [];
+  t.mock.method(globalThis, 'fetch', async url => { requests.push(url); return { ok: true }; });
+  const oldWindow = globalThis.window; globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  class Hls {
+    static isSupported = () => true;
+    static Events = { ERROR: 'error', FRAG_BUFFERED: 'buffered' };
+    on() {} attachMedia() {} loadSource(url) { instances.push(url); } destroy() {}
+  }
+  const source = playbackSource({ removeAttribute() {}, load() {} }, {
+    hlsUrl: '/hls', start: 129, preparedSession: { sessionUrl: '/prepared', playlistUrl: '/prepared/index.m3u8' }, onError: assert.fail
+  }, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    assert.deepEqual(instances, ['/prepared/index.m3u8']);
+    assert.equal(requests.includes('/hls'), false);
+  } finally { source.destroy(); globalThis.window = oldWindow; }
 });
 
 test('constrained buffer profiles respect data saving without altering media quality', async () => {

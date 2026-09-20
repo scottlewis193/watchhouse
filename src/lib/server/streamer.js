@@ -754,7 +754,7 @@ export function progressiveArchiveVolumes(archives) {
   return volumes.every((volume, index) => volume.number === index + 1) ? volumes.map(volume => volume.file) : null;
 }
 
-export async function openArchiveByteInput(archives, settings, connect = connectNntp) {
+export async function openArchiveByteInput(archives, settings, connect = connectNntp, onSourceError = () => {}) {
   const ordered = progressiveArchiveVolumes(archives);
   if (!ordered) throw new Error('This archive layout requires full download and extraction.');
   const controller = new AbortController();
@@ -820,7 +820,8 @@ export async function openArchiveByteInput(archives, settings, connect = connect
           signal.throwIfAborted(); requestSignal?.throwIfAborted();
           return Buffer.concat(chunks);
         });
-        reads = result.catch(() => {}); return result;
+        reads = result.catch(() => {});
+        return result.catch(error => { onSourceError(error); throw error; });
       }
     };
   } catch (error) { await close(); throw error; }
@@ -831,7 +832,8 @@ async function progressiveSource(job, settings) {
   if (job.archiveSourcePromise) return job.archiveSourcePromise;
   job.archiveSourcePromise = (async () => {
     await job.archiveSource?.close();
-    const input = await openArchiveByteInput(job.archives, settings);
+    const release = job.release, releaseKey = job.releaseKey || release;
+    const input = await openArchiveByteInput(job.archives, settings, connectNntp, error => rejectPlaybackSource(job, settings, release, releaseKey, error));
     try {
       await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true });
       const source = await createProgressiveArchiveSource(input, { root: PLAYBACK_CACHE_ROOT, startupTimeoutMs: 120000 });
@@ -882,16 +884,7 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
       await writePostedFileRange(posted, start, end, load, async chunk => { if (!res.write(chunk)) await waitForDrain(res); }, { shouldContinue: () => !aborted, concurrency: loader.concurrency });
       if (!aborted) res.end();
     })().catch(error => {
-      if (error.code === 'INVALID_USENET_ARTICLE' && job.file === posted) {
-        job.rejectedReleases ||= new Set();
-        if (!job.rejectedReleases.has(releaseKey)) {
-          job.rejectedReleases.add(releaseKey);
-          if (settings.usenetHost) void releaseHealth.reject(settings, job.media, releaseKey).catch(() => {});
-          playbackPlans.delete(job.media);
-          void playbackPersistence.deletePlan(job.media).catch(() => {});
-          jobEvent(job, 'source-rejected', 'The provider repeatedly returned invalid video data. Trying another release on recovery.', { release });
-        }
-      }
+      if (job.file === posted) rejectPlaybackSource(job, settings, release, releaseKey, error);
       if (res.headersSent) res.destroy(error); else { res.writeHead(500); res.end(); }
     });
   });
@@ -906,6 +899,19 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
   };
 }
 
+function rejectPlaybackSource(job, settings, release, releaseKey, error) {
+  if (!['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING'].includes(error.code) ||
+      (job.releaseKey || job.release) !== releaseKey) return;
+  job.rejectedReleases ||= new Set();
+  if (job.rejectedReleases.has(releaseKey)) return;
+  job.rejectedReleases.add(releaseKey);
+  if (settings.usenetHost) void releaseHealth.reject(settings, job.media, releaseKey).catch(() => {});
+  playbackPlans.delete(job.media);
+  archiveResumePlans.delete(job.media);
+  void playbackPersistence.deletePlan(job.media).catch(() => {});
+  jobEvent(job, 'source-rejected', 'The provider could not supply a valid video article. Trying another release on recovery.', { release });
+}
+
 export async function recoverPlaybackSource(job, settings, prepare = preparePlayback) {
   if (job.sourceRecovery) return job.sourceRecovery;
   const unavailable = message => Object.assign(new Error(message), { code: 'SOURCE_UNAVAILABLE' });
@@ -915,7 +921,7 @@ export async function recoverPlaybackSource(job, settings, prepare = preparePlay
   job.sourceRecovery = (async () => {
     await prepare(job, settings);
     if (job.status !== 'ready' || job.mode !== 'direct' || job.rejectedReleases.has(job.releaseKey || job.release)) {
-      throw unavailable('This release contains invalid video data, and no replacement streaming source is available. Try downloading another release.');
+      throw unavailable('This release has missing or invalid video data, and no replacement streaming source is available. Try downloading another release.');
     }
   })();
   try { await job.sourceRecovery; }
@@ -1982,7 +1988,7 @@ export async function handleRequest(req, res) {
       if (!entry || entry.jobId !== jobId) return json(res, 404, { error: 'Playback segments have expired.' });
       if (req.method === 'POST' && asset === 'stop') { await entry.session.close(); return json(res, 200, { stopped: true }); }
       if (req.method === 'POST' && asset === 'heartbeat') { entry.session.touch(); entry.session.playbackState(await body(req)); return json(res, 200, {}); }
-      if (req.method === 'GET' && asset === 'status') { entry.session.touch(); return json(res, 200, entry.session.health()); }
+      if (req.method === 'GET' && asset === 'status') { entry.session.touch(); return json(res, 200, { ...entry.session.health(), sourceRejected: Boolean(job.rejectedReleases?.has(job.releaseKey || job.release)) }); }
       if (['GET', 'HEAD'].includes(req.method) && /\.(m3u8|mp4|m4s)$/.test(asset)) {
         return await serveHlsAsset(req, res, entry.session, asset);
       }
@@ -2001,7 +2007,7 @@ export async function handleRequest(req, res) {
         }
         return json(res, 200, publicJob(job));
       }
-      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || job.status === 'downloading') return json(res, 409, { error: 'Fallback download is not available.' }); const settings = await readSettings(); if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else if (job.rejectedReleases?.has(job.releaseKey || job.release)) { job.downloadReplacement = true; delete job.file; delete job.prefetchedSegments; delete job.manualRelease; delete job.sourceRecoveryError; void preparePlayback(job, settings); } else cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
+      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || job.status === 'downloading') return json(res, 409, { error: 'Fallback download is not available.' }); const settings = await readSettings(); if (job.rejectedReleases?.has(job.releaseKey || job.release)) { job.downloadReplacement = true; delete job.file; delete job.prefetchedSegments; delete job.manualRelease; delete job.sourceRecoveryError; void preparePlayback(job, settings); } else if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
       if (req.method === 'POST' && playMatch[2] === 'retry') { if (job.status !== 'error') return json(res, 409, { error: 'This playback job cannot be retried yet.' }); const settings = await readSettings(); if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else if (job.file) cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); else if (job.archives) prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); else return json(res, 409, { error: 'This release cannot be resumed.' }); return json(res, 202, publicJob(job)); }
       if (['GET', 'HEAD'].includes(req.method) && playMatch[2] === 'stream') {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get('start')) || 0));
