@@ -76,6 +76,13 @@ test('ordinary interruptions retain bounded automatic direct-stream retries', ()
   assert.equal(requests.length, 0);
 });
 
+test('an exhausted HLS preparation uses a downloaded copy instead of restarting extraction', async () => {
+  const { state, requests } = recoveryState();
+  state.handlePlaybackInterruption('media-error', 'Timed out preparing playback segments.', { code: 'PLAYBACK_SEGMENT_TIMEOUT' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/api/play/s02e03/fallback']);
+});
+
 test('a rejected source prepares a replacement while the buffered video remains active', () => {
   const { state, requests } = recoveryState(3);
   state.handlePlaybackInterruption('hls-error', 'The source failed', { code: 'SOURCE_REJECTED' });

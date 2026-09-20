@@ -7,14 +7,14 @@ import { parse } from 'svelte/compiler';
 // Run the actual page handlers with controlled media events and timers.
 const source = await readFile(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
 const ast = parse(source);
-const names = ['handlePause', 'handleStartupBuffering', 'attemptAutomaticPlayback', 'refreshDiagnostics', 'handleTimeUpdate'];
+const names = ['handlePause', 'handleStartupBuffering', 'updateSetupProgress', 'attemptAutomaticPlayback', 'refreshDiagnostics', 'handleTimeUpdate'];
 const handlers = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name)).map(node => source.slice(node.start, node.end)).join('\n');
 function playerState() {
   const timers = new Map(); let next = 0;
   const state = {
     player: { paused: false, play: async () => { state.plays++; } },
     plays: 0, interruptions: 0, playing: true, playbackSettled: true,
-    playback: { mode: 'direct', status: 'ready' }, playbackNeedsAction: false, playbackRecovery: null, pendingBufferedRecovery: null,
+    playback: { mode: 'direct', status: 'ready' }, playbackNeedsAction: false, playbackRecovery: null, pendingBufferedRecovery: null, setupProgress: null,
     continuePlaybackOnReady: false, resumeStarting: false,
     interruptionTimer: null, startupStableTimer: null, controlHideTimer: null,
     controlsVisible: false, stopBackgroundPlayback() {}, captureVideoDiagnostics() {},
@@ -44,6 +44,21 @@ test('a pending buffering timeout checks whether playback has since paused', () 
   state.player.paused = true;
   for (const callback of timers.values()) callback();
   assert.equal(state.interruptions, 0);
+});
+
+test('deep archive preparation keeps the browser watchdog off until HLS segments are ready', () => {
+  for (const settled of [false, true]) {
+    const { state, timers } = playerState();
+    state.playback.hlsUrl = '/hls';
+    state.playbackSettled = settled;
+    state.setupProgress = { completed: 1 };
+    state.handleStartupBuffering({ type: 'waiting' });
+    assert.equal(timers.size, 0, 'archive extraction still owns the preparation deadline');
+    state.updateSetupProgress({ completed: 2 });
+    assert.equal(timers.size, 1, 'the watchdog starts when the first segment is ready');
+    for (const callback of timers.values()) callback();
+    assert.equal(state.interruptions, 1);
+  }
 });
 
 test('canplay after established playback does not undo pause', async () => {
