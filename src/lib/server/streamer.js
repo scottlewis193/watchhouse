@@ -159,6 +159,10 @@ export function clearWatchedPlaybackWarmth(media, settings, {
   archivePlans.delete(media);
   poster.delete?.(`${offlineMediaKey(media)}:${playbackScope(settings)}`);
 }
+
+export function shouldClearPlaybackWarmth(update = {}) {
+  return update.watched === true || update.reset === true;
+}
 const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {}), CACHE_SWEEP_MS);
 cacheSweep.unref();
 export function publicSettings(settings) {
@@ -1800,7 +1804,7 @@ export async function handleRequest(req, res) {
     if (req.method === 'PUT' && url.pathname === '/api/state/media') { const input = await body(req); return json(res, 200, await mediaState.enrichMediaMany(input.media)); }
     if (req.method === 'PUT' && url.pathname === '/api/state/progress/bulk') {
       const input = await body(req), state = await mediaState.setProgressMany(input.media, input);
-      if (input.watched === true) {
+      if (shouldClearPlaybackWarmth(input)) {
         const settings = await readSettings();
         for (const media of input.media) clearWatchedPlaybackWarmth(media, settings);
       }
@@ -1808,7 +1812,7 @@ export async function handleRequest(req, res) {
     }
     if (req.method === 'PUT' && url.pathname === '/api/state/progress') {
       const input = await body(req), state = await mediaState.setProgress(input.media, input);
-      if (input.watched === true) clearWatchedPlaybackWarmth(input.media, await readSettings());
+      if (shouldClearPlaybackWarmth(input)) clearWatchedPlaybackWarmth(input.media, await readSettings());
       return json(res, 200, state);
     }
     if (req.method === 'DELETE' && url.pathname === '/api/cache') {

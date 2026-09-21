@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createArchiveResumeCache } from '../src/lib/server/archive-resume-cache.js';
-import { preparePlayback, createPlaybackPlanCache, clearWatchedPlaybackWarmth } from '../src/lib/server/streamer.js';
+import { preparePlayback, createPlaybackPlanCache, clearWatchedPlaybackWarmth, shouldClearPlaybackWarmth } from '../src/lib/server/streamer.js';
 const media = { type: 'tv', id: 95480, season: 1, episode: 2 };
 function fixture() {
   let holds = 0, consumers = 0;
@@ -74,6 +74,12 @@ test('marking watched clears warm extraction without touching offline storage', 
   });
   assert.deepEqual(deleted, [media]);
   assert.equal(posterKeys.length, 1);
+});
+
+test('clearing progress also clears warm extraction state', () => {
+  assert.equal(shouldClearPlaybackWarmth({ reset: true, watched: false }), true);
+  assert.equal(shouldClearPlaybackWarmth({ watched: true }), true);
+  assert.equal(shouldClearPlaybackWarmth({ position: 0, watched: false }), false);
 });
 
 test('rejected archives and download requests do not reuse the streaming cache', async () => {
