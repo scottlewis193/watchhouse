@@ -184,6 +184,20 @@ test('starts the highest-ranked progressive archive before exhausting lower-rank
   assert.equal(playback.release, 'Preferred archive');
 });
 
+test('speculative resume preparation does not extract a cold archive before play is clicked', async () => {
+  const playback = { ...job(), speculative: true };
+  let opened = false, downloaded = false;
+  await preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Resumable archive' }],
+    load: async () => nzb('rar'), health: { has: async () => false }, plans: createPlaybackPlanCache(),
+    progressive: async candidate => { opened = true; candidate.status = 'ready'; candidate.mode = 'direct'; return true; },
+    archive: async () => { downloaded = true; }
+  });
+  assert.equal(opened, false);
+  assert.equal(downloaded, false);
+  assert.equal(playback.status, 'error');
+});
+
 test('unsupported progressive archives retain the original ranked full-download fallback', async () => {
   const playback = job(), inspected = [], downloaded = [];
   await preparePlayback(playback, {}, {

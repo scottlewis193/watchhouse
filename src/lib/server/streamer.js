@@ -49,6 +49,7 @@ const manualReleases = new Map();
 const posterPreparation = createPosterPreparation();
 const offlineJobs = new Map();
 const offlineSeriesJobs = new Map();
+const offlineFinalizations = new Map();
 const playbackPlans = createPlaybackPlanCache();
 const archiveResumePlans = createArchiveResumeCache();
 const playbackPersistence = createPlaybackPersistence(join(PLAYBACK_CACHE_ROOT, 'resume-v1'));
@@ -150,6 +151,13 @@ export async function clearPlaybackCacheForMedia(media, {
   await health.delete(media);
   for (const directory of directories) await remove(directory, { recursive: true, force: true });
   return { jobs: matched.length, sessions: closedSessions, sources: persisted?.sources || 0, directories: directories.size };
+}
+
+export function clearWatchedPlaybackWarmth(media, settings, {
+  archivePlans = archiveResumePlans, poster = posterPreparation
+} = {}) {
+  archivePlans.delete(media);
+  poster.delete?.(`${offlineMediaKey(media)}:${playbackScope(settings)}`);
 }
 const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {}), CACHE_SWEEP_MS);
 cacheSweep.unref();
@@ -1522,7 +1530,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     if (connectAhead && settings.usenetHost && !job.backgroundFor && !job.prepareAhead && !job.speculative && !job.offlineDownload) {
       void connectAhead(settings).then(() => jobEvent(job, 'provider-connected', 'Provider connection ready for source checks.')).catch(() => {});
     }
-    if (!job.manualRelease && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.speculative && !job.downloadReplacement && !job.progressiveArchiveDisabled) {
+    if (!job.manualRelease && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && !job.progressiveArchiveDisabled) {
       const saved = archivePlans.get(job.media, playbackScope(settings));
       if (saved && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
         && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
@@ -1585,7 +1593,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;
         }
-        if (archives.length && !job.speculative && (!job.rejectedReleases?.size || job.downloadReplacement || progressive)) {
+        if (archives.length && (!job.rejectedReleases?.size || job.downloadReplacement || progressive)) {
           const choice = { archives, release: release.title, releaseKey: releaseIdentity(release) };
           archiveChoices.push(choice);
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
@@ -1593,7 +1601,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           // start playback. Try it now instead of inspecting every lower-ranked
           // NZB first; a failed attempt still leaves the original full-download
           // fallback ordered after all streamable candidates have been checked.
-          if (progressive) {
+          if (progressive && !job.speculative) {
             job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives;
             try { if (await progressive(job, settings, choice.archives)) return; }
             catch (error) {
@@ -1606,6 +1614,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
     if (!archiveChoices.length) throw new Error('No compatible video release was found.');
+    if (job.speculative) throw new Error('This archive will start preparing when playback is requested.');
     if (progressive) job.progressiveArchiveDisabled = true;
     if (job.rejectedReleases?.size && !job.downloadReplacement) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
     let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; await archive(job, settings, choice.archives); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
@@ -1701,7 +1710,41 @@ async function finalizeExistingOfflineRecord(record, job, settings) {
     setJob(job, 'error', error.message || 'The downloaded copy could not be prepared for playback.', 0);
   }
 }
-function publicJob(job) { const { archiveResume, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, ...safe } = job; return { ...safe, mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode, title: media.title, hlsUrl: job.status === 'ready' && (['direct', 'cached-convert'].includes(job.mode) || job.frameInterpolation && job.mode === 'cached') ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
+
+function scheduleOfflineFinalization(record, media, settings) {
+  if (offlineFinalizations.has(record.key)) return offlineFinalizations.get(record.key);
+  const job = {
+    id: randomUUID(), offlineKey: record.key, media: { ...media }, status: 'optimizing',
+    message: 'Preparing a permanent browser-ready offline copy…', progress: 95,
+    created: Date.now(), mode: 'cached-convert', sourcePath: record.sourcePath || record.path,
+    strategy: record.strategy, release: record.release || '', prepareAhead: true,
+    untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2
+  };
+  job.completion = finalizeExistingOfflineRecord(record, job, settings).finally(() => {
+    if (offlineFinalizations.get(record.key) === job) offlineFinalizations.delete(record.key);
+  });
+  offlineFinalizations.set(record.key, job);
+  return job;
+}
+
+export function createOfflinePlaybackJob(local, media, settings = {}, startOfflineFinalization) {
+  return {
+    id: randomUUID(), offlineKey: local.key, media: { ...media }, status: 'ready',
+    frameInterpolation: Boolean(settings.frameInterpolation), message: 'Playing downloaded copy.',
+    progress: 100, created: Date.now(), mode: 'cached-convert',
+    sourcePath: local.sourcePath || local.path, mime: 'video/mp4', strategy: local.strategy,
+    release: local.release || '', untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2,
+    startOfflineFinalization
+  };
+}
+
+export function beginOfflineFinalization(job) {
+  const start = job.startOfflineFinalization;
+  delete job.startOfflineFinalization;
+  start?.();
+}
+
+function publicJob(job) { const { archiveResume, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job; return { ...safe, mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode, title: media.title, hlsUrl: job.status === 'ready' && (['direct', 'cached-convert'].includes(job.mode) || job.frameInterpolation && job.mode === 'cached') ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };
@@ -1747,14 +1790,27 @@ export async function handleRequest(req, res) {
       const next = connectionTestSettings(current, incoming);
       delete next.watchmodeKey; delete next.omdbKey;
       posterPreparation.cancel(); nntpPool.clearIdle();
+      if (playbackScope(current) !== playbackScope(next)) archiveResumePlans.clear();
       if (!next.downloadNextEpisode) transfers.pause(); else transfers.resume();
       await saveSettings(next); return json(res, 200, publicSettings(next));
     }
-    if (req.method === 'DELETE' && url.pathname === '/api/settings') { posterPreparation.cancel(); nntpPool.clearIdle(); transfers.pause(); await saveSettings({}); return json(res, 204, {}); }
+    if (req.method === 'DELETE' && url.pathname === '/api/settings') { posterPreparation.cancel(); archiveResumePlans.clear(); nntpPool.clearIdle(); transfers.pause(); await saveSettings({}); return json(res, 204, {}); }
     if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await mediaState.read());
     if (req.method === 'PUT' && url.pathname === '/api/state/library') { const input = await body(req); return json(res, 200, await mediaState.setLibrary(input.media, input.inLibrary)); }
-    if (req.method === 'PUT' && url.pathname === '/api/state/progress/bulk') { const input = await body(req); return json(res, 200, await mediaState.setProgressMany(input.media, input)); }
-    if (req.method === 'PUT' && url.pathname === '/api/state/progress') { const input = await body(req); return json(res, 200, await mediaState.setProgress(input.media, input)); }
+    if (req.method === 'PUT' && url.pathname === '/api/state/media') { const input = await body(req); return json(res, 200, await mediaState.enrichMediaMany(input.media)); }
+    if (req.method === 'PUT' && url.pathname === '/api/state/progress/bulk') {
+      const input = await body(req), state = await mediaState.setProgressMany(input.media, input);
+      if (input.watched === true) {
+        const settings = await readSettings();
+        for (const media of input.media) clearWatchedPlaybackWarmth(media, settings);
+      }
+      return json(res, 200, state);
+    }
+    if (req.method === 'PUT' && url.pathname === '/api/state/progress') {
+      const input = await body(req), state = await mediaState.setProgress(input.media, input);
+      if (input.watched === true) clearWatchedPlaybackWarmth(input.media, await readSettings());
+      return json(res, 200, state);
+    }
     if (req.method === 'DELETE' && url.pathname === '/api/cache') {
       const media = await body(req);
       if (!media.title || !['movie', 'tv'].includes(media.type) || !Number.isInteger(Number(media.id))) return json(res, 400, { error: 'A valid movie or episode is required.' });
@@ -1883,13 +1939,19 @@ export async function handleRequest(req, res) {
         posterPreparation.cancel();
         const local = await audioSafeOfflineRecord(offline);
         playbackSettings ||= await readSettings();
-        if (local.timelineRepairRequired || local.mode === 'cached-convert') {
+        if (local.timelineRepairRequired) {
           const existing = [...playbackJobs.values()].find(candidate => candidate.offlineKey === offline.key && !['ready', 'error'].includes(candidate.status));
           if (existing) return json(res, 202, publicJob(existing));
-          const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', frameInterpolation: Boolean(playbackSettings.frameInterpolation), message: local.timelineRepairRequired ? 'Repairing a video timeline gap against the audio clock…' : 'Preparing the downloaded copy for reliable offline playback…', progress: 95, created: Date.now(), mode: 'cached-convert', sourcePath: local.sourcePath || local.path, mime: 'video/mp4', strategy: local.timelineRepairRequired ? 'transcode' : local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
+          const job = { id: randomUUID(), offlineKey: offline.key, media: { ...media }, status: 'optimizing', frameInterpolation: Boolean(playbackSettings.frameInterpolation), message: 'Repairing a video timeline gap against the audio clock…', progress: 95, created: Date.now(), mode: 'cached-convert', sourcePath: local.sourcePath || local.path, mime: 'video/mp4', strategy: 'transcode', release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
           playbackJobs.set(job.id, job);
           void finalizeExistingOfflineRecord(offline, job, playbackSettings);
           return json(res, 202, publicJob(job));
+        }
+        if (local.mode === 'cached-convert') {
+          const job = createOfflinePlaybackJob(local, media, playbackSettings,
+            () => scheduleOfflineFinalization(offline, media, playbackSettings));
+          playbackJobs.set(job.id, job);
+          return json(res, 200, publicJob(job));
         }
         const job = { id: randomUUID(), media: { ...media }, status: 'ready', frameInterpolation: Boolean(playbackSettings.frameInterpolation), message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
         playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
@@ -2000,6 +2062,7 @@ export async function handleRequest(req, res) {
             progress: () => job.archiveSource?.available || 0, maxWaitMs: 300000
           } : undefined);
           jobEvent(job, 'segments-ready', 'First playback segment is ready.');
+          beginOfflineFinalization(job);
           if (cancelled) return;
           // Let the browser fetch its first local HLS assets before the
           // full-file archive check competes for provider connections.

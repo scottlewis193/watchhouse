@@ -1,6 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { preparePoster } from '../src/lib/poster-preparation.js';
+import { preparePoster, preparePosterNavigation, shouldPrewarmResume } from '../src/lib/poster-preparation.js';
+
+test('title details only prewarm a saved resume with automatic online playback', () => {
+  const eligible = { position: 120, online: true };
+  assert.equal(shouldPrewarmResume(eligible), true);
+  for (const blocked of [
+    { position: 0, online: true },
+    { ...eligible, online: false },
+    { ...eligible, saveData: true },
+    { ...eligible, offlineMode: true },
+    { ...eligible, manualReleaseSelection: true },
+    { ...eligible, shouldStartImmediately: true }
+  ]) assert.equal(shouldPrewarmResume(blocked), false);
+});
+
+test('home playback starts preparation before navigating to the player', async () => {
+  const order = [];
+  let release;
+  const preparing = new Promise(resolve => { release = resolve; });
+  const navigation = preparePosterNavigation(
+    { type: 'movie', id: 671 },
+    '/watch/movie/671?play=1&resume=1',
+    href => { order.push(['navigate', href]); },
+    item => { order.push(['prepare', item.id]); return preparing; }
+  );
+  await Promise.resolve();
+  assert.deepEqual(order, [['prepare', 671]]);
+  release();
+  await navigation;
+  assert.deepEqual(order, [['prepare', 671], ['navigate', '/watch/movie/671?play=1&resume=1']]);
+});
 
 test('poster warming is intent-driven, ignores touch scrolling and follows reused cards', async () => {
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator'), originalFetch = globalThis.fetch;

@@ -3,6 +3,7 @@
   import { page } from '$app/state';
   import { api } from '$lib/api';
   import MediaCard from '$lib/MediaCard.svelte';
+  import { prewarmPlayback } from '$lib/poster-preparation.js';
 
   let query = $state('');
   let results = $state([]);
@@ -16,6 +17,7 @@
   let shelfPositions = $state({});
   let library = $state([]);
   let continueWatching = $state([]);
+  const prewarmedResumeKeys = new Set();
   let visibleShelves = $derived(continueWatching.length ? [{ id: 'continue-watching', title: 'Continue watching', items: continueWatching }, ...shelves] : shelves);
 
   onMount(() => { void loadState(); });
@@ -37,13 +39,36 @@
     try {
       let state = await api.get('/api/state');
       library = state.library; continueWatching = state.continueWatching;
+      prewarmResumes();
       for (const item of continueWatching.filter(entry => entry.type === 'movie' && !entry.duration)) {
         const duration = (await api.get(`/api/catalog/movies/${item.id}/runtime`)).duration;
         if (!duration) continue;
         state = await api.put('/api/state/progress', { media: { ...item, durationHint: duration }, position: item.position, duration, watched: false });
         library = state.library; continueWatching = state.continueWatching;
       }
+      const missing = [...new Map([...library, ...continueWatching].filter(item => !item.poster).map(item => [`${item.type}:${item.id}`, item])).values()];
+      if (missing.length) {
+        const details = await Promise.allSettled(missing.map(async item => {
+          const kind = item.type === 'movie' ? 'movies' : 'shows';
+          return (await api.get(`/api/catalog/${kind}/${item.id}/details`)).details;
+        }));
+        const repaired = details.flatMap(result => result.status === 'fulfilled' && result.value?.poster ? [result.value] : []);
+        if (repaired.length) {
+          state = await api.put('/api/state/media', { media: repaired });
+          library = state.library; continueWatching = state.continueWatching;
+        }
+      }
     } catch {}
+  }
+
+  function prewarmResumes() {
+    if (!navigator.onLine || navigator.connection?.saveData) return;
+    for (const item of continueWatching.slice(0, 4)) {
+      const key = `${item.type}:${item.id}:${item.season || ''}:${item.episode || ''}`;
+      if (prewarmedResumeKeys.has(key)) continue;
+      prewarmedResumeKeys.add(key);
+      void prewarmPlayback(item).catch(() => prewarmedResumeKeys.delete(key));
+    }
   }
 
   async function loadDiscovery() {

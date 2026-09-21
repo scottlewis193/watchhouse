@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, connectionTestSettings, conversionSucceeded, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, beginOfflineFinalization, connectionTestSettings, conversionSucceeded, createOfflinePlaybackJob, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { audioPlaybackHealth, canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { analyzeCreditFrame, updateCreditEvidence } from '../src/lib/credit-detection.js';
@@ -281,6 +281,20 @@ test('does not prepare an already finalized offline MP4 again', async () => {
   const result = await audioSafeOfflineRecord(record, async () => { compatibilityChecks++; return 'remux'; });
   assert.equal(result, record);
   assert.equal(compatibilityChecks, 0);
+});
+
+test('downloaded HEVC starts through HLS before its permanent browser copy is finalized', () => {
+  let finalizations = 0;
+  const local = { key: 'tv:20:s1:e2', mode: 'cached-convert', sourcePath: '/offline/episode.mkv', strategy: 'transcode', release: 'HEVC' };
+  const media = { id: 20, type: 'tv', title: 'Example', season: 1, episode: 2 };
+  const job = createOfflinePlaybackJob(local, media, {}, () => { finalizations++; });
+  assert.equal(job.status, 'ready');
+  assert.equal(job.mode, 'cached-convert');
+  assert.equal(job.sourcePath, local.sourcePath);
+  assert.equal(finalizations, 0, 'permanent conversion must not compete with HLS startup');
+  beginOfflineFinalization(job);
+  beginOfflineFinalization(job);
+  assert.equal(finalizations, 1, 'multiple HLS sessions must share one finalization');
 });
 
 test('reuses the validated first article when a prepared direct stream starts', async () => {

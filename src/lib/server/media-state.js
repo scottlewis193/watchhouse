@@ -18,6 +18,10 @@ function normalizedMedia(media) {
   return normalized;
 }
 
+function titleMetadata(media) {
+  return Object.fromEntries(['title', 'year', 'poster'].flatMap(key => media[key] ? [[key, media[key]]] : []));
+}
+
 function publicState(state) {
   const library = Object.values(state.library).sort((a, b) => b.addedAt - a.addedAt);
   const progress = Object.values(state.progress).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -78,6 +82,19 @@ export function createMediaStateStore(path, { now = () => Date.now() } = {}) {
       if (!Array.isArray(media) || !media.length) throw new Error('At least one episode is required.');
       const values = media.map(normalizedMedia);
       return mutate(state => { for (const value of values) updateProgressEntry(state, value, update, now()); });
+    },
+    enrichMediaMany(media) {
+      if (!Array.isArray(media) || !media.length) throw new Error('At least one title is required.');
+      const values = media.map(normalizedMedia);
+      return mutate(state => {
+        for (const value of values) {
+          const patch = titleMetadata(value), libraryKey = `${value.type}:${value.id}`;
+          if (state.library[libraryKey]) state.library[libraryKey] = { ...state.library[libraryKey], ...patch };
+          for (const entry of Object.values(state.progress)) {
+            if (entry.media.type === value.type && entry.media.id === value.id) entry.media = { ...entry.media, ...patch };
+          }
+        }
+      });
     }
   };
 }

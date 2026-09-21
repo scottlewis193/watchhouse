@@ -1,3 +1,20 @@
+export function shouldPrewarmResume({ position = 0, online = true, saveData = false, offlineMode = false, manualReleaseSelection = false, shouldStartImmediately = false } = {}) {
+  return position > 0 && online && !saveData && !offlineMode && !manualReleaseSelection && !shouldStartImmediately;
+}
+
+export function prewarmPlayback(item, { fetcher = fetch, timeoutMs = 1500 } = {}) {
+  return fetcher('/api/play/prewarm', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id: item.id, type: item.type, season: item.season, episode: item.episode }),
+    keepalive: true, signal: AbortSignal.timeout(timeoutMs)
+  });
+}
+
+export async function preparePosterNavigation(item, href, navigate, prepare = prewarmPlayback) {
+  try { await prepare(item); } catch {}
+  return navigate(href);
+}
+
 // Only Continue Watching cards supply an item. Hover/focus is debounced;
 // touch scrolling and simply rendering a shelf do not trigger provider work.
 export function preparePoster(node, item) {
@@ -7,7 +24,7 @@ export function preparePoster(node, item) {
     clearTimeout(timer);
     timer = setTimeout(() => {
       prepared = true;
-      void fetch('/api/play/prewarm', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: item.id, type: item.type, season: item.season, episode: item.episode }) }).catch(() => { prepared = false; });
+      void prewarmPlayback(item).catch(() => { prepared = false; });
     }, 350);
   };
   const pointer = event => { if (event.pointerType !== 'touch') start(); };

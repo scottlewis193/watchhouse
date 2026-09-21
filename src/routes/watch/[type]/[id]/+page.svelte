@@ -15,6 +15,7 @@
   import { createPlaybackTrace, playbackTraceSample } from '$lib/playback-trace.js';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
+  import { shouldPrewarmResume } from '$lib/poster-preparation.js';
 
   const media = { id: Number(page.params.id), type: page.params.type, title: page.url.searchParams.get('title') || '', year: page.url.searchParams.get('year') || '', poster: page.url.searchParams.get('poster') || '' };
   const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1', shouldStartImmediately = page.url.searchParams.get('play') === '1' || shouldResume;
@@ -112,7 +113,7 @@
       if (savedDuration) media.durationHint = savedDuration;
       else if (catalogue) { const result = await catalogue; if (result.value) media.durationHint = result.value.duration; }
       currentMedia = media;
-      if (!shouldStartImmediately) { playback = null; return; }
+      if (!shouldStartImmediately) { playback = null; prewarmCurrentResume(media); return; }
       return startPlayback(media, null, shouldResume && Boolean(progressFor(media)?.position), true);
     }
     playback = { status: 'selecting', message: 'Loading seasons…', progress: 3 };
@@ -126,7 +127,7 @@
       selectedSeason = seasons.some(season => String(season.number) === requestedSeason) ? requestedSeason : String(seasons[0].number);
       await loadEpisodes(requestedEpisode);
       currentMedia = selectedMediaItem();
-      if (!shouldStartImmediately) { playback = null; return; }
+      if (!shouldStartImmediately) { playback = null; prewarmCurrentResume(currentMedia); return; }
       if (requestedEpisode) playEpisode(shouldResume, true);
       else await playNextUnwatchedEpisode();
     } catch (e) {
@@ -140,7 +141,16 @@
   async function loadTitleDetails() {
     try {
       const kind = media.type === 'movie' ? 'movies' : 'shows';
-      titleDetails = (await api.get(`/api/catalog/${kind}/${media.id}/details`)).details || titleDetails;
+      const details = (await api.get(`/api/catalog/${kind}/${media.id}/details`)).details;
+      if (!details) return;
+      titleDetails = details;
+      const metadata = { year: media.year || details.year || '', poster: media.poster || details.poster || '' };
+      Object.assign(media, metadata);
+      if (currentMedia?.id === media.id && currentMedia.type === media.type) currentMedia = { ...currentMedia, ...metadata };
+      if (!page.url.searchParams.get('poster') && details.poster) {
+        const state = await api.put('/api/state/media', { media: [details] });
+        library = state.library; progressEntries = state.progress;
+      }
     } catch {}
   }
 
@@ -409,6 +419,11 @@
 
   function itemKey(item) { return item?.type === 'tv' ? `${item.type}:${item.id}:s${item.season}:e${item.episode}` : `${item?.type}:${item?.id}`; }
   function progressFor(item) { const key = itemKey(item); return progressEntries.find(entry => itemKey(entry.media) === key); }
+  function prewarmCurrentResume(item) {
+    const saved = progressFor(item);
+    if (!shouldPrewarmResume({ position: saved?.position, online: navigator.onLine, saveData: navigator.connection?.saveData, offlineMode, manualReleaseSelection, shouldStartImmediately })) return;
+    void api.post('/api/play/prewarm', { id: item.id, type: item.type, season: item.season, episode: item.episode }).catch(() => {});
+  }
   function selectedMediaItem() { return media.type === 'movie' ? media : episodePlaybackMedia(media, selectedSeason, selectedEpisode, episodes); }
   function isInLibrary() { return library.some(item => item.id === media.id && item.type === media.type); }
   function isWatched(item = selectedMediaItem()) { return Boolean(progressFor(item)?.watched); }
@@ -1128,7 +1143,7 @@
   {/if}
   <div class="watch-hero" class:watch-hero-playing={playbackUi.inPlayer} class:watch-hero-revealing={playerRevealing}>
     <div class="watch-hero-art" aria-hidden="true">
-      {#if titleDetails.backdrop || media.poster}<img src={titleDetails.backdrop || media.poster} alt="" />{/if}
+      {#if titleDetails.backdrop || titleDetails.poster || media.poster}<img src={titleDetails.backdrop || titleDetails.poster || media.poster} alt="" />{/if}
     </div>
     <div class="watch-hero-shade" aria-hidden="true"></div>
     {#if playback?.status !== 'ready'}
@@ -1227,12 +1242,12 @@
             </div>
             </div>{/if}
           {:else}
-            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
+            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
           {/if}
           {#if showUpNext && nextMedia}<div class="up-next-panel absolute inset-x-3 bottom-24 z-30 sm:left-auto sm:right-5 sm:w-[27rem]"><div class="up-next-countdown"><span>{upNextSeconds}</span><small>SEC</small></div><div class="min-w-0 flex-1"><p class="player-eyebrow">Up next · Episode {nextMedia.episode}</p><p class="up-next-title">{nextMedia.episodeTitle}</p><p class="up-next-detail">{nextJob?.status === 'ready' ? upNextReason : 'Preparing in the background…'}</p></div><div class="up-next-actions"><button class="player-popup-button player-popup-button-primary" onclick={playNextEpisode} disabled={nextJob?.status !== 'ready'} aria-label="Play next episode">▶</button><button class="player-popup-button" onclick={cancelUpNext}>Cancel</button></div></div>{/if}
         </div>
       {:else}
-        <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
+        <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
       {/if}
       {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}</div>{/if}
       </div>

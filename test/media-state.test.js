@@ -75,3 +75,22 @@ test('updates a whole episode collection atomically', async () => {
     assert.deepEqual(state.progress.map(entry => [entry.media.episode, entry.position, entry.watched]).sort((a, b) => a[0] - b[0]), [[1, 0, false], [2, 0, false], [3, 0, false]]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('repairs missing title artwork without disturbing episode progress order', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchhouse-state-'));
+  const store = createMediaStateStore(join(directory, 'state.json'), { now: () => 100 });
+  const first = { id: 20, type: 'tv', title: 'Show', season: 1, episode: 1, episodeTitle: 'First' };
+  const second = { id: 20, type: 'tv', title: 'Show', season: 1, episode: 2, episodeTitle: 'Second' };
+  try {
+    await store.setProgress(first, { position: 60, duration: 600 });
+    await store.setProgress(second, { position: 120, duration: 600 });
+    const before = await store.read();
+
+    const state = await store.enrichMediaMany([{ id: 20, type: 'tv', title: 'Show', year: '2025', poster: 'poster.jpg' }]);
+
+    assert.deepEqual(state.progress.map(entry => entry.updatedAt), before.progress.map(entry => entry.updatedAt));
+    assert.deepEqual(state.progress.map(entry => entry.media.poster), ['poster.jpg', 'poster.jpg']);
+    assert.deepEqual(state.progress.map(entry => [entry.media.season, entry.media.episode]), [[1, 1], [1, 2]]);
+    assert.deepEqual(state.continueWatching.map(entry => entry.poster), ['poster.jpg', 'poster.jpg']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

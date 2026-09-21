@@ -27,7 +27,7 @@ export async function createProgressiveArchiveSource(input, {
   const directory = await mkdtemp(join(root, 'playback-progressive-'));
   const output = join(directory, 'video');
   const token = randomUUID(), changes = new EventEmitter();
-  let child, metadata, available = 0, complete = false, failure, closed = false, closing, idle, refs = 0;
+  let child, metadata, available = 0, complete = false, failure, closed = false, closing, idle, refs = 0, holds = 0, suspended = false;
   let readyResolve, readyReject, doneResolve, doneReject;
   const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   const completion = new Promise((resolve, reject) => { doneResolve = resolve; doneReject = reject; });
@@ -39,6 +39,14 @@ export async function createProgressiveArchiveSource(input, {
     if (signal.aborted || failure || closed) done();
   });
   let seekPatches;
+  function suspend() {
+    if (suspended || !child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+    child.kill('SIGSTOP'); suspended = true;
+  }
+  function resume() {
+    if (!suspended || !child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+    child.kill('SIGCONT'); suspended = false;
+  }
   const forwardPatches = () => seekPatches ||= (async () => {
     const file = await open(output, 'r');
     try {
@@ -104,6 +112,7 @@ export async function createProgressiveArchiveSource(input, {
     fail(new Error('Archive source closed'));
     closing = (async () => {
       const ended = child?.pid && child.exitCode === null && child.signalCode === null ? once(child, 'close').catch(() => {}) : Promise.resolve();
+      resume();
       child?.kill('SIGTERM');
       const force = setTimeout(() => child?.kill('SIGKILL'), 2000); force.unref();
       server.closeAllConnections();
@@ -160,9 +169,24 @@ export async function createProgressiveArchiveSource(input, {
       get available() { return available; }, get complete() { return complete; },
       retain({ forwardSeek = false } = {}) {
         if (closed || failure) throw failure || new Error('Archive source closed');
-        refs++; clearTimeout(idle);
+        refs++; clearTimeout(idle); resume();
         let released = false;
-        return { url: `${base}/video${forwardSeek ? '/forward-seek' : ''}`, close() { if (!released) { released = true; if (--refs === 0) expire(Math.min(idleMs, 5000)); } } };
+        return { url: `${base}/video${forwardSeek ? '/forward-seek' : ''}`, close() {
+          if (released) return;
+          released = true;
+          if (--refs === 0) { suspend(); if (!holds) expire(Math.min(idleMs, 5000)); }
+        } };
+      },
+      hold() {
+        if (closed || failure) throw failure || new Error('Archive source closed');
+        holds++; clearTimeout(idle);
+        if (refs === 0) suspend();
+        let released = false;
+        return { close() {
+          if (released) return;
+          released = true;
+          if (--holds === 0 && refs === 0) expire(Math.min(idleMs, 5000));
+        } };
       }, close
     };
   } catch (error) { await close(); throw error; }

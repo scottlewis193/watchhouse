@@ -62,6 +62,28 @@ test('archive extraction uses a 16 MB upstream batch for deep resumes', async ()
   } finally { await source?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('retained progressive extraction sleeps without a viewer and resumes on demand', { timeout: 5000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'progressive-suspend-'));
+  const helper = join(root, 'paced.py');
+  let source, hold, viewer;
+  try {
+    await writeFile(helper, `import json, sys, time\noutput = sys.argv[2]\ntotal = 1024 * 1024\nopen(output, 'wb').truncate(total)\nprint(json.dumps({'type':'metadata','name':'video.mkv','size':total}), flush=True)\nfor size in range(65536, total + 1, 65536):\n print(json.dumps({'type':'complete' if size == total else 'progress','bytes':size}), flush=True)\n time.sleep(.02)\n`);
+    source = await createProgressiveArchiveSource({ size: 1, read: async () => Buffer.alloc(1), close: async () => {} }, { root, helper });
+    hold = source.hold();
+    const idleBytes = source.available;
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(source.available, idleBytes, 'warm retention must not keep extracting unseen video');
+    viewer = source.retain();
+    for (let attempt = 0; attempt < 20 && source.available === idleBytes; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(source.available > idleBytes, 'a viewer must resume the suspended extractor');
+    viewer.close(); viewer = null;
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const pausedBytes = source.available;
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.equal(source.available, pausedBytes, 'leaving playback must suspend extraction again');
+  } finally { viewer?.close(); hold?.close(); await source?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 
 test('archive volume ordering is numeric and rejects mixed or incomplete sets', () => {
   const file = subject => ({ subject, segments: [{ id: 'part' }] });
