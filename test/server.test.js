@@ -1003,6 +1003,7 @@ test('prefers a working NVIDIA NVENC device over VAAPI', async () => {
   assert.deepEqual(acceleration, { kind: 'nvenc' });
   assert.equal(attempts.length, 1);
   assert.ok(attempts[0].includes('h264_nvenc'));
+  assert.ok(attempts[0].includes('color=size=320x240:rate=1'), 'NVENC probe must use dimensions supported by consumer NVIDIA GPUs');
 });
 
 test('falls through to VAAPI when an NVIDIA device cannot encode', async () => {

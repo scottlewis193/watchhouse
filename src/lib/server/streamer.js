@@ -494,7 +494,7 @@ export async function detectVideoAcceleration({ devices = VAAPI_DEVICES, exists 
     const controller = new AbortController();
     let timeout;
     try {
-      const probe = Promise.resolve(execute('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=size=128x128:rate=1', '-frames:v', '1', '-c:v', 'h264_nvenc', '-f', 'null', '-'], undefined, controller.signal));
+      const probe = Promise.resolve(execute('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=size=320x240:rate=1', '-frames:v', '1', '-c:v', 'h264_nvenc', '-f', 'null', '-'], undefined, controller.signal));
       void probe.catch(() => {});
       await Promise.race([probe, new Promise((_, reject) => {
         timeout = setTimeout(() => { controller.abort(); reject(new Error('NVENC probe timed out')); }, probeTimeoutMs);
