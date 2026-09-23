@@ -1630,12 +1630,39 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
   job.frameInterpolation = Boolean(settings.frameInterpolation);
   let failedPlanRelease = null;
   let savedDownloadChoice = null;
+  const checkArchivePlayback = async () => {
+    if (!preflight || !settings.usenetHost || job.speculative || job.prepareAhead || job.backgroundFor || job.offlineDownload) return true;
+    try {
+      // Archive opening only checks availability. Verify sustained segment
+      // production too, including when a previously opened archive is reused.
+      job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs: 20000 });
+      return true;
+    } catch (error) {
+      if (isDownloadCancelled(job, error)) throw error;
+      const releaseKey = job.releaseKey || job.release;
+      job.rejectedReleases ||= new Set();
+      job.rejectedReleases.add(releaseKey);
+      if (['PLAYBACK_TOO_SLOW', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseKey);
+      archivePlans.delete?.(job.media);
+      jobEvent(job, 'release-rejected', `Archive playback check failed: ${error.message}`, { release: job.release });
+      delete job.archiveSource; delete job.progressiveArchive; delete job.archiveResume;
+      delete job.archives; delete job.file; delete job.preparedSession;
+      return false;
+    }
+  };
   try {
     if (job.progressiveArchive && job.rejectedReleases?.has(job.releaseKey || job.release)) {
       await job.archiveSource?.close(); delete job.archiveSource; delete job.progressiveArchive; delete job.file;
     }
     throwIfDownloadCancelled(job);
     settings.signal?.throwIfAborted();
+    if (job.progressiveArchive && job.archiveNeedsCheck) {
+      delete job.archiveNeedsCheck;
+      if (await checkArchivePlayback()) {
+        Object.assign(job, { status: 'ready', progress: 100, message: 'Archive video passed its playback speed check.' });
+        return;
+      }
+    }
     if (!job.manualRelease) {
       let plan = plans.get(job.media, playbackScope(settings));
       if (plan && !matchesTargetResolution(plan.release, settings)) plan = null;
@@ -1682,10 +1709,12 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       if (saved && matchesTargetResolution(saved.release, settings) && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
         && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
         Object.assign(job, saved, { archiveResume: true, status: 'ready', mode: 'direct', progress: 100, message: 'Reusing the archive video prepared earlier.' });
-        jobEvent(job, 'archive-resume-hit', job.message, saved.archiveSource.randomAccess
-          ? { randomAccess: true, totalBytes: saved.archiveSource.metadata.size }
-          : { extractedBytes: saved.archiveSource.available, totalBytes: saved.archiveSource.metadata.size });
-        return;
+        if (await checkArchivePlayback()) {
+          jobEvent(job, 'archive-resume-hit', job.message, saved.archiveSource.randomAccess
+            ? { randomAccess: true, totalBytes: saved.archiveSource.metadata.size }
+            : { extractedBytes: saved.archiveSource.available, totalBytes: saved.archiveSource.metadata.size });
+          return;
+        }
       }
     }
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
@@ -1795,7 +1824,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           // fallback ordered after all streamable candidates have been checked.
           if (progressive && !job.speculative) {
             job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives;
-            try { if (await progressive(job, settings, choice.archives)) return; }
+            try { if (await progressive(job, settings, choice.archives) && await checkArchivePlayback()) return; }
             catch (error) {
               if (error.code !== 'ARCHIVE_UNAVAILABLE') throw error;
               choice.unavailable = error;
@@ -1942,7 +1971,7 @@ export function beginOfflineFinalization(job) {
   start?.();
 }
 
-function publicJob(job) { const { archiveResume, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job; return { ...safe, mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode, title: media.title, hlsUrl: job.status === 'ready' && (['direct', 'cached-convert'].includes(job.mode) || job.frameInterpolation && job.mode === 'cached') ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
+function publicJob(job) { const { archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job; return { ...safe, mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode, title: media.title, hlsUrl: job.status === 'ready' && (['direct', 'cached-convert'].includes(job.mode) || job.frameInterpolation && job.mode === 'cached') ? `/api/play/${job.id}/hls` : null, streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null, ...(diagnosticsEnabled ? { diagnostics: { media: media.type === 'tv' ? `${media.title} S${String(media.season).padStart(2, '0')}E${String(media.episode).padStart(2, '0')}` : media.title, release: release || null, mode: job.mode || null, strategy: job.strategy || null, acceleration: job.videoAcceleration || null, created: job.created, events: events || [] } } : {}) }; }
 export function parseByteRange(range, size) {
   if (!Number.isSafeInteger(size) || size <= 0) return null;
   if (!range) return { start: 0, end: size - 1, partial: false };
@@ -2101,10 +2130,11 @@ export async function handleRequest(req, res) {
       const item = (await mediaState.read()).continueWatching.find(item => offlineMediaKey(item) === offlineMediaKey(input));
       if (!item || (await readOfflineRecords()).get(offlineMediaKey(item))?.status === 'ready') return json(res, 200, { prepared: false });
       const media = { ...item, durationHint: item.duration || item.durationHint || 0 };
-      const job = { id: randomUUID(), media, speculative: true, status: 'selecting', message: 'Preparing resume…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] };
+      const job = { id: randomUUID(), media, selectionStart: Math.max(0, Number(item.position) || 0), speculative: true, status: 'selecting', message: 'Preparing resume…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] };
       posterPreparation.start(`${offlineMediaKey(media)}:${playbackScope(settings)}`, job,
         signal => preparePlayback(job, { ...settings, signal }),
         async (signal, claimed) => {
+          if (job.progressiveArchive) return;
           const source = await openPostedRangeServer(job, { ...settings, signal });
           if (!source) return;
           try {
@@ -2159,9 +2189,16 @@ export async function handleRequest(req, res) {
         ? posterPreparation.take(`${offlineMediaKey(media)}:${playbackScope(settings)}`) : null;
       if (prepared) {
         delete prepared.speculative;
+        if (Number.isFinite(Number(media.selectionStart))) prepared.selectionStart = Math.max(0, Number(media.selectionStart));
         playbackJobs.set(prepared.id, prepared);
         const cleanup = setTimeout(() => playbackJobs.delete(prepared.id), 6 * 3600000); cleanup.unref();
         jobEvent(prepared, 'poster-preparation-hit', 'Continuing preparation started from the poster.');
+        if (prepared.status === 'ready' && prepared.progressiveArchive) {
+          prepared.archiveNeedsCheck = true;
+          setJob(prepared, 'selecting', 'Checking archive playback speed…', 45);
+          void preparePlayback(prepared, settings);
+          return json(res, 202, publicJob(prepared));
+        }
         return json(res, prepared.status === 'ready' ? 200 : 202, publicJob(prepared));
       }
       posterPreparation.cancel();

@@ -28,6 +28,48 @@ test('archive resume reuses extraction without repeating release search', async 
     assert.equal(f.leases(), 0);
   }
 });
+
+test('a slow resumed 2160p archive falls back to a playable 1080p release', async () => {
+  const f = fixture(), checked = [], rejected = [];
+  const archive = { ...f.plan, release: 'Film.2160p', releaseKey: 'Film.2160p' };
+  let cleared = false;
+  const job = { media, selectionStart: 6817, status: 'selecting', diagnosticsEnabled: true, events: [] };
+  await preparePlayback(job, { usenetHost: 'fixture', targetResolution: '2160p' }, {
+    archivePlans: { get: () => cleared ? null : archive, delete: () => { cleared = true; } },
+    plans: createPlaybackPlanCache(),
+    health: { has: async () => false, reject: async (_settings, _media, release) => { rejected.push(release); } },
+    search: async () => [{ title: 'Film.1080p' }],
+    load: async () => '<nzb><file subject="film.mkv"><segments><segment number="1">article</segment></segments></file></nzb>',
+    check: async () => Buffer.from('video'),
+    preflight: async (candidate, _settings, start, options) => {
+      checked.push({ release: candidate.release, start, firstSegmentMs: options.firstSegmentMs });
+      if (candidate.release === 'Film.2160p') throw Object.assign(new Error('converter produced 0.8× video'), { code: 'PLAYBACK_TOO_SLOW' });
+      return { sessionUrl: '/prepared/1080p', start };
+    }
+  });
+  assert.deepEqual(checked.map(value => value.release), ['Film.2160p', 'Film.1080p']);
+  assert.equal(checked[0].start, 6817);
+  assert.equal(checked[0].firstSegmentMs, 20000);
+  assert.deepEqual(rejected, ['Film.2160p']);
+  assert.equal(cleared, true);
+  assert.equal(job.status, 'ready');
+  assert.equal(job.release, 'Film.1080p');
+  assert.equal(job.preparedSession.sessionUrl, '/prepared/1080p');
+});
+
+test('a poster-prepared archive is checked after play is pressed', async () => {
+  const f = fixture();
+  const job = { media, selectionStart: 6817, status: 'selecting', mode: 'direct', archiveNeedsCheck: true,
+    progressiveArchive: true, archiveSource: f.source, file: f.plan.file, release: 'Film.2160p', strategy: 'transcode' };
+  let checked = 0;
+  await preparePlayback(job, { usenetHost: 'fixture' }, {
+    preflight: async (_candidate, _settings, start) => { checked++; assert.equal(start, 6817); return { sessionUrl: '/prepared/2160p' }; },
+    search: async () => { throw new Error('Poster source was searched again.'); }
+  });
+  assert.equal(checked, 1);
+  assert.equal(job.status, 'ready');
+  assert.equal(job.preparedSession.sessionUrl, '/prepared/2160p');
+});
 test('archive retention is scoped, bounded and releases expired or failed sources', () => {
   let now = 0;
   const cache = createArchiveResumeCache({ now: () => now, ttl: 100, maximum: 1, maximumBytes: 150 });

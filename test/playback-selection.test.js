@@ -64,6 +64,35 @@ test('falls back from an unplayable 2160p release to 1080p before trying 720p', 
   assert.equal(playback.status, 'ready');
 });
 
+test('a newly opened 2160p archive must pass the live conversion check before selection', async () => {
+  const playback = job(), checked = [], rejected = [];
+  await preparePlayback(playback, { usenetHost: 'fixture', targetResolution: '2160p' }, {
+    search: async () => [{ title: 'Film.2160p' }, { title: 'Film.1080p' }],
+    load: async release => nzb(release.title.includes('2160p') ? 'rar' : 'mkv'),
+    check: async () => Buffer.from('video'),
+    progressive: async candidate => {
+      candidate.progressiveArchive = true;
+      candidate.archiveSource = { metadata: { size: 100 }, closed: false };
+      candidate.file = { subject: 'film.mkv' };
+      candidate.strategy = 'transcode';
+      candidate.status = 'ready';
+      return true;
+    },
+    preflight: async candidate => {
+      checked.push(candidate.release);
+      if (candidate.release.includes('2160p')) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      return { sessionUrl: '/prepared/1080p' };
+    },
+    archivePlans: { get: () => null, delete: () => {} },
+    health: { has: async () => false, reject: async (_settings, _media, release) => { rejected.push(release); } },
+    plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(checked, ['Film.2160p', 'Film.1080p']);
+  assert.deepEqual(rejected, ['Film.2160p']);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.release, 'Film.1080p');
+});
+
 test('checks a targeted 2160p stream live despite one pessimistic provider speed sample', async () => {
   const playback = { ...job(), media: { ...media, durationHint: 60 } }, checked = [];
   await preparePlayback(playback, { targetResolution: '2160p' }, {
