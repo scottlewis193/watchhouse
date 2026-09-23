@@ -80,6 +80,23 @@ test('best quality verifies a marginal converter instead of rejecting a short st
   assert.equal(playback.preparedSession.sessionUrl, '/checked');
 });
 
+test('best quality gives only the first two stalled transcodes longer to produce a segment', async () => {
+  const playback = job(), budgets = [];
+  await preparePlayback(playback, { playbackQuality: 'quality' }, {
+    search: async () => ['First 4K', 'Second 4K', 'Third 4K'].map(title => ({ title })),
+    load: async release => nzb('mkv').replace('episode.mkv', `${release.title}.mkv`),
+    check: async () => Buffer.from('video'),
+    preflight: async (_candidate, _settings, _start, options) => {
+      budgets.push(options.firstSegmentMs);
+      if (budgets.length < 3) throw Object.assign(new Error('no first segment'), { code: 'NO_PLAYABLE_SEGMENT' });
+      return { start: 0, sessionUrl: '/checked' };
+    },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(budgets, [15000, 15000, 8000]);
+  assert.equal(playback.release, 'Third 4K');
+});
+
 test('missing articles are remembered across playback attempts, transient failures are retried', async () => {
   const rejected = new Set(), checked = [];
   const releases = [{ title: 'Missing' }, { title: 'Transient' }];

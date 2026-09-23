@@ -1222,7 +1222,7 @@ export function assertPlayableHlsOpening(streams = []) {
   }
 }
 
-export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now() } = {}) {
+export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now(), firstSegmentMs = 8000 } = {}) {
   const id = randomUUID();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error('Playback speed check timed out.')), 30000);
@@ -1231,15 +1231,22 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
   let session;
   try {
     session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal }, start, directory), onClose: () => hlsSessions.delete(id), onMonitor: playbackOutputMonitor(job) });
-    const deadline = now() + 8000;
+    const deadline = now() + firstSegmentMs;
     let firstSegmentReady = false;
     while (now() < deadline) {
       signal.throwIfAborted();
       try { if ((await session.read('index.m3u8')).includes('#EXTINF:')) { firstSegmentReady = true; break; } }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const state = session.health?.();
+      if (state?.failed || state?.closed) throw new Error('The playback converter stopped before its first segment.');
       await wait(200);
     }
-    if (!firstSegmentReady) throw new Error('No playable segment arrived during the playback speed check.');
+    if (!firstSegmentReady) {
+      const reportedPosition = session.health?.()?.position;
+      const position = Number.isFinite(reportedPosition) ? reportedPosition : 0;
+      jobEvent(job, 'playback-speed', `No first segment after ${(firstSegmentMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs });
+      throw Object.assign(new Error('No playable segment arrived during the playback speed check.'), { code: 'NO_PLAYABLE_SEGMENT' });
+    }
     assertPlayableHlsOpening(await inspect(session.directory, signal));
     const first = session.health().position;
     // A healthy source need not sit through the whole observation window.
@@ -1618,7 +1625,9 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments) });
         try {
           if (preflight && !job.offlineDownload && !job.backgroundFor && !job.prepareAhead && !job.speculative && plan.strategy !== 'raw') {
-            job.preparedSession = await preflight(job, settings, job.selectionStart || 0);
+            job.preparedSession = await preflight(job, settings, job.selectionStart || 0, {
+              firstSegmentMs: settings.playbackQuality === 'quality' && plan.strategy === 'transcode' ? 15000 : 8000
+            });
           }
           Object.assign(job, { status: 'ready', message: plan.strategy === 'raw' ? 'Reusing the direct stream selected earlier.' : 'Reusing the browser-compatible stream selected earlier.', progress: 100, mode: 'direct' });
           jobEvent(job, 'plan-cache-hit', job.message, { release: plan.release, strategy: plan.strategy, mode: 'direct' });
@@ -1650,6 +1659,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
+    let extendedSlowStarts = 0;
     const rejected = await Promise.all(releases.map(release => health.has(settings, job.media, releaseIdentity(release))));
     releases = releases.filter((release, index) => releaseIdentity(release) !== failedPlanRelease && !job.rejectedReleases?.has(releaseIdentity(release)) && !rejected[index]);
     // Keep three HTTP requests and two BODY checks active independently. The
@@ -1715,9 +1725,11 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           }
           if (liveCheck) {
             if (requiredFactor === 1 && Number.isFinite(rate) && rate < demand) jobEvent(job, 'provider-speed', 'Startup speed sample is short of the preferred headroom; checking live segment production.', { release: release.title });
-            try { job.preparedSession = await preflight(job, settings, job.selectionStart || 0); }
+            const firstSegmentMs = settings.playbackQuality === 'quality' && strategy === 'transcode' && extendedSlowStarts < 2 ? 15000 : 8000;
+            try { job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs }); }
             catch (error) {
               if (isDownloadCancelled(job, error)) throw error;
+              if (error.code === 'NO_PLAYABLE_SEGMENT' && firstSegmentMs > 8000) extendedSlowStarts++;
               if (error.code === 'INVALID_MEDIA_TIMELINE' || error.code === 'INVALID_MEDIA_DURATION') {
                 await health.reject(settings, job.media, releaseIdentity(release));
               } else downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment };

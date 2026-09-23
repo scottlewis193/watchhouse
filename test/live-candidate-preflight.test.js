@@ -60,13 +60,33 @@ test('a converter that recovers after a slow start can pass the longer check', a
 
 test('a candidate with no first segment fails within the short startup budget', async () => {
   let elapsed = 0, closed = false;
-  await assert.rejects(preflightLiveCandidate({ id: 'job' }, {}, 0, {
+  const job = { id: 'job', diagnosticsEnabled: true, events: [] };
+  await assert.rejects(preflightLiveCandidate(job, {}, 0, {
     sessionFactory: async () => ({
       read: async () => { const error = new Error('missing'); error.code = 'ENOENT'; throw error; },
       close: async () => { closed = true; }
     }),
     convert: async () => {}, now: () => elapsed, wait: async ms => { elapsed += ms; }
-  }), /No playable segment/);
+  }), { code: 'NO_PLAYABLE_SEGMENT' });
   assert.equal(elapsed, 8000);
   assert.equal(closed, true);
+  assert.equal(job.events.find(event => event.activity === 'playback-speed').firstSegmentMs, 8000);
+});
+
+test('a slow-starting converter can pass a longer first-segment budget', async () => {
+  let elapsed = 0, position = 0;
+  const job = { id: 'job', playbackTracks: [] };
+  const result = await preflightLiveCandidate(job, {}, 0, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from(elapsed >= 10000 ? '#EXTINF:2.0,' : '#EXTM3U'),
+      health: () => ({ position, completed: false }),
+      close: async () => {}
+    }),
+    convert: async () => {}, inspect: async () => [{ codec_type: 'video', start_time: '0' }],
+    now: () => elapsed,
+    wait: async ms => { elapsed += ms; if (ms >= 2000) position += 8; },
+    firstSegmentMs: 15000
+  });
+  assert.match(result.playlistUrl, /index\.m3u8$/);
+  assert.equal(elapsed, 12000);
 });
