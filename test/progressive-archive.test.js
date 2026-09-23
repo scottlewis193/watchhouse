@@ -208,6 +208,28 @@ test('HLS passes real opening timeline validation and produces segments before a
   } finally { unblock(); await session?.close(); await source?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('progressive playback rejects a late timestamp leap with almost no new frames', { timeout: 15000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'archive-timeline-leap-'));
+  let session;
+  try {
+    const path = join(root, 'gap.mkv');
+    await execute('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25:duration=140',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=140',
+      '-vf', "select='not(between(t,10,125))'", '-af', "aselect='not(between(t,10,125))'",
+      '-fps_mode', 'vfr', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', path]);
+    const job = { media: { type: 'tv', id: 999999, season: 1, episode: 1 }, progressiveArchive: true,
+      archiveSource: { complete: true, retain: () => ({ url: path, close() {} }) },
+      file: { subject: 'gap.mkv' }, release: 'Gapped archive', strategy: 'remux', mode: 'direct', diagnosticsEnabled: true, events: [] };
+    const inspection = () => ({ metadata: Promise.resolve({ duration: 140, tracks: [], audioIndex: 1, videoCodec: 'h264', videoFrameRate: 25 }), validated: Promise.resolve() });
+    session = await createHlsSession({ root, produce: directory => startHlsConversion(job, {}, 0, directory, () => {}, async () => [], inspection) });
+    const deadline = Date.now() + 5000;
+    while (!session.health().failed && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(session.health().failed, true);
+    assert.equal(job.rejectedReleases?.has('Gapped archive'), true);
+    assert.ok(job.events.some(event => event.activity === 'source-rejected' && /timeline skipped/i.test(event.message)));
+  } finally { await session?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 
 function rarHeader(type, flags, data = Buffer.alloc(0)) {
   const header = Buffer.alloc(7 + data.length);

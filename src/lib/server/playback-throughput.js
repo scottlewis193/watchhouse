@@ -39,3 +39,21 @@ export function createVideoOutputMeter(onSample, { now = () => performance.now()
     }
   };
 }
+
+// FFmpeg's output clock can jump across missing media while producing only a
+// handful of frames. A speed sample alone mistakes that jump for fast output.
+export function createVideoTimelineGuard({ frameRate = 25, start = 0 } = {}) {
+  let previous = null;
+  const minimumFps = Math.max(1, Math.min(5, Number(frameRate) / 3 || 5));
+  return {
+    record(frame, position) {
+      if (!Number.isFinite(frame) || frame < 0 || !Number.isFinite(position) || position < 0) return null;
+      const baseline = previous || { frame: 0, position: start > 0 ? position : 0 };
+      const elapsedSeconds = position - baseline.position;
+      const frames = frame - baseline.frame;
+      previous = { frame, position };
+      if (elapsedSeconds < 12 || frames < 0 || frames >= elapsedSeconds * minimumFps) return null;
+      return { elapsedSeconds, frames };
+    }
+  };
+}

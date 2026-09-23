@@ -20,7 +20,7 @@ import { playbackTracks, extractCaptions } from './playback-tracks.js';
 import { createHlsSession, hlsOutputArgs } from './hls-session.js';
 import { createHlsPacing } from './hls-pacing.js';
 import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from './playback-capacity.js';
-import { createArticleDeliveryMeter, createVideoOutputMeter } from './playback-throughput.js';
+import { createArticleDeliveryMeter, createVideoOutputMeter, createVideoTimelineGuard } from './playback-throughput.js';
 import { createPosterPreparation } from './poster-preparation.js';
 import { createValidatedPreparationCache } from './validated-preparation.js';
 import { createPlaybackPersistence, playbackScope } from './playback-persistence.js';
@@ -955,7 +955,7 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
 }
 
 function rejectPlaybackSource(job, settings, release, releaseKey, error) {
-  if (!['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING'].includes(error.code) ||
+  if (!['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_TIMELINE'].includes(error.code) ||
       (job.releaseKey || job.release) !== releaseKey) return;
   job.rejectedReleases ||= new Set();
   if (job.rejectedReleases.has(releaseKey)) return;
@@ -964,7 +964,8 @@ function rejectPlaybackSource(job, settings, release, releaseKey, error) {
   playbackPlans.delete(job.media);
   archiveResumePlans.delete(job.media);
   void playbackPersistence.deletePlan(job.media).catch(() => {});
-  jobEvent(job, 'source-rejected', 'The provider could not supply a valid video article. Trying another release on recovery.', { release });
+  jobEvent(job, 'source-rejected', error.code === 'INVALID_MEDIA_TIMELINE'
+    ? error.message : 'The provider could not supply a valid video article. Trying another release on recovery.', { release });
 }
 
 export async function recoverPlaybackSource(job, settings, prepare = preparePlayback) {
@@ -1172,7 +1173,10 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     // Skip discarded input and fill two segments promptly, then pace at 1.5x.
     args.splice(args.indexOf('-i'), 0, ...pacing);
     if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', `expr:gte(t,n_forced*${segmentSeconds})`);
-    producer = await startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start), settings.signal);
+    const release = job.release, releaseKey = job.releaseKey || release;
+    producer = await startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start), settings.signal,
+      job.progressiveArchive ? { frameRate: metadata.videoFrameRate, start,
+        onTimelineGap: error => rejectPlaybackSource(job, settings, release, releaseKey, error) } : {});
     producer.interpolated = interpolate;
     jobEvent(job, 'encoding-start', 'Preparing the first playback segments.', { start });
     onProgress(1);
@@ -1284,16 +1288,30 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
     throw error;
   } finally { clearTimeout(timeout); removeCancelHandler(); }
 }
-async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal) {
+async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal, { frameRate, start = 0, onTimelineGap } = {}) {
   const release = await conversionAdmission.acquire({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
   const child = spawn('ffmpeg', ['-progress', 'pipe:3', ...args], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
-  let stderr = '', closed = false, paused = false, outputPosition = 0, progress = '';
+  let stderr = '', closed = false, paused = false, outputPosition = 0, progress = '', reportedFrame = null, reportedPosition = null, timelineError = null;
+  const timelineGuard = onTimelineGap ? createVideoTimelineGuard({ frameRate, start }) : null;
   child.stdio[3].on('data', chunk => {
     progress += chunk;
     let newline;
     while ((newline = progress.indexOf('\n')) >= 0) {
       const line = progress.slice(0, newline); progress = progress.slice(newline + 1);
-      if (line.startsWith('out_time_us=')) outputPosition = Math.max(outputPosition, Number(line.slice(12)) / 1000000 || 0);
+      if (line.startsWith('frame=')) reportedFrame = Number(line.slice(6));
+      if (line.startsWith('out_time_us=')) {
+        reportedPosition = Number(line.slice(12)) / 1000000;
+        if (Number.isFinite(reportedPosition)) outputPosition = Math.max(outputPosition, reportedPosition);
+      }
+      if (line.startsWith('progress=') && timelineGuard && !timelineError) {
+        const gap = timelineGuard.record(reportedFrame, reportedPosition);
+        if (gap) {
+          timelineError = Object.assign(new Error(`Playback timeline skipped ${gap.elapsedSeconds.toFixed(1)}s after only ${gap.frames} video frames. Trying another release.`), { code: 'INVALID_MEDIA_TIMELINE' });
+          try { onTimelineGap(timelineError); } catch { /* Preserve the conversion failure if rejection bookkeeping fails. */ }
+          child.kill('SIGTERM');
+        }
+        reportedFrame = reportedPosition = null;
+      }
     }
     progress = progress.slice(-1024);
   });
@@ -1303,6 +1321,7 @@ async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal)
   const completion = (async () => {
     try {
       const [code] = await exited;
+      if (timelineError) throw timelineError;
       if (!closed && !conversionSucceeded(code, stderr, 1, { httpReconnect: Boolean(rangeSource) })) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
     } finally { release(); stopConversion(child); await rangeSource?.close(); }
   })();
