@@ -65,6 +65,21 @@ test('uses a downloaded copy if sampled provider speed cannot support any candid
   assert.equal(playback.mode, 'cached');
 });
 
+test('best quality verifies a marginal converter instead of rejecting a short startup speed sample', async () => {
+  const playback = { ...job(), media: { ...media, durationHint: 60 } };
+  let checked = 0;
+  await preparePlayback(playback, { playbackQuality: 'quality' }, {
+    search: async () => [{ title: 'Marginal 4K' }], load: async () => nzb('mkv'),
+    check: async file => { file.segments[0].decodedBytes = 12_000_000; return Buffer.from('video'); },
+    speedMeter: { record() {}, rate: () => 250_000 },
+    preflight: async () => { checked++; return { start: 0, sessionUrl: '/checked' }; },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.equal(checked, 1);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.preparedSession.sessionUrl, '/checked');
+});
+
 test('missing articles are remembered across playback attempts, transient failures are retried', async () => {
   const rejected = new Set(), checked = [];
   const releases = [{ title: 'Missing' }, { title: 'Transient' }];

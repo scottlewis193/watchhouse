@@ -41,6 +41,19 @@ test('idle sessions stop conversion and remove their segments', async () => {
   } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('output monitoring marks a converter held for a full playback buffer as paused', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hls-monitor-'));
+  let observed;
+  const sample = new Promise(resolve => { observed = resolve; });
+  const session = await createHlsSession({ root, checkMs: 5, onMonitor: observed,
+    produce: async () => ({ completion: new Promise(() => {}), position: () => 100, stop() {} }) });
+  try {
+    const state = await sample;
+    assert.equal(state.position, 100);
+    assert.equal(state.paused, true);
+  } finally { await session.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('conversion failure reaches playlist readers rather than silently hanging', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hls-failure-'));
   const session = await createHlsSession({ root, produce: async () => ({ completion: Promise.reject(new Error('broken input')), stop() {} }) });

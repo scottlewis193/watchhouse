@@ -81,12 +81,20 @@ test('does not extend retries for provider connection failures', async () => {
 
 test('probe and converter reads reuse validated bytes within a bounded cache', async () => {
   let reads=0;
-  const loader=createPostedSegmentLoader(posted,{maxConnections:1},new Map(),async()=>({body:async(_id,onLine)=>{reads++;await article(onLine,Buffer.from('EFGH'),5);},close(){}}));
+  const deliveries=[];
+  const loader=createPostedSegmentLoader(posted,{maxConnections:1,onProviderArticleLoaded:bytes=>deliveries.push(bytes)},new Map(),async()=>({body:async(_id,onLine)=>{reads++;await article(onLine,Buffer.from('EFGH'),5);},close(){}}));
   try {
     await loader.load(posted.segments[1],1);
     await loader.load(posted.segments[1],1);
     assert.equal(reads,1,'sequential reads should not fetch the same article twice');
   } finally {await loader.close();}
+  assert.deepEqual(deliveries,[4],'cached rereads must not inflate live provider delivery');
+});
+
+test('a failed delivery observer does not invalidate a fetched article', async () => {
+  const loader=createPostedSegmentLoader(posted,{maxConnections:1,onProviderArticleLoaded(){throw new Error('observer failed');}},new Map(),async()=>({body:(_id,onLine)=>article(onLine,Buffer.from('EFGH'),5),close(){}}));
+  try { assert.equal((await loader.load(posted.segments[1],1)).toString(),'EFGH'); }
+  finally { await loader.close(); }
 });
 
 test('validated article cache evicts bytes at its memory limit', async () => {

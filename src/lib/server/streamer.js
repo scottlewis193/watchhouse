@@ -20,6 +20,7 @@ import { playbackTracks, extractCaptions } from './playback-tracks.js';
 import { createHlsSession, hlsOutputArgs } from './hls-session.js';
 import { createHlsPacing } from './hls-pacing.js';
 import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from './playback-capacity.js';
+import { createArticleDeliveryMeter, createVideoOutputMeter } from './playback-throughput.js';
 import { createPosterPreparation } from './poster-preparation.js';
 import { createValidatedPreparationCache } from './validated-preparation.js';
 import { createPlaybackPersistence, playbackScope } from './playback-persistence.js';
@@ -735,6 +736,7 @@ export function createPostedSegmentLoader(posted, settings, prefetchedSegments =
             throw Object.assign(new Error('Usenet segment did not match its yEnc byte metadata.'), { code: 'INVALID_USENET_ARTICLE' });
           }
           remember(index, decoded);
+          try { settings.onProviderArticleLoaded?.(decoded.length); } catch { /* diagnostics cannot invalidate a good article */ }
           if (settings.downloadNextEpisode) {
             lane.idleTimer = setTimeout(() => { lane.client?.close(); lane.client = null; }, 1000);
             lane.idleTimer.unref();
@@ -887,7 +889,16 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
   const posted = job.file, release = job.release, releaseKey = job.releaseKey || release;
   const layout = postedFileByteLayout(posted);
   if (!layout) return null;
-  const loader = createPostedSegmentLoader(posted, settings, job.prefetchedSegments, connect);
+  let deliveredArticles = 0, deliveredBytes = 0, speedSamples = 0;
+  const meter = job.diagnosticsEnabled ? createArticleDeliveryMeter(sample => {
+    speedSamples++;
+    jobEvent(job, 'article-delivery', `Live Usenet articles: ${(sample.bytesPerSecond / 1_000_000).toFixed(1)} MB/s across ${sample.articles} articles over ${(sample.elapsedMs / 1000).toFixed(1)}s.`, { ...sample, release });
+  }) : null;
+  const observedSettings = meter ? { ...settings, onProviderArticleLoaded: bytes => {
+    settings.onProviderArticleLoaded?.(bytes);
+    deliveredArticles++; deliveredBytes += bytes; meter.record(bytes);
+  } } : settings;
+  const loader = createPostedSegmentLoader(posted, observedSettings, job.prefetchedSegments, connect);
   const load = (segment, index) => resumeSegments.load(posted, index, async () => {
     if (settings.usenetHost) {
       const cached = await playbackPersistence.getSegment(posted, index, settings).catch(() => null);
@@ -930,8 +941,15 @@ export async function openPostedRangeServer(job, settings, connect = connectNntp
   return {
     url: `http://127.0.0.1:${address.port}/video`,
     async close() {
-      await new Promise(resolve => server.close(resolve));
-      await loader.close();
+      try {
+        await new Promise(resolve => server.close(resolve));
+        await loader.close();
+      } finally {
+        try {
+          meter?.flush();
+          if (meter && !speedSamples) jobEvent(job, 'article-delivery', `Live source ended after ${deliveredArticles} fresh Usenet article${deliveredArticles === 1 ? '' : 's'}; too little continuous delivery to report a rate.`, { release, articles: deliveredArticles, bytes: deliveredBytes });
+        } catch { /* diagnostics cannot fail session cleanup */ }
+      }
     }
   };
 }
@@ -1212,7 +1230,7 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
   const signal = settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal;
   let session;
   try {
-    session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal }, start, directory), onClose: () => hlsSessions.delete(id) });
+    session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal }, start, directory), onClose: () => hlsSessions.delete(id), onMonitor: playbackOutputMonitor(job) });
     const deadline = now() + 8000;
     let firstSegmentReady = false;
     while (now() < deadline) {
@@ -1501,6 +1519,11 @@ function jobEvent(job, activity, message, details = {}) {
   job.events.push({ at: Date.now(), activity, message, ...details });
   if (job.events.length > 80) job.events.splice(0, job.events.length - 80);
 }
+function playbackOutputMonitor(job) {
+  if (!job.diagnosticsEnabled) return undefined;
+  const meter = createVideoOutputMeter(sample => jobEvent(job, 'video-output-rate', `Live video output: ${sample.viewingSpeed.toFixed(1)}× viewing speed over ${(sample.elapsedMs / 1000).toFixed(0)}s.`, sample));
+  return ({ position, paused }) => meter.record(position, paused);
+}
 function setJob(job, status, message, progress = job.progress) {
   const changed = job.status !== status || job.message !== message;
   Object.assign(job, { status, message, progress });
@@ -1676,16 +1699,22 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           const duration = Number(job.media.durationHint);
           const rate = speedMeter.rate(settings);
           const demand = candidatePlaybackDemand(direct, duration);
+          const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && !job.speculative && strategy !== 'raw';
+          // The spot check includes startup and is deliberately pessimistic.
+          // Best-quality playback can verify a marginal source with the actual
+          // converter, provided the sample still covers its average bitrate.
+          const requiredFactor = settings.playbackQuality === 'quality' && liveCheck ? 1 : 1.5;
           if (Number.isFinite(rate) && rate > 0 && demand !== null) {
-            jobEvent(job, 'provider-speed', `Recent article check: ${(rate / 1_000_000).toFixed(1)} MB/s; this release needs about ${(demand / 1_000_000).toFixed(1)} MB/s with playback headroom.`, { release: release.title, bytesPerSecond: rate, requiredBytesPerSecond: demand });
+            jobEvent(job, 'provider-speed', `Recent article check: ${(rate / 1_000_000).toFixed(1)} MB/s; this release averages about ${(demand / 1.5 / 1_000_000).toFixed(1)} MB/s and targets ${(demand / 1_000_000).toFixed(1)} MB/s with headroom.`, { release: release.title, bytesPerSecond: rate, averageBytesPerSecond: demand / 1.5, requiredBytesPerSecond: demand });
           }
-          const tooLarge = candidateNeedsMoreSpeed(direct, duration, rate);
+          const tooLarge = candidateNeedsMoreSpeed(direct, duration, rate, requiredFactor);
           if (tooLarge) {
             downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment };
             jobEvent(job, 'release-rejected', 'Recent provider speed is below this release’s estimated playback demand.', { release: release.title });
             continue;
           }
-          if (preflight && !job.backgroundFor && !job.prepareAhead && !job.speculative && strategy !== 'raw') {
+          if (liveCheck) {
+            if (requiredFactor === 1 && Number.isFinite(rate) && rate < demand) jobEvent(job, 'provider-speed', 'Startup speed sample is short of the preferred headroom; checking live segment production.', { release: release.title });
             try { job.preparedSession = await preflight(job, settings, job.selectionStart || 0); }
             catch (error) {
               if (isDownloadCancelled(job, error)) throw error;
@@ -2169,7 +2198,7 @@ export async function handleRequest(req, res) {
           progressTimer.unref();
         }
         try {
-          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report, undefined, undefined, { audioTrack: input.audioTrack }), onClose: () => hlsSessions.delete(id) });
+          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report, undefined, undefined, { audioTrack: input.audioTrack }), onClose: () => hlsSessions.delete(id), onMonitor: playbackOutputMonitor(job) });
           hlsSessions.set(id, { jobId, session });
           if (cancelled) { await session.close(); return; }
           // Growing archives must read through the resume prefix. Keep useful

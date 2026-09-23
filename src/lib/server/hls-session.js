@@ -24,7 +24,7 @@ function playlistCoversExpectedDuration(bytes, expectedDuration) {
 
 let activeSessions = 0;
 
-export async function createHlsSession({ root, produce, idleMs = 180000, onClose = () => {}, maxSessions = 4, maxBytes = 8 * 1024 ** 3, checkMs = 5000 }) {
+export async function createHlsSession({ root, produce, idleMs = 180000, onClose = () => {}, onMonitor = () => {}, maxSessions = 4, maxBytes = 8 * 1024 ** 3, checkMs = 5000 }) {
   if (activeSessions >= maxSessions) throw Object.assign(new Error('All playback conversion slots are in use. Try again shortly.'), { code: 'PLAYBACK_BUSY' });
   activeSessions++;
   let released = false;
@@ -111,7 +111,14 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
       } catch (error) { if (!closed) failure = error; }
       finally { checking = false; }
     }
-    monitor = setInterval(() => void checkResources(), checkMs);
+    monitor = setInterval(() => {
+      // Diagnostics must never interrupt playback if a reporter fails.
+      try {
+        const output = producer.position?.() || 0;
+        onMonitor({ position: output, paused: paused || output - position >= 90 });
+      } catch {}
+      void checkResources();
+    }, checkMs);
     monitor.unref();
     touch();
     return { directory, ready, read, touch, close, playbackState,
