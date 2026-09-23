@@ -1599,7 +1599,7 @@ async function tryProgressiveArchive(job, settings, archives) {
       // Full downloading cannot restore a missing required article or unlock an
       // encrypted archive: this app has no archive password or repair support.
       if (error.code === 'USENET_ARTICLE_MISSING' || /encrypt/i.test(error.message)) {
-        throw Object.assign(new Error(error.code === 'USENET_ARTICLE_MISSING' ? 'Required archive articles are missing from the provider.' : 'This archive is encrypted and no archive password is available.'), { code: 'ARCHIVE_UNAVAILABLE' });
+        throw Object.assign(new Error(error.code === 'USENET_ARTICLE_MISSING' ? 'Required archive articles are missing from the provider.' : 'This archive is encrypted and no archive password is available.'), { code: 'ARCHIVE_UNAVAILABLE', unavailableCode: error.code });
       }
       jobEvent(job, 'archive-progressive-fallback', 'Progressive extraction is unavailable. Preparing the full archive.', { reason: error.message });
     }
@@ -1632,10 +1632,13 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
   let savedDownloadChoice = null;
   const checkArchivePlayback = async () => {
     if (!preflight || !settings.usenetHost || job.speculative || job.prepareAhead || job.backgroundFor || job.offlineDownload) return true;
+    const readyMessage = job.message;
+    setJob(job, 'selecting', 'Checking archive playback speed…', 45);
     try {
       // Archive opening only checks availability. Verify sustained segment
       // production too, including when a previously opened archive is reused.
       job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs: 20000 });
+      Object.assign(job, { status: 'ready', progress: 100, message: readyMessage });
       return true;
     } catch (error) {
       if (isDownloadCancelled(job, error)) throw error;
@@ -1658,17 +1661,23 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     settings.signal?.throwIfAborted();
     if (job.progressiveArchive && job.archiveNeedsCheck) {
       delete job.archiveNeedsCheck;
-      if (await checkArchivePlayback()) {
+      if (releaseDynamicRange(job.release) !== 'sdr') {
+        archivePlans.delete?.(job.media);
+        delete job.archiveSource; delete job.progressiveArchive; delete job.archiveResume;
+        delete job.archives; delete job.file;
+      } else if (await checkArchivePlayback()) {
         Object.assign(job, { status: 'ready', progress: 100, message: 'Archive video passed its playback speed check.' });
         return;
       }
     }
     if (!job.manualRelease) {
       let plan = plans.get(job.media, playbackScope(settings));
-      if (plan && !matchesTargetResolution(plan.release, settings)) plan = null;
+      if (plan && releaseDynamicRange(plan.release) !== 'sdr') plans.delete(job.media);
+      if (plan && (!matchesTargetResolution(plan.release, settings) || releaseDynamicRange(plan.release) !== 'sdr')) plan = null;
       if (!plan && persistence) {
         const saved = await persistence.getPlan(job.media, settings).catch(() => null);
         if (saved?.file?.segments?.length && postedFileByteLayout(saved.file) && matchesTargetResolution(saved.release, settings)
+          && releaseDynamicRange(saved.release) === 'sdr'
           && !job.rejectedReleases?.has(saved.releaseKey || saved.release) && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
           // A restored plan keeps its original validation, with a cheap live
           // first/tail availability check before reuse after a restart.
@@ -1706,7 +1715,9 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
     if (!job.manualRelease && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && !job.progressiveArchiveDisabled) {
       const saved = archivePlans.get(job.media, playbackScope(settings));
-      if (saved && matchesTargetResolution(saved.release, settings) && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
+      if (saved && releaseDynamicRange(saved.release) !== 'sdr') archivePlans.delete?.(job.media);
+      if (saved && matchesTargetResolution(saved.release, settings) && releaseDynamicRange(saved.release) === 'sdr'
+        && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
         && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
         Object.assign(job, saved, { archiveResume: true, status: 'ready', mode: 'direct', progress: 100, message: 'Reusing the archive video prepared earlier.' });
         if (await checkArchivePlayback()) {
@@ -1717,10 +1728,14 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         }
       }
     }
-    setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
+    setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false);
+    releases = releases.filter(release => releaseDynamicRange(release) === 'sdr');
+    if (!releases.length) throw new Error('No compatible SDR release was found for this title. HDR releases require CPU tone mapping and are excluded.');
+    jobEvent(job, 'search', `Found ${releases.length} SDR candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
     let extendedSlowStarts = 0;
     let targetSpeedTrials = 0;
+    const missingArchiveProbes = new Map();
     const rejected = await Promise.all(releases.map(release => health.has(settings, job.media, releaseIdentity(release))));
     releases = releases.filter((release, index) => releaseIdentity(release) !== failedPlanRelease && !job.rejectedReleases?.has(releaseIdentity(release)) && !rejected[index]);
     // Keep three HTTP requests and two BODY checks active independently. The
@@ -1818,16 +1833,31 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           const choice = { archives, release: release.title, releaseKey: releaseIdentity(release) };
           archiveChoices.push(choice);
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
+          const resolution = releaseResolution(release);
+          if ((missingArchiveProbes.get(resolution) || 0) >= 4) {
+            choice.unavailable = Object.assign(new Error('Skipping further archives at this resolution after four missing-article failures.'), { code: 'ARCHIVE_PROBE_LIMIT' });
+            jobEvent(job, 'release-rejected', choice.unavailable.message, { release: release.title });
+            continue;
+          }
           // Progressive extraction only reads enough of the ranked archive to
           // start playback. Try it now instead of inspecting every lower-ranked
           // NZB first; a failed attempt still leaves the original full-download
           // fallback ordered after all streamable candidates have been checked.
           if (progressive && !job.speculative) {
             job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives;
-            try { if (await progressive(job, settings, choice.archives) && await checkArchivePlayback()) return; }
+            try {
+              if (await progressive(job, settings, choice.archives)) {
+                if (await checkArchivePlayback()) return;
+                choice.unavailable = new Error('Archive could not sustain playback.');
+              }
+            }
             catch (error) {
               if (error.code !== 'ARCHIVE_UNAVAILABLE') throw error;
               choice.unavailable = error;
+              if (error.unavailableCode === 'USENET_ARTICLE_MISSING') {
+                missingArchiveProbes.set(resolution, (missingArchiveProbes.get(resolution) || 0) + 1);
+                await health.reject(settings, job.media, choice.releaseKey);
+              }
               jobEvent(job, 'release-rejected', error.message, { release: choice.release });
             }
           }

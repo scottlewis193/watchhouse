@@ -64,6 +64,35 @@ test('falls back from an unplayable 2160p release to 1080p before trying 720p', 
   assert.equal(playback.status, 'ready');
 });
 
+test('skips HDR tone-mapping releases and selects an SDR fallback', async () => {
+  const playback = job(), loaded = [];
+  await preparePlayback(playback, { targetResolution: '2160p' }, {
+    search: async () => [{ title: 'Film.2160p.HDR10' }, { title: 'Film.1080p.SDR' }],
+    load: async release => { loaded.push(release.title); return nzb('mkv'); },
+    check: async () => Buffer.from('video'),
+    preflight: async () => ({ sessionUrl: '/prepared/sdr' }),
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(loaded, ['Film.1080p.SDR']);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.release, 'Film.1080p.SDR');
+});
+
+test('ignores a previously saved HDR source when finding an SDR release', async () => {
+  const playback = job(), deleted = [];
+  const hdrPlan = { release: 'Film.2160p.HDR10', file: { subject: 'hdr.mkv', segments: [{ id: 'article' }] },
+    strategy: 'transcode', prefetchedSegments: new Map() };
+  await preparePlayback(playback, { targetResolution: '2160p', usenetHost: 'fixture' }, {
+    plans: { get: () => hdrPlan, delete: () => deleted.push('plan') },
+    archivePlans: { get: () => ({ ...hdrPlan, archiveSource: { metadata: { size: 100 } }, progressiveArchive: true }), delete: () => deleted.push('archive') },
+    search: async () => [{ title: 'Film.1080p.SDR' }], load: async () => nzb('mkv'),
+    check: async () => Buffer.from('video'), preflight: async () => ({ sessionUrl: '/prepared/sdr' }),
+    health: { has: async () => false }
+  });
+  assert.deepEqual(deleted, ['plan', 'archive']);
+  assert.equal(playback.release, 'Film.1080p.SDR');
+});
+
 test('a newly opened 2160p archive must pass the live conversion check before selection', async () => {
   const playback = job(), checked = [], rejected = [];
   await preparePlayback(playback, { usenetHost: 'fixture', targetResolution: '2160p' }, {
@@ -91,6 +120,27 @@ test('a newly opened 2160p archive must pass the live conversion check before se
   assert.deepEqual(rejected, ['Film.2160p']);
   assert.equal(playback.status, 'ready');
   assert.equal(playback.release, 'Film.1080p');
+});
+
+test('stops probing missing archives at one resolution and reaches a later direct release', async () => {
+  const playback = { ...job(), diagnosticsEnabled: true }, probed = [];
+  const releases = Array.from({ length: 12 }, (_, index) => ({ title: `Film.1080p.Archive${index}` }));
+  releases.push({ title: 'Film.1080p.Direct' });
+  await preparePlayback(playback, { usenetHost: 'fixture' }, {
+    search: async () => releases,
+    load: async release => nzb(release.title.endsWith('Direct') ? 'mkv' : 'rar'),
+    check: async () => Buffer.from('video'),
+    progressive: async candidate => {
+      probed.push(candidate.release);
+      throw Object.assign(new Error('Missing archive article'), { code: 'ARCHIVE_UNAVAILABLE', unavailableCode: 'USENET_ARTICLE_MISSING' });
+    },
+    preflight: async () => ({ sessionUrl: '/prepared/direct' }),
+    health: { has: async () => false, reject: async () => {} }, plans: createPlaybackPlanCache()
+  });
+  assert.equal(probed.length, 4);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.release, 'Film.1080p.Direct');
+  assert.ok(playback.events.some(event => event.message?.includes('Skipping further archives')));
 });
 
 test('checks a targeted 2160p stream live despite one pessimistic provider speed sample', async () => {

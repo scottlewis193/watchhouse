@@ -940,16 +940,18 @@ test('best-quality TV playback does not let the series premiere year override 21
   assert.match(ranked[0].title, /2160p/);
 });
 
-test('prefers SDR over HDR and Dolby Vision releases at the same resolution', () => {
+test('excludes releases requiring HDR tone mapping while retaining SDR 4K', () => {
   const ranked = rankReleases([
     { title: 'Show.S01E01.2160p.WEB-DL.DV.H.265' },
     { title: 'Show.S01E01.2160p.WEB-DL.HDR.H.265' },
-    { title: 'Show.S01E01.2160p.WEB-DL.H.265' }
+    { title: 'Show.S01E01.2160p.WEB-DL.HDR10.H.265' },
+    { title: 'Show.S01E01.2160p.WEB-DL.HLG.H.265' },
+    { title: 'Show.S01E01.2160p.WEB-DL.H.265' },
+    { title: 'Show.S01E01.1080p.WEB-DL.H.264' }
   ], { title: 'Show', type: 'tv', season: 1, episode: 1 }, { playbackQuality: 'quality' });
   assert.deepEqual(ranked.map(release => release.title), [
     'Show.S01E01.2160p.WEB-DL.H.265',
-    'Show.S01E01.2160p.WEB-DL.HDR.H.265',
-    'Show.S01E01.2160p.WEB-DL.DV.H.265'
+    'Show.S01E01.1080p.WEB-DL.H.264'
   ]);
 });
 

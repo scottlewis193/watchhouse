@@ -14,6 +14,14 @@ test('automatic search orders target resolution before lower fallbacks while man
   const manual = await findReleases({ ...settings, targetResolution: '720p', manualReleaseSelection: true }, media, true, { request });
   assert.equal(manual.length, 3);
 });
+test('automatic and manual searches omit HDR releases that need CPU tone mapping', async () => {
+  const titles = ['Silo.S01E01.2160p.HDR10.HEVC', 'Silo.S01E01.2160p.SDR.HEVC', 'Silo.S01E01.1080p.H264'];
+  const request = async () => ({ ok: true, text: async () => `<rss><newznab:response offset="0" total="3" />${titles.map((title, i) => `<item><title>${title}</title><enclosure url="https://indexer.example/nzb/${i}" /></item>`).join('')}</rss>` });
+  for (const manualReleaseSelection of [false, true]) {
+    const releases = await findReleases({ ...settings, targetResolution: '2160p', manualReleaseSelection }, media, true, { request });
+    assert.deepEqual(new Set(releases.map(release => release.title)), new Set([titles[1], titles[2]]));
+  }
+});
 test('falls back to general indexer search when movie search returns no releases', async () => {
   const queries = [];
   const releases = await findReleases(settings, { id: 671, type: 'movie', title: "Harry Potter and the Philosopher's Stone", year: '2001' }, true, {

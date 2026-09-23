@@ -158,6 +158,7 @@ export function rankReleases(releases, media, preferences) {
   return releases
     .filter(release => releaseTitleMatches(release, media))
     .filter(englishAudioRelease)
+    .filter(release => releaseDynamicRange(release) === 'sdr')
     .filter(release => !target || releaseResolution(release) <= target)
     .sort((a, b) => (target ? releaseResolution(b) - releaseResolution(a) : 0)
       || releaseScore(b, media, preferences) - releaseScore(a, media, preferences));

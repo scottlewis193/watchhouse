@@ -70,6 +70,24 @@ test('a poster-prepared archive is checked after play is pressed', async () => {
   assert.equal(job.status, 'ready');
   assert.equal(job.preparedSession.sessionUrl, '/prepared/2160p');
 });
+
+test('a reused archive stays selecting until its playback speed check finishes', async () => {
+  const f = fixture();
+  let releaseCheck;
+  const waiting = new Promise(resolve => { releaseCheck = resolve; });
+  const job = { media, status: 'selecting' };
+  const preparation = preparePlayback(job, { usenetHost: 'fixture' }, {
+    archivePlans: { get: () => f.plan }, plans: createPlaybackPlanCache(),
+    health: { has: async () => false }, search: async () => { throw new Error('Unexpected search'); },
+    preflight: async () => { await waiting; return { sessionUrl: '/prepared/archive' }; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(job.status, 'selecting');
+  assert.equal(job.message, 'Checking archive playback speed…');
+  releaseCheck();
+  await preparation;
+  assert.equal(job.status, 'ready');
+});
 test('archive retention is scoped, bounded and releases expired or failed sources', () => {
   let now = 0;
   const cache = createArchiveResumeCache({ now: () => now, ttl: 100, maximum: 1, maximumBytes: 150 });
