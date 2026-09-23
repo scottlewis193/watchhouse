@@ -104,7 +104,8 @@
       const saved = progressFor(requested);
       if (media.type === 'movie' || (/^[1-9]\d*$/.test(requestedSeason) && /^[1-9]\d*$/.test(requestedEpisode))) {
         const selected = { ...saved?.media, ...requested, durationHint: saved?.duration || saved?.media.durationHint || 0 };
-        initialPreparation = { key: itemKey(selected), result: api.post('/api/play', selected).then(job => ({ job }), error => ({ error })) };
+        const selectionStart = shouldResume ? resumePosition(saved, resolvedMediaDuration(0, selected.durationHint, saved?.duration)) : 0;
+        initialPreparation = { key: itemKey(selected), result: api.post('/api/play', { ...selected, selectionStart }).then(job => ({ job }), error => ({ error })) };
       }
     }
     if (media.type === 'movie') {
@@ -254,7 +255,9 @@
         early = await pending;
         if (early.error) throw early.error;
       }
-      const job = preparedJob || early?.job || await api.post('/api/play', selectedMedia);
+      const saved = progressFor(selectedMedia);
+      const selectionStart = resume ? resumePosition(saved, resolvedMediaDuration(0, selectedMedia.durationHint, saved?.duration)) : 0;
+      const job = preparedJob || early?.job || await api.post('/api/play', { ...selectedMedia, selectionStart });
       if (!playbackRequests.isCurrent(requestToken)) { if (job.id && job.status !== 'ready') void api.post(`/api/play/${job.id}/cancel`).catch(() => {}); return; }
       if (job.status === 'ready') return await showReadyPlayback(job, requestToken);
       playback = job;
@@ -280,6 +283,8 @@
     const entry = progressFor(currentMedia);
     const duration = progressDuration(job.mode, player?.duration) || resolvedMediaDuration(sourceDuration, currentMedia?.durationHint, entry?.duration);
     resumeStreamOffset = hasGrowingStreamDuration(job.mode) ? recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0) : 0;
+    if (job.preparedSession?.start === resumeStreamOffset) preparedSession = job.preparedSession;
+    else if (job.preparedSession?.sessionUrl) void fetch(`${job.preparedSession.sessionUrl}/stop`, { method: 'POST', keepalive: true }).catch(() => {});
     if (hasGrowingStreamDuration(job.mode)) recoveryPosition = 0;
     beginPlaybackWarmup();
     playback = job;

@@ -3,6 +3,28 @@ import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import { playbackSource } from '../src/lib/hls-playback.js';
 
+test('reuses a checked HLS session without requesting a second conversion', async t => {
+  const requests = [], progress = [];
+  t.mock.method(globalThis, 'fetch', async url => { requests.push(url); return { ok: true }; });
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  class Hls {
+    static isSupported = () => true;
+    static Events = {};
+    on() {}
+    attachMedia() {}
+    loadSource(url) { assert.equal(url, '/checked/index.m3u8'); }
+    destroy() {}
+  }
+  const video = { paused: true, currentTime: 0, removeAttribute() {}, load() {} };
+  const source = playbackSource(video, { hlsUrl: '/hls', start: 0, preparedSession: { sessionUrl: '/checked', playlistUrl: '/checked/index.m3u8' }, onProgress: value => progress.push(value), onError: assert.fail }, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    assert.equal(requests.includes('/hls'), false);
+    assert.equal(progress.at(-1).completed, 2);
+  } finally { source.destroy(); globalThis.window = oldWindow; }
+});
+
 test('prefers MSE over advertised native HLS and releases a source when seeking or leaving', async t => {
   const requests = [], instances = [], listeners = new Map();
   t.mock.method(globalThis, 'fetch', async (url, options) => {

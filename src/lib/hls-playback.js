@@ -66,6 +66,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
         }
       }
       if (closed) { if (session?.sessionUrl) void post(`${session.sessionUrl}/stop`); return; }
+      if (options.preparedSession) options.onProgress?.(playbackSetupProgress(2));
       clearTimeout(setupTimer);
       sessionUrl = session.sessionUrl;
       if (closed) { void post(`${sessionUrl}/stop`); return; }

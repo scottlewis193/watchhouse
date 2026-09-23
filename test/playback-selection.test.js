@@ -25,6 +25,42 @@ test('checks later streamable releases before committing to a full archive downl
   assert.equal(playback.release, 'Candidate 13');
 });
 
+test('tries the next release when the preferred live conversion cannot sustain playback', async () => {
+  const playback = job(), checked = [];
+  await preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Preferred' }, { title: 'Replacement' }],
+    load: async release => nzb('mkv').replace('episode.mkv', `${release.title}.mkv`),
+    check: async () => Buffer.from('video'),
+    preflight: async candidate => {
+      checked.push(candidate.release);
+      if (candidate.release === 'Preferred') throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      return { start: 0, sessionUrl: '/prepared/replacement' };
+    },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(checked, ['Preferred', 'Replacement']);
+  assert.equal(playback.release, 'Replacement');
+  assert.equal(playback.preparedSession.sessionUrl, '/prepared/replacement');
+});
+
+test('uses a downloaded copy if sampled provider speed cannot support any candidate', async () => {
+  const playback = { ...job(), media: { ...media, durationHint: 60 } };
+  let downloaded = false, preflighted = false;
+  await preparePlayback(playback, {}, {
+    search: async () => [{ title: 'Large' }], load: async () => nzb('mkv'),
+    check: async file => { file.segments[0].decodedBytes = 60_000_000; return Buffer.from('video'); },
+    speedMeter: { record() {}, rate: () => 100_000 },
+    preflight: async () => { preflighted = true; },
+    cache: async candidate => { downloaded = true; candidate.status = 'ready'; candidate.mode = 'cached'; },
+    archive: async () => {},
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.equal(preflighted, false);
+  assert.equal(downloaded, true);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.mode, 'cached');
+});
+
 test('missing articles are remembered across playback attempts, transient failures are retried', async () => {
   const rejected = new Set(), checked = [];
   const releases = [{ title: 'Missing' }, { title: 'Transient' }];

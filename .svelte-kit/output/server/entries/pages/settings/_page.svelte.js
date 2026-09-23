@@ -1,4 +1,4 @@
-import { h as head, a as attr_class, e as escape_html } from "../../../chunks/index.js";
+import { h as head, b as attr_class, e as escape_html } from "../../../chunks/index.js";
 function _page($$renderer, $$props) {
   $$renderer.component(($$renderer2) => {
     head("1i19ct2", $$renderer2, ($$renderer3) => {

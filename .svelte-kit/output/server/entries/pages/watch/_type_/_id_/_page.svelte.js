@@ -1,4 +1,4 @@
-import { h as head, a as attr_class, f as attr_style, e as escape_html, b as attr, d as derived } from "../../../../../chunks/index.js";
+import { h as head, b as attr_class, a as attr, e as escape_html, d as derived } from "../../../../../chunks/index.js";
 import "@sveltejs/kit/internal";
 import "../../../../../chunks/exports.js";
 import "../../../../../chunks/utils2.js";
@@ -145,6 +145,16 @@ function _page($$renderer, $$props) {
       }
       $$renderer3.push(`<!--]--></svg></button> `);
       {
+        $$renderer3.push("<!--[0-->");
+        $$renderer3.push(`<button class="player-toolbar-button"${attr("disabled", media.type === "tv" && true, true)}${attr("aria-label", media.type === "tv" ? "Clear episode cache" : "Clear movie cache")}${attr("title", media.type === "tv" ? "Clear episode cache" : "Clear movie cache")}>`);
+        {
+          $$renderer3.push("<!--[-1-->");
+          $$renderer3.push(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><ellipse cx="12" cy="5" rx="7" ry="2.5"></ellipse><path d="M5 5v6c0 1.4 3.1 2.5 7 2.5 1.1 0 2.2-.1 3.1-.3M5 11v6c0 1.4 3.1 2.5 7 2.5"></path><path d="m16.5 16.5 4 4m0-4-4 4"></path></svg>`);
+        }
+        $$renderer3.push(`<!--]--></button>`);
+      }
+      $$renderer3.push(`<!--]--> `);
+      {
         $$renderer3.push("<!--[-1-->");
       }
       $$renderer3.push(`<!--]--> `);
@@ -161,12 +171,26 @@ function _page($$renderer, $$props) {
         $$renderer4.push(`<title>${escape_html(media.title ? `${media.title} · Watchhouse` : "Watch · Watchhouse")}</title>`);
       });
     });
-    $$renderer2.push(`<section class="watch-page"><div${attr_class("watch-hero", void 0, {
+    $$renderer2.push(`<section class="watch-page">`);
+    {
+      $$renderer2.push("<!--[-1-->");
+    }
+    $$renderer2.push(`<!--]--> <div${attr_class("watch-hero", void 0, {
       "watch-hero-playing": playbackUi().inPlayer,
       "watch-hero-revealing": playerRevealing
-    })}${attr_style(`--watch-artwork: url("${titleDetails.backdrop || media.poster || ""}")`)}><div class="watch-hero-art" aria-hidden="true"></div> <div class="watch-hero-shade" aria-hidden="true"></div> `);
-    watchToolbar($$renderer2, playbackUi().inPlayer);
-    $$renderer2.push(`<!----> `);
+    })}><div class="watch-hero-art" aria-hidden="true">`);
+    if (titleDetails.backdrop || titleDetails.poster || media.poster) {
+      $$renderer2.push("<!--[0-->");
+      $$renderer2.push(`<img${attr("src", titleDetails.backdrop || titleDetails.poster || media.poster)} alt=""/>`);
+    } else {
+      $$renderer2.push("<!--[-1-->");
+    }
+    $$renderer2.push(`<!--]--></div> <div class="watch-hero-shade" aria-hidden="true"></div> `);
+    {
+      $$renderer2.push("<!--[0-->");
+      watchToolbar($$renderer2, playbackUi().inPlayer);
+    }
+    $$renderer2.push(`<!--]--> `);
     {
       $$renderer2.push("<!--[-1-->");
     }
@@ -188,13 +212,19 @@ function _page($$renderer, $$props) {
       {
         $$renderer2.push("<!--[-1-->");
       }
-      $$renderer2.push(`<!--]--> <div class="hero-action-slot">`);
+      $$renderer2.push(`<!--]--> <div${attr_class("hero-action-slot", void 0, {
+        "hero-action-slot-detailed": resumeStarting
+      })}>`);
       {
         $$renderer2.push("<!--[-1-->");
         $$renderer2.push(`<button class="hero-identity-play"${attr("aria-label", `Play ${media.type === "tv" ? episodes.find((episode) => String(episode.number) === selectedEpisode)?.name || media.title : media.title}`)}><span aria-hidden="true">▶</span><span>Play${escape_html("")}</span></button>`);
       }
       $$renderer2.push(`<!--]--></div></div>`);
     } else {
+      $$renderer2.push("<!--[-1-->");
+    }
+    $$renderer2.push(`<!--]--> `);
+    {
       $$renderer2.push("<!--[-1-->");
     }
     $$renderer2.push(`<!--]--> `);
