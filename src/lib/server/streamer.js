@@ -1216,9 +1216,16 @@ export function assertPlayableHlsOpening(streams = []) {
   const video = streams.find(stream => stream.codec_type === 'video');
   const audio = streams.find(stream => stream.codec_type === 'audio');
   const videoStart = Number(video?.start_time), audioStart = Number(audio?.start_time);
-  if (!video || !Number.isFinite(videoStart) || videoStart > 3 || videoStart < -0.5
-    || audio && (!Number.isFinite(audioStart) || audioStart > 3 || Math.abs(videoStart - audioStart) > 2)) {
-    throw Object.assign(new Error('The first playback segment has a gap in its video or audio timeline.'), { code: 'INVALID_MEDIA_TIMELINE' });
+  // HLS may preserve a shared source timestamp offset. Only the separation
+  // between audio and video signals a missing opening track in that case.
+  const invalidVideo = !video || !Number.isFinite(videoStart) || videoStart < -0.5;
+  const invalidAudio = audio
+    ? !Number.isFinite(audioStart) || Math.abs(videoStart - audioStart) > 2
+    : videoStart > 3;
+  if (invalidVideo || invalidAudio) {
+    const showStart = value => Number.isFinite(value) ? `${value.toFixed(1)}s` : 'unknown';
+    const starts = `video ${showStart(videoStart)}, audio ${audio ? showStart(audioStart) : 'absent'}`;
+    throw Object.assign(new Error(`The first playback segment has a gap in its video or audio timeline (${starts}).`), { code: 'INVALID_MEDIA_TIMELINE', videoStart, audioStart: audio ? audioStart : null });
   }
 }
 

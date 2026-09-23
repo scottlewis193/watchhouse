@@ -1,10 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { assertPlayableHlsOpening, preflightLiveCandidate } from '../src/lib/server/streamer.js';
+
+const run = promisify(execFile);
 
 test('rejects a large opening timestamp gap like the observed buffered-only tail', () => {
   assert.doesNotThrow(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '0.023' }, { codec_type: 'audio', start_time: '0.023' }]));
+  assert.doesNotThrow(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '10.7' }, { codec_type: 'audio', start_time: '10.6' }]));
   assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '125.3' }, { codec_type: 'audio', start_time: '0' }]), { code: 'INVALID_MEDIA_TIMELINE' });
+  assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '10' }]), { code: 'INVALID_MEDIA_TIMELINE' });
+  assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '10' }]), { code: 'INVALID_MEDIA_TIMELINE' });
+});
+
+test('accepts an HLS opening whose audio and video share a nonzero timestamp origin', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'watchhouse-hls-origin-'));
+  try {
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25:duration=5',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5', '-c:v', 'libx264', '-preset', 'ultrafast',
+      '-c:a', 'aac', '-output_ts_offset', '10', '-f', 'hls', '-hls_time', '2', '-hls_segment_type', 'fmp4',
+      '-hls_fmp4_init_filename', 'init.mp4', '-hls_list_size', '0', '-hls_segment_filename',
+      join(directory, 'segment-%06d.m4s'), join(directory, 'index.m3u8')]);
+    const { stdout } = await run('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')]);
+    const streams = JSON.parse(stdout).streams;
+    assert.ok(Number(streams.find(stream => stream.codec_type === 'video').start_time) > 3);
+    assert.doesNotThrow(() => assertPlayableHlsOpening(streams));
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test('keeps a candidate that produces segments faster than playback', async () => {
