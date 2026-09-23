@@ -20,7 +20,7 @@ test('plans, validated metadata and source bytes survive restart with expiry and
     assert.equal(plan.release, 'One');
     assert.deepEqual(await restarted.getProbe(plan.file, settings), { audioIndex: 1, duration: 100 });
     assert.equal((await restarted.getSegment(plan.file, 0, settings)).toString(), 'ABCD');
-    for (const changed of [{ playbackQuality: 'fast' }, { usenetPass: 'changed' }, { untaggedAudioTrack: 1 }, { indexerKey: 'changed' }, { manualReleaseSelection: true }, { repairVideoTimeline: true }]) {
+    for (const changed of [{ playbackQuality: 'fast' }, { targetResolution: '2160p' }, { usenetPass: 'changed' }, { untaggedAudioTrack: 1 }, { indexerKey: 'changed' }, { manualReleaseSelection: true }, { repairVideoTimeline: true }]) {
       assert.equal(await restarted.getPlan(media, { ...settings, ...changed }), null);
       assert.equal(await restarted.getProbe(file, { ...settings, ...changed }), null);
     }

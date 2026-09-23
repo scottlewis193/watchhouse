@@ -4,6 +4,16 @@ import { catalogueAlternativeTitles, findReleases } from '../src/lib/server/stre
 const media = { type: 'tv', title: 'Silo', season: 1, episode: 1 };
 const settings = { indexerUrl: 'https://indexer.example', indexerKey: 'test' };
 const xml = (start, count, total) => `<rss><newznab:response offset="${start}" total="${total}" />${Array.from({length:count}, (_, i) => `<item><title>Silo.S01E01.1080p.H264.Release${start+i}</title><enclosure url="https://indexer.example/nzb/${start+i}" /></item>`).join('')}</rss>`;
+test('automatic search orders target resolution before lower fallbacks while manual search shows every release', async () => {
+  const titles = ['Silo.S01E01.720p.H264', 'Silo.S01E01.1080p.H264', 'Silo.S01E01.2160p.HEVC'];
+  const request = async () => ({ ok: true, text: async () => `<rss><newznab:response offset="0" total="3" />${titles.map((title, i) => `<item><title>${title}</title><enclosure url="https://indexer.example/nzb/${i}" /></item>`).join('')}</rss>` });
+  const target = await findReleases({ ...settings, targetResolution: '2160p' }, media, true, { request });
+  assert.deepEqual(target.map(release => release.title), [...titles].reverse());
+  const capped = await findReleases({ ...settings, targetResolution: '1080p' }, media, true, { request });
+  assert.deepEqual(capped.map(release => release.title), titles.slice(0, 2).reverse());
+  const manual = await findReleases({ ...settings, targetResolution: '720p', manualReleaseSelection: true }, media, true, { request });
+  assert.equal(manual.length, 3);
+});
 test('falls back to general indexer search when movie search returns no releases', async () => {
   const queries = [];
   const releases = await findReleases(settings, { id: 671, type: 'movie', title: "Harry Potter and the Philosopher's Stone", year: '2001' }, true, {

@@ -145,11 +145,22 @@ export function englishAudioRelease(release) {
   return releaseAudioConfidence(release) > 0;
 }
 
+export function releaseResolution(release) {
+  const title = String(release.title || '').toLowerCase();
+  if (/\b(?:2160p|4k|uhd)\b/.test(title)) return 2160;
+  if (/\b1080p\b/.test(title)) return 1080;
+  if (/\b720p\b/.test(title)) return 720;
+  return 0;
+}
+
 export function rankReleases(releases, media, preferences) {
+  const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[preferences?.targetResolution] || 0;
   return releases
     .filter(release => releaseTitleMatches(release, media))
     .filter(englishAudioRelease)
-    .sort((a, b) => releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
+    .filter(release => !target || releaseResolution(release) <= target)
+    .sort((a, b) => (target ? releaseResolution(b) - releaseResolution(a) : 0)
+      || releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
 }
 
 export function releaseReadiness(release) {

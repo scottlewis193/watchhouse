@@ -2,22 +2,26 @@ const SAMPLE_TTL_MS = 10 * 60 * 1000;
 const MIN_SAMPLE_BYTES = 512 * 1024;
 
 // This is a hint about the current provider, not a property of a release.
-// Keep the slowest recent observation so a short cached or bursty read cannot
-// make a large release appear safe to stream.
+// A rolling median resists both a single slow startup and one unusually fast
+// cached or bursty read without pinning every candidate to an old outlier.
 export function createProviderSpeedMeter({ now = Date.now } = {}) {
   const samples = new Map();
   const key = settings => JSON.stringify([settings.usenetHost, settings.usenetPort || 563, settings.usenetUser, settings.maxConnections || 4]);
   return {
     record(settings, bytes, elapsedMs) {
       if (!settings.usenetHost || bytes < MIN_SAMPLE_BYTES || elapsedMs < 100) return;
-      const id = key(settings), previous = samples.get(id);
+      const id = key(settings), at = now();
       const rate = bytes * 1000 / elapsedMs;
-      const inWindow = previous && now() - previous.windowStart < SAMPLE_TTL_MS;
-      samples.set(id, { rate: inWindow ? Math.min(previous.rate, rate) : rate, at: now(), windowStart: inWindow ? previous.windowStart : now() });
+      const recent = (samples.get(id) || []).filter(sample => at - sample.at < SAMPLE_TTL_MS);
+      recent.push({ rate, at });
+      samples.set(id, recent.slice(-5));
     },
     rate(settings) {
-      const sample = samples.get(key(settings));
-      return sample && now() - sample.at < SAMPLE_TTL_MS ? sample.rate : null;
+      const rates = (samples.get(key(settings)) || [])
+        .filter(sample => now() - sample.at < SAMPLE_TTL_MS)
+        .map(sample => sample.rate)
+        .sort((a, b) => a - b);
+      return rates.length ? rates[Math.floor((rates.length - 1) / 2)] : null;
     }
   };
 }

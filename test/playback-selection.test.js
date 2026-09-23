@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { NntpClient, preparePlayback, createPlaybackPlanCache } from '../src/lib/server/streamer.js';
+import { rankReleases } from '../media.js';
 
 const media = { type: 'tv', id: 95480, title: 'Slow Horses', season: 1, episode: 2 };
 const nzb = extension => `<nzb><file subject="episode.${extension}"><segments><segment number="1">article</segment></segments></file></nzb>`;
@@ -41,6 +42,60 @@ test('tries the next release when the preferred live conversion cannot sustain p
   assert.deepEqual(checked, ['Preferred', 'Replacement']);
   assert.equal(playback.release, 'Replacement');
   assert.equal(playback.preparedSession.sessionUrl, '/prepared/replacement');
+});
+
+test('falls back from an unplayable 2160p release to 1080p before trying 720p', async () => {
+  const playback = job(), checked = [];
+  const settings = { targetResolution: '2160p' };
+  const candidates = ['720p', '1080p', '2160p'].map(resolution => ({ title: `Slow.Horses.S01E02.${resolution}.mkv` }));
+  await preparePlayback(playback, settings, {
+    search: async () => rankReleases(candidates, media, settings),
+    load: async release => nzb('mkv').replace('episode.mkv', `${release.title}.mkv`),
+    check: async () => Buffer.from('video'),
+    preflight: async candidate => {
+      checked.push(candidate.release);
+      if (candidate.release.includes('2160p')) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      return { start: 0, sessionUrl: '/prepared/1080p' };
+    },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(checked, [candidates[2].title, candidates[1].title]);
+  assert.equal(playback.release, candidates[1].title);
+  assert.equal(playback.status, 'ready');
+});
+
+test('checks a targeted 2160p stream live despite one pessimistic provider speed sample', async () => {
+  const playback = { ...job(), media: { ...media, durationHint: 60 } }, checked = [];
+  await preparePlayback(playback, { targetResolution: '2160p' }, {
+    search: async () => [{ title: 'Slow.Horses.S01E02.2160p' }, { title: 'Slow.Horses.S01E02.1080p' }],
+    load: async release => nzb('mkv').replace('episode.mkv', `${release.title}.mkv`),
+    check: async file => { file.segments[0].decodedBytes = 12_000_000; return Buffer.from('video'); },
+    speedMeter: { record() {}, rate: () => 100_000 },
+    preflight: async candidate => { checked.push(candidate.release); return { start: 0, sessionUrl: '/prepared/2160p' }; },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(checked, ['Slow.Horses.S01E02.2160p']);
+  assert.equal(playback.release, 'Slow.Horses.S01E02.2160p');
+  assert.equal(playback.status, 'ready');
+});
+
+test('limits slow-sample 2160p trials before falling back to a playable 1080p release', async () => {
+  const playback = { ...job(), media: { ...media, durationHint: 60 } }, checked = [];
+  const releases = ['2160p.A', '2160p.B', '2160p.C', '1080p'].map(label => ({ title: `Slow.Horses.S01E02.${label}` }));
+  await preparePlayback(playback, { targetResolution: '2160p' }, {
+    search: async () => releases,
+    load: async release => nzb('mkv').replace('episode.mkv', `${release.title}.mkv`),
+    check: async file => { file.segments[0].decodedBytes = file.subject.includes('2160p') ? 12_000_000 : 3_000_000; return Buffer.from('video'); },
+    speedMeter: { record() {}, rate: () => 150_000 },
+    preflight: async candidate => {
+      checked.push(candidate.release);
+      if (candidate.release.includes('2160p')) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      return { start: 0, sessionUrl: '/prepared/1080p' };
+    },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(checked, [releases[0].title, releases[1].title, releases[3].title]);
+  assert.equal(playback.release, releases[3].title);
 });
 
 test('uses a downloaded copy if sampled provider speed cannot support any candidate', async () => {
@@ -186,6 +241,22 @@ test('restored plans avoid searching only after a live availability check and fa
     assert.equal(playback.status, 'ready');
     assert.equal(playback.release, available ? 'Saved' : 'Replacement');
   }
+});
+
+test('a saved lower-resolution fallback does not override a 2160p target on the next play', async () => {
+  const saved = { file: { subject: 'episode.mp4', segments: [{ id: 'saved', decodedBytes: 4 }] }, release: 'Slow.Horses.S01E02.1080p', strategy: 'raw' };
+  const playback = job();
+  let searched = 0, verified = 0;
+  await preparePlayback(playback, { targetResolution: '2160p' }, {
+    persistence: { getPlan: async () => structuredClone(saved), setPlan: async () => {} },
+    verify: async () => { verified++; return true; },
+    search: async () => { searched++; return [{ title: 'Slow.Horses.S01E02.2160p' }]; },
+    load: async () => nzb('mp4'), check: async () => Buffer.from('video'),
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.equal(verified, 0);
+  assert.equal(searched, 1);
+  assert.equal(playback.release, 'Slow.Horses.S01E02.2160p');
 });
 
 test('slow availability checks do not leave NZB request slots idle', async () => {

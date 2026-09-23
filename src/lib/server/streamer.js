@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
-import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, titleVariants } from '../../../media.js';
+import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, releaseResolution, titleVariants } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownloadCancelled } from './download-cancellation.js';
 import { createReleaseHealthStore, releaseIdentity } from './release-health.js';
@@ -170,7 +170,7 @@ const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {})
 cacheSweep.unref();
 export function publicSettings(settings) {
   const { indexerKey, usenetPass, tmdbToken, omdbKey, watchmodeKey, ...safe } = settings;
-  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, repairVideoTimeline: false, frameInterpolation: false, ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
+  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, repairVideoTimeline: false, frameInterpolation: false, targetResolution: 'auto', ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
 }
 export function connectionTestSettings(saved, entered = {}) {
   return { ...saved, ...Object.fromEntries(Object.entries(entered).filter(([, value]) => value !== '')) };
@@ -1183,7 +1183,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     // Encoding may run while we check the timeline. No playlist/session is
     // returned until the full existing validation has passed.
     await Promise.race([inspection.validated, producer.completion.then(() => inspection.validated)]);
-    if (job.progressiveArchive) {
+    if (job.progressiveArchive && matchesTargetResolution(job.release, settings)) {
       const { archiveSource, archives, file, release, releaseKey, strategy } = job;
       archiveResumePlans.set(job.media, playbackScope(settings), { archiveSource, archives, file, release, releaseKey, strategy, progressiveArchive: true });
     }
@@ -1513,7 +1513,7 @@ export async function findReleases(settings, media, includeYear = true, { reques
   const primaryTitles = titleVariants(media.title);
   const primary = await search(primaryTitles, mode);
   const unique = releases => [...new Map(releases.map(release => [release.nzbUrl || release.title, release])).values()];
-  const rank = (releases, selection = media) => rankReleases(unique(releases), selection, { playbackQuality: settings.playbackQuality });
+  const rank = (releases, selection = media) => rankReleases(unique(releases), selection, { playbackQuality: settings.playbackQuality, targetResolution: settings.manualReleaseSelection ? 'auto' : settings.targetResolution });
   let candidates = primary;
   let ranked = rank(candidates);
   if (!ranked.length && media.type === 'movie') {
@@ -1622,6 +1622,10 @@ async function savedPlanAvailable(plan, settings) {
   catch { return false; }
   finally { client.close(); }
 }
+function matchesTargetResolution(release, settings) {
+  const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[settings.targetResolution];
+  return !target || releaseResolution({ title: release }) === target;
+}
 export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed } = {}) {
   job.frameInterpolation = Boolean(settings.frameInterpolation);
   let failedPlanRelease = null;
@@ -1634,9 +1638,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     settings.signal?.throwIfAborted();
     if (!job.manualRelease) {
       let plan = plans.get(job.media, playbackScope(settings));
+      if (plan && !matchesTargetResolution(plan.release, settings)) plan = null;
       if (!plan && persistence) {
         const saved = await persistence.getPlan(job.media, settings).catch(() => null);
-        if (saved?.file?.segments?.length && postedFileByteLayout(saved.file)
+        if (saved?.file?.segments?.length && postedFileByteLayout(saved.file) && matchesTargetResolution(saved.release, settings)
           && !job.rejectedReleases?.has(saved.releaseKey || saved.release) && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
           // A restored plan keeps its original validation, with a cheap live
           // first/tail availability check before reuse after a restart.
@@ -1674,7 +1679,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
     if (!job.manualRelease && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && !job.progressiveArchiveDisabled) {
       const saved = archivePlans.get(job.media, playbackScope(settings));
-      if (saved && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
+      if (saved && matchesTargetResolution(saved.release, settings) && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
         && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
         Object.assign(job, saved, { archiveResume: true, status: 'ready', mode: 'direct', progress: 100, message: 'Reusing the archive video prepared earlier.' });
         jobEvent(job, 'archive-resume-hit', job.message, saved.archiveSource.randomAccess
@@ -1686,6 +1691,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false); if (!releases.length) throw new Error('No compatible English-audio releases were found for this title.'); jobEvent(job, 'search', `Found ${releases.length} English-audio candidate${releases.length === 1 ? '' : 's'}.`); const archiveChoices = [];
     let obfuscatedProbes = 0;
     let extendedSlowStarts = 0;
+    let targetSpeedTrials = 0;
     const rejected = await Promise.all(releases.map(release => health.has(settings, job.media, releaseIdentity(release))));
     releases = releases.filter((release, index) => releaseIdentity(release) !== failedPlanRelease && !job.rejectedReleases?.has(releaseIdentity(release)) && !rejected[index]);
     // Keep three HTTP requests and two BODY checks active independently. The
@@ -1736,15 +1742,22 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           const rate = speedMeter.rate(settings);
           const demand = candidatePlaybackDemand(direct, duration);
           const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && !job.speculative && strategy !== 'raw';
-          // The spot check includes startup and is deliberately pessimistic.
-          // Best-quality playback can verify a marginal source with the actual
-          // converter, provided the sample still covers its average bitrate.
-          const requiredFactor = settings.playbackQuality === 'quality' && liveCheck ? 1 : 1.5;
+          // The spot check includes startup and can underestimate an otherwise
+          // healthy source. Verify a marginal best-quality source with the
+          // converter; an explicit resolution also gets two bounded live tries
+          // even when that estimate falls below the average bitrate.
+          const requiredFactor = (settings.playbackQuality === 'quality' || ['2160p', '1080p', '720p'].includes(settings.targetResolution)) && liveCheck ? 1 : 1.5;
           if (Number.isFinite(rate) && rate > 0 && demand !== null) {
             jobEvent(job, 'provider-speed', `Recent article check: ${(rate / 1_000_000).toFixed(1)} MB/s; this release averages about ${(demand / 1.5 / 1_000_000).toFixed(1)} MB/s and targets ${(demand / 1_000_000).toFixed(1)} MB/s with headroom.`, { release: release.title, bytesPerSecond: rate, averageBytesPerSecond: demand / 1.5, requiredBytesPerSecond: demand });
           }
           const tooLarge = candidateNeedsMoreSpeed(direct, duration, rate, requiredFactor);
-          if (tooLarge) {
+          const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[settings.targetResolution];
+          const verifyTarget = tooLarge && liveCheck && releaseResolution(release) === target && targetSpeedTrials < 2;
+          if (verifyTarget) {
+            targetSpeedTrials++;
+            jobEvent(job, 'provider-speed', 'The article speed estimate is low; checking the requested resolution with live playback.', { release: release.title });
+          }
+          if (tooLarge && !verifyTarget) {
             downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment };
             jobEvent(job, 'release-rejected', 'Recent provider speed is below this release’s estimated playback demand.', { release: release.title });
             continue;
@@ -1764,8 +1777,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             }
           }
           throwIfDownloadCancelled(job);
-          plans.set(job.media, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, playbackScope(settings));
-          if (persistence) await persistence.setPlan(job.media, settings, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy }).catch(() => {});
+          if (matchesTargetResolution(release.title, settings)) {
+            plans.set(job.media, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, playbackScope(settings));
+            if (persistence) await persistence.setPlan(job.media, settings, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy }).catch(() => {});
+          }
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
           jobEvent(job, 'ready', job.message, { release: release.title, strategy, mode: 'direct' });
           return;

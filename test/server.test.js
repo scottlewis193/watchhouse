@@ -907,6 +907,23 @@ test('best-quality playback prefers 2160p despite the cost of HEVC conversion', 
   assert.match(ranked[0].title, /2160p/);
 });
 
+test('target resolution groups releases before playback preference and caps higher resolutions', () => {
+  const releases = [
+    { title: 'Film.2024.720p.H264' },
+    { title: 'Film.2024.1080p.H264.WEB-DL.mp4' },
+    { title: 'Film.2024.2160p.HEVC' },
+    { title: 'Film.2024.4K.H264' }
+  ];
+  const media = { title: 'Film', type: 'movie', year: '2024' };
+  assert.deepEqual(rankReleases(releases, media, { playbackQuality: 'fast', targetResolution: '2160p' }).map(item => item.title), [
+    'Film.2024.4K.H264', 'Film.2024.2160p.HEVC', 'Film.2024.1080p.H264.WEB-DL.mp4', 'Film.2024.720p.H264'
+  ]);
+  assert.deepEqual(rankReleases(releases, media, { targetResolution: '1080p' }).map(item => item.title), [
+    'Film.2024.1080p.H264.WEB-DL.mp4', 'Film.2024.720p.H264'
+  ]);
+  assert.deepEqual(rankReleases(releases, media, { targetResolution: '720p' }).map(item => item.title), ['Film.2024.720p.H264']);
+});
+
 test('best-quality playback does not let audio-label confidence override 2160p', () => {
   const ranked = rankReleases([
     { title: 'Film.2160p' },

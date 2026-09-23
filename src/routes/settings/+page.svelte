@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
 
-  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
+  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
   let loading = $state(true);
   let saving = $state(false);
   let notice = $state('');
@@ -25,7 +25,7 @@
   function show(message, type = 'success') { notice = message; noticeType = type; }
   async function save() { saving = true; try { const config = await api.put('/api/settings', form); configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); form.indexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
   async function testConnection() { try { show('Testing Usenet connection…'); show((await api.post('/api/usenet/test', form)).message); } catch (e) { show(e.message, 'error'); } }
-  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
+  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
   function selectTheme(nextTheme) {
     theme = nextTheme;
     document.documentElement.dataset.theme = nextTheme;
@@ -104,6 +104,11 @@
               <span class="text-sm font-medium">Parallel connections</span>
               <input class="input input-bordered w-full" bind:value={form.maxConnections} type="number" min="1" max="50" />
               <span class="text-xs leading-relaxed text-base-content/55">Use no more than your provider allows.</span>
+            </label>
+            <label class="grid content-start gap-2">
+              <span class="text-sm font-medium">Target resolution</span>
+              <select class="select select-bordered w-full" bind:value={form.targetResolution}><option value="auto">Automatic</option><option value="2160p">2160p (4K)</option><option value="1080p">1080p</option><option value="720p">720p</option></select>
+              <span class="text-xs leading-relaxed text-base-content/55">Automatic playback tries this resolution first, then lower resolutions if needed. It skips known higher resolutions. Manual release choices remain available.</span>
             </label>
           </div>
 
