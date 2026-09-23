@@ -1109,7 +1109,7 @@
           {#if cacheClearing}<span class="loading loading-spinner loading-xs"></span>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><ellipse cx="12" cy="5" rx="7" ry="2.5" /><path d="M5 5v6c0 1.4 3.1 2.5 7 2.5 1.1 0 2.2-.1 3.1-.3M5 11v6c0 1.4 3.1 2.5 7 2.5" /><path d="m16.5 16.5 4 4m0-4-4 4" /></svg>{/if}
         </button>
       {/if}
-      {#if playbackDiagnostics && inPlayer}
+      {#if playbackDiagnostics && (inPlayer || interruptionHistory.length)}
         <button class="player-toolbar-button" class:player-toolbar-button-active={diagnosticsOpen} aria-expanded={diagnosticsOpen} aria-controls="player-diagnostics" onclick={() => { diagnosticsOpen = !diagnosticsOpen; if (diagnosticsOpen) guideOpen = false; showPlayerControls(); }} aria-label="Playback diagnostics" title="Playback diagnostics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3" /><path d="M2.5 19.5h19" /></svg></button>
       {/if}
       {#if media.type === 'tv'}
@@ -1117,6 +1117,13 @@
       {/if}
     </div>
   </div>
+{/snippet}
+
+{#snippet diagnosticsPanel()}
+  <aside id="player-diagnostics" class="player-diagnostics-panel" aria-label="Playback diagnostics">
+    <div class="player-diagnostics-header"><div><p class="player-eyebrow">Live technical data</p><h2>Playback diagnostics</h2></div><button class="player-diagnostics-close" onclick={() => { diagnosticsOpen = false; }} aria-label="Close playback diagnostics">×</button></div>
+    <PlaybackDiagnostics {playback} {nextJob} report={diagnosticReport()} video={{ ...videoDiagnostics, frameTiming: frameTimingStats }} credits={creditDiagnostics} interruptions={interruptionHistory} embedded />
+  </aside>
 {/snippet}
 
 {#snippet heroPreparation(message, progress = 0, status = '', indeterminate = false)}
@@ -1178,12 +1185,7 @@
       {#if currentMedia}
         <div class="player-shell cinema-player group/player relative aspect-video overflow-hidden bg-black" class:player-shell-warming={playbackUi.warming} bind:this={playerShell} role="group" aria-label="Video player" onpointermove={showPlayerControls} onpointerleave={schedulePlayerControlsHide} onfocusin={showPlayerControls} onfocusout={schedulePlayerControlsHide}>
           {@render watchToolbar(true)}
-          {#if playbackDiagnostics && diagnosticsOpen}
-            <aside id="player-diagnostics" class="player-diagnostics-panel" aria-label="Playback diagnostics">
-              <div class="player-diagnostics-header"><div><p class="player-eyebrow">Live technical data</p><h2>Playback diagnostics</h2></div><button class="player-diagnostics-close" onclick={() => { diagnosticsOpen = false; }} aria-label="Close playback diagnostics">×</button></div>
-              <PlaybackDiagnostics {playback} {nextJob} report={diagnosticReport()} video={{ ...videoDiagnostics, frameTiming: frameTimingStats }} credits={creditDiagnostics} interruptions={interruptionHistory} embedded />
-            </aside>
-          {/if}
+          {#if playbackDiagnostics && diagnosticsOpen && playback?.status === 'ready'}{@render diagnosticsPanel()}{/if}
           <!-- Keep the video element through episode preparation so browser playback permission survives. -->
           <!-- svelte-ignore a11y_media_has_caption -->
           <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} playsinline preload="auto" use:frameTiming={{ key: `${playback?.id}:${streamAttempt}:${resumeStreamOffset}:${selectedAudioTrack}`, onSample: sample => { frameTimingStats = sample; const { intervals, ...summary } = sample; playbackTrace.event('frame-timing', summary); } }} use:playbackSource={{ active: playback?.status === 'ready', attempt: streamAttempt, url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, preparedSession, audioTrack: selectedAudioTrack, frameInterpolation: interpolationDisabled ? false : undefined, onTracks: updatePlaybackTracks, onEvent: (type, details) => playbackTrace.event(type, details), onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: updateSetupProgress, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); if (!playback?.hlsUrl) handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onseeking={() => { videoFrameSample = null; measuredFrameStats = null; captureVideoDiagnostics('seeking'); }} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { if (!playback?.hlsUrl) void loadCachedTracks(); updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}>
@@ -1258,8 +1260,8 @@
       </div>
     {/if}
 
-    {#if playbackDiagnostics && interruptionHistory.length && playback?.status !== 'ready'}
-      <PlaybackDiagnostics {playback} {nextJob} report={diagnosticReport()} video={{ ...videoDiagnostics, frameTiming: frameTimingStats }} credits={creditDiagnostics} interruptions={interruptionHistory} />
+    {#if playbackDiagnostics && interruptionHistory.length && playback?.status !== 'ready' && diagnosticsOpen}
+      {@render diagnosticsPanel()}
     {/if}
 
     {#if guideOpen && (media.type === 'tv' || releaseChoices.length)}
