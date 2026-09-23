@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { candidateNeedsMoreSpeed, createProviderSpeedMeter } from '../src/lib/server/playback-capacity.js';
+import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from '../src/lib/server/playback-capacity.js';
 
 test('recent provider speed is reused conservatively and expires', () => {
   let time = 0;
@@ -19,7 +19,9 @@ test('recent provider speed is reused conservatively and expires', () => {
 
 test('release size and duration are only a conservative speed screen', () => {
   const file = { segments: [{ decodedBytes: 6_000_000 }, { decodedBytes: 6_000_000 }] };
+  assert.equal(candidatePlaybackDemand(file, 60), 300_000);
   assert.equal(candidateNeedsMoreSpeed(file, 60, 250_000), true);
   assert.equal(candidateNeedsMoreSpeed(file, 60, 400_000), false);
+  assert.equal(candidatePlaybackDemand(file, 0), null);
   assert.equal(candidateNeedsMoreSpeed(file, 0, 10), false);
 });

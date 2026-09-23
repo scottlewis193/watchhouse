@@ -19,7 +19,7 @@ import { conversionAdmission } from './conversion-admission.js';
 import { playbackTracks, extractCaptions } from './playback-tracks.js';
 import { createHlsSession, hlsOutputArgs } from './hls-session.js';
 import { createHlsPacing } from './hls-pacing.js';
-import { candidateNeedsMoreSpeed, createProviderSpeedMeter } from './playback-capacity.js';
+import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from './playback-capacity.js';
 import { createPosterPreparation } from './poster-preparation.js';
 import { createValidatedPreparationCache } from './validated-preparation.js';
 import { createPlaybackPersistence, playbackScope } from './playback-persistence.js';
@@ -1204,7 +1204,7 @@ export function assertPlayableHlsOpening(streams = []) {
   }
 }
 
-export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), sampleMs = 6000 } = {}) {
+export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now() } = {}) {
   const id = randomUUID();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error('Playback speed check timed out.')), 30000);
@@ -1213,21 +1213,35 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
   let session;
   try {
     session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal }, start, directory), onClose: () => hlsSessions.delete(id) });
-    const deadline = performance.now() + 15000;
-    while (performance.now() < deadline) {
+    const deadline = now() + 8000;
+    let firstSegmentReady = false;
+    while (now() < deadline) {
       signal.throwIfAborted();
-      try { if ((await session.read('index.m3u8')).includes('#EXTINF:')) break; }
+      try { if ((await session.read('index.m3u8')).includes('#EXTINF:')) { firstSegmentReady = true; break; } }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       await wait(200);
     }
-    if (performance.now() >= deadline) throw new Error('No playable segment arrived during the playback speed check.');
+    if (!firstSegmentReady) throw new Error('No playable segment arrived during the playback speed check.');
     assertPlayableHlsOpening(await inspect(session.directory, signal));
     const first = session.health().position;
-    await wait(sampleMs);
+    // A healthy source need not sit through the whole observation window.
+    // Give a borderline startup four more seconds so FFmpeg's early progress
+    // reports or one delayed article do not reject an otherwise usable stream.
+    await wait(2000);
     signal.throwIfAborted();
-    const health = session.health(), last = health.position;
+    let health = session.health();
     if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
-    if (!health.completed && last - first < sampleMs / 1000 * 1.1) {
+    let observedSeconds = 2;
+    if (!health.completed && health.position - first < 2.5) {
+      await wait(4000);
+      signal.throwIfAborted();
+      health = session.health();
+      if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
+      observedSeconds = 6;
+    }
+    const producedSeconds = Number.isFinite(health.position - first) ? Math.max(0, health.position - first) : 0;
+    jobEvent(job, 'playback-speed', `Playback output: ${producedSeconds.toFixed(1)}s of video in ${observedSeconds}s (${(producedSeconds / observedSeconds).toFixed(1)}× viewing speed).`, { producedSeconds, observedSeconds });
+    if (!health.completed && producedSeconds < (observedSeconds === 2 ? 2.5 : 6.6)) {
       throw Object.assign(new Error('This release cannot produce playback segments faster than viewing speed.'), { code: 'PLAYBACK_TOO_SLOW' });
     }
     clearTimeout(timeout);
@@ -1661,6 +1675,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           if (shouldCacheDirectPlayback(job, settings) || job.downloadReplacement) { await cache(job, settings); return; }
           const duration = Number(job.media.durationHint);
           const rate = speedMeter.rate(settings);
+          const demand = candidatePlaybackDemand(direct, duration);
+          if (Number.isFinite(rate) && rate > 0 && demand !== null) {
+            jobEvent(job, 'provider-speed', `Recent article check: ${(rate / 1_000_000).toFixed(1)} MB/s; this release needs about ${(demand / 1_000_000).toFixed(1)} MB/s with playback headroom.`, { release: release.title, bytesPerSecond: rate, requiredBytesPerSecond: demand });
+          }
           const tooLarge = candidateNeedsMoreSpeed(direct, duration, rate);
           if (tooLarge) {
             downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment };

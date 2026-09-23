@@ -44,7 +44,7 @@ test('tries the next release when the preferred live conversion cannot sustain p
 });
 
 test('uses a downloaded copy if sampled provider speed cannot support any candidate', async () => {
-  const playback = { ...job(), media: { ...media, durationHint: 60 } };
+  const playback = { ...job(), media: { ...media, durationHint: 60 }, diagnosticsEnabled: true };
   let downloaded = false, preflighted = false;
   await preparePlayback(playback, {}, {
     search: async () => [{ title: 'Large' }], load: async () => nzb('mkv'),
@@ -56,6 +56,10 @@ test('uses a downloaded copy if sampled provider speed cannot support any candid
     health: { has: async () => false }, plans: createPlaybackPlanCache()
   });
   assert.equal(preflighted, false);
+  const speed = playback.events.find(event => event.activity === 'provider-speed');
+  assert.equal(speed.release, 'Large');
+  assert.equal(speed.bytesPerSecond, 100_000);
+  assert.equal(speed.requiredBytesPerSecond, 1_500_000);
   assert.equal(downloaded, true);
   assert.equal(playback.status, 'ready');
   assert.equal(playback.mode, 'cached');

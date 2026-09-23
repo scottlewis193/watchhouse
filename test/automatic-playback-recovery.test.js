@@ -69,6 +69,15 @@ test('a recovered cached release restores the absolute playhead and starts autom
   assert.equal(state.plays, 1, 'preparation must not require another click on Play');
 });
 
+test('a prepared stream at the requested position is passed to the player', async () => {
+  const { state } = recoveryState();
+  state.resumePlayback = false;
+  const session = { start: 0, sessionUrl: '/prepared', playlistUrl: '/prepared/index.m3u8' };
+  await state.showReadyPlayback({ id: 's02e03', status: 'ready', mode: 'direct', preparedSession: session }, 2);
+  assert.equal(state.resumeStreamOffset, 0);
+  assert.equal(state.preparedSession, session);
+});
+
 test('ordinary interruptions retain bounded automatic direct-stream retries', () => {
   const { state, requests } = recoveryState();
   state.handlePlaybackInterruption('buffering-timeout', 'No progress');

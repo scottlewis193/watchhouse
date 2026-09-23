@@ -22,9 +22,13 @@ export function createProviderSpeedMeter({ now = Date.now } = {}) {
   };
 }
 
-export function candidateNeedsMoreSpeed(file, durationSeconds, bytesPerSecond, safetyFactor = 1.5) {
+export function candidatePlaybackDemand(file, durationSeconds, safetyFactor = 1.5) {
   const bytes = file?.segments?.reduce((total, segment) => total + Number(segment.decodedBytes || segment.bytes || 0), 0);
-  if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(durationSeconds) || durationSeconds <= 0
-    || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return false;
-  return bytes / durationSeconds * safetyFactor > bytesPerSecond;
+  if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(durationSeconds) || durationSeconds <= 0) return null;
+  return bytes / durationSeconds * safetyFactor;
+}
+
+export function candidateNeedsMoreSpeed(file, durationSeconds, bytesPerSecond, safetyFactor = 1.5) {
+  const demand = candidatePlaybackDemand(file, durationSeconds, safetyFactor);
+  return demand !== null && Number.isFinite(bytesPerSecond) && bytesPerSecond > 0 && demand > bytesPerSecond;
 }
