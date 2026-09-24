@@ -15,6 +15,23 @@ test('rejects a large opening timestamp gap like the observed buffered-only tail
   assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '125.3' }, { codec_type: 'audio', start_time: '0' }]), { code: 'INVALID_MEDIA_TIMELINE' });
   assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '10' }]), { code: 'INVALID_MEDIA_TIMELINE' });
   assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '10' }]), { code: 'INVALID_MEDIA_TIMELINE' });
+  assert.throws(() => assertPlayableHlsOpening([]), { code: 'PLAYBACK_SEGMENT_PROBE_FAILED' });
+});
+
+test('retries an empty opening probe before accepting a playable segment', async () => {
+  let inspections = 0, position = 2;
+  const job = { id: 'job', playbackTracks: [] };
+  await preflightLiveCandidate(job, {}, 0, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position, completed: false }),
+      close: async () => {}
+    }),
+    convert: async () => {},
+    inspect: async () => ++inspections === 1 ? [] : [{ codec_type: 'video', start_time: '0' }],
+    wait: async ms => { if (ms === 2000) position += 8; }
+  });
+  assert.equal(inspections, 2);
 });
 
 test('accepts an HLS opening whose audio and video share a nonzero timestamp origin', async () => {
@@ -34,14 +51,15 @@ test('accepts an HLS opening whose audio and video share a nonzero timestamp ori
 
 test('keeps a candidate that produces segments faster than playback', async () => {
   let closed = false, position = 2;
+  let onClose;
   const waits = [];
   const job = { id: 'job', playbackTracks: [], diagnosticsEnabled: true, events: [] };
   const result = await preflightLiveCandidate(job, {}, 120, {
-    sessionFactory: async () => ({
+    sessionFactory: async options => { onClose = options.onClose; return ({
       read: async () => Buffer.from('#EXTINF:2.0,'),
       health: () => ({ position, completed: false }),
       close: async () => { closed = true; }
-    }),
+    }); },
     convert: async () => {},
     inspect: async () => [{ codec_type: 'video', start_time: '0' }],
     wait: async ms => { waits.push(ms); position += 8; }
@@ -49,6 +67,9 @@ test('keeps a candidate that produces segments faster than playback', async () =
   assert.equal(result.start, 120);
   assert.match(result.playlistUrl, /index\.m3u8$/);
   assert.equal(closed, false);
+  job.preparedSession = result;
+  onClose();
+  assert.equal(job.preparedSession, undefined);
   assert.deepEqual(waits, [2000], 'a healthy converter must not wait through the six-second slow-path check');
   assert.equal(job.events.find(event => event.activity === 'playback-speed').producedSeconds, 8);
 });
@@ -114,4 +135,22 @@ test('a slow-starting converter can pass a longer first-segment budget', async (
   });
   assert.match(result.playlistUrl, /index\.m3u8$/);
   assert.equal(elapsed, 12000);
+});
+
+test('an advancing converter can finish a long first segment after the initial deadline', async () => {
+  let elapsed = 0, position = 0;
+  const job = { id: 'job', playbackTracks: [], diagnosticsEnabled: true, events: [] };
+  await preflightLiveCandidate(job, {}, 6826, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from(elapsed >= 12000 ? '#EXTINF:10.4,' : '#EXTM3U'),
+      health: () => ({ position, completed: false }),
+      close: async () => {}
+    }),
+    convert: async () => {}, inspect: async () => [{ codec_type: 'video', start_time: '0' }],
+    now: () => elapsed,
+    wait: async ms => { elapsed += ms; if (elapsed >= 8000 && position === 0) position = 11.8; if (ms === 2000) position += 8; },
+    firstSegmentMs: 8000
+  });
+  assert.equal(elapsed, 14000);
+  assert.ok(job.events.some(event => event.message?.includes('waiting for the first segment boundary')));
 });

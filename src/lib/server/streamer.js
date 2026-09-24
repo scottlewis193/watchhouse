@@ -49,7 +49,7 @@ const hlsSessions = new Map();
 const hlsPacing = createHlsPacing();
 const providerSpeed = createProviderSpeedMeter();
 const manualReleases = new Map();
-const posterPreparation = createPosterPreparation();
+const posterPreparation = createPosterPreparation({ budgetMs: 30000 });
 const offlineJobs = new Map();
 const offlineSeriesJobs = new Map();
 const offlineFinalizations = new Map();
@@ -1217,6 +1217,9 @@ export async function startHlsConversion(job, settings, start, directory, onProg
 // Exercise the same article reader, decoder and segmenter the viewer will use.
 // Keep a successful session so the test also supplies the initial playback buffer.
 export function assertPlayableHlsOpening(streams = []) {
+  // An empty FFprobe result can occur while the first fMP4 segment is still
+  // becoming readable. It is not evidence of a hole in the source timeline.
+  if (!streams.length) throw Object.assign(new Error('The first playback segment could not be inspected yet.'), { code: 'PLAYBACK_SEGMENT_PROBE_FAILED' });
   const video = streams.find(stream => stream.codec_type === 'video');
   const audio = streams.find(stream => stream.codec_type === 'audio');
   const videoStart = Number(video?.start_time), audioStart = Number(audio?.start_time);
@@ -1236,29 +1239,47 @@ export function assertPlayableHlsOpening(streams = []) {
 export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now(), firstSegmentMs = 8000 } = {}) {
   const id = randomUUID();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error('Playback speed check timed out.')), 30000);
+  const timeout = setTimeout(() => controller.abort(new Error('Playback speed check timed out.')), 45000);
   const removeCancelHandler = onDownloadCancel(job, () => controller.abort(new Error('Playback check cancelled.')));
   const signal = settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal;
   let session;
   try {
-    session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal }, start, directory), onClose: () => hlsSessions.delete(id), onMonitor: playbackOutputMonitor(job) });
-    const deadline = now() + firstSegmentMs;
+    session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal }, start, directory),
+      onClose: () => {
+        hlsSessions.delete(id);
+        if (job.preparedSession?.sessionUrl === `/api/play/${job.id}/hls/${id}`) delete job.preparedSession;
+      }, onMonitor: playbackOutputMonitor(job) });
+    const started = now(), extendedDeadline = started + Math.max(firstSegmentMs, 20000);
+    let deadline = started + firstSegmentMs;
     let firstSegmentReady = false;
-    while (now() < deadline) {
+    while (true) {
       signal.throwIfAborted();
       try { if ((await session.read('index.m3u8')).includes('#EXTINF:')) { firstSegmentReady = true; break; } }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
       const state = session.health?.();
       if (state?.failed || state?.closed) throw new Error('The playback converter stopped before its first segment.');
+      if (now() >= deadline) {
+        if (deadline < extendedDeadline && Number(state?.position) >= 6) {
+          deadline = extendedDeadline;
+          jobEvent(job, 'playback-speed', 'Video is advancing; waiting for the first segment boundary.', { position: state.position });
+        } else break;
+      }
       await wait(200);
     }
     if (!firstSegmentReady) {
       const reportedPosition = session.health?.()?.position;
       const position = Number.isFinite(reportedPosition) ? reportedPosition : 0;
-      jobEvent(job, 'playback-speed', `No first segment after ${(firstSegmentMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs });
+      const waitBudgetMs = deadline - started;
+      jobEvent(job, 'playback-speed', `No first segment after ${(waitBudgetMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs: waitBudgetMs });
       throw Object.assign(new Error('No playable segment arrived during the playback speed check.'), { code: 'NO_PLAYABLE_SEGMENT' });
     }
-    assertPlayableHlsOpening(await inspect(session.directory, signal));
+    let streams = await inspect(session.directory, signal) || [];
+    if (!streams.length) {
+      await wait(500);
+      signal.throwIfAborted();
+      streams = await inspect(session.directory, signal) || [];
+    }
+    assertPlayableHlsOpening(streams);
     const first = session.health().position;
     // A healthy source need not sit through the whole observation window.
     // Give a borderline startup four more seconds so FFmpeg's early progress
@@ -1691,7 +1712,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       if (plan && !job.rejectedReleases?.has(plan.releaseKey || plan.release) && !await health.has(settings, job.media, plan.releaseKey || plan.release)) {
         Object.assign(job, { ...plan, prefetchedSegments: new Map(plan.prefetchedSegments) });
         try {
-          if (preflight && !job.offlineDownload && !job.backgroundFor && !job.prepareAhead && !job.speculative && plan.strategy !== 'raw') {
+          if (preflight && !job.offlineDownload && !job.backgroundFor && !job.prepareAhead && plan.strategy !== 'raw') {
             job.preparedSession = await preflight(job, settings, job.selectionStart || 0, {
               firstSegmentMs: settings.playbackQuality === 'quality' && plan.strategy === 'transcode' ? 15000 : 8000
             });
@@ -1785,7 +1806,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           const duration = Number(job.media.durationHint);
           const rate = speedMeter.rate(settings);
           const demand = candidatePlaybackDemand(direct, duration);
-          const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && !job.speculative && strategy !== 'raw';
+          const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && strategy !== 'raw';
           // The spot check includes startup and can underestimate an otherwise
           // healthy source. Verify a marginal best-quality source with the
           // converter; an explicit resolution also gets two bounded live tries
@@ -2164,7 +2185,7 @@ export async function handleRequest(req, res) {
       posterPreparation.start(`${offlineMediaKey(media)}:${playbackScope(settings)}`, job,
         signal => preparePlayback(job, { ...settings, signal }),
         async (signal, claimed) => {
-          if (job.progressiveArchive) return;
+          if (job.progressiveArchive || job.preparedSession) return;
           const source = await openPostedRangeServer(job, { ...settings, signal });
           if (!source) return;
           try {

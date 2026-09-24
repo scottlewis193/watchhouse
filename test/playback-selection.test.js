@@ -44,6 +44,36 @@ test('tries the next release when the preferred live conversion cannot sustain p
   assert.equal(playback.preparedSession.sessionUrl, '/prepared/replacement');
 });
 
+test('poster prewarm checks a direct release before reporting it ready', async () => {
+  const playback = { ...job(), speculative: true, selectionStart: 6826 };
+  const checked = [];
+  await preparePlayback(playback, { targetResolution: '1080p' }, {
+    search: async () => [{ title: 'Film.1080p.SDR' }],
+    load: async () => nzb('mkv'), check: async () => Buffer.from('video'),
+    preflight: async (candidate, _settings, start) => {
+      checked.push([candidate.release, start]);
+      return { sessionUrl: '/prepared/1080p', start };
+    },
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.deepEqual(checked, [['Film.1080p.SDR', 6826]]);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.preparedSession.sessionUrl, '/prepared/1080p');
+});
+
+test('poster prewarm rechecks a saved direct plan before reporting it ready', async () => {
+  const playback = { ...job(), speculative: true, selectionStart: 6826 };
+  let checked = 0;
+  await preparePlayback(playback, { targetResolution: '1080p' }, {
+    plans: { get: () => ({ release: 'Film.1080p.SDR', strategy: 'transcode', file: { subject: 'film.mkv' }, prefetchedSegments: new Map() }) },
+    preflight: async (_candidate, _settings, start) => { checked++; assert.equal(start, 6826); return { sessionUrl: '/prepared/saved' }; },
+    health: { has: async () => false }, search: async () => { throw new Error('Unexpected search'); }
+  });
+  assert.equal(checked, 1);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.preparedSession.sessionUrl, '/prepared/saved');
+});
+
 test('falls back from an unplayable 2160p release to 1080p before trying 720p', async () => {
   const playback = job(), checked = [];
   const settings = { targetResolution: '2160p' };
