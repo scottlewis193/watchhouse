@@ -39,7 +39,10 @@ reverse proxy. The named volume retains settings, cache and offline downloads
 across container replacements. The image runs as the `node` user (UID 1000); bind
 mounts used instead of the named volume must be writable by that user.
 
-FFmpeg, ffprobe, unrar, 7-Zip, Python 3 and libarchive are included. Software video conversion works
+FFmpeg 9.0.2, ffprobe, unrar, 7-Zip, Python 3 and libarchive are included. The
+Docker build compiles FFmpeg from a pinned, checksum-verified source release so
+the image has the H.264, NVENC, VAAPI and HDR tone-mapping features used by
+Watchhouse. Software video conversion works
 without host devices. To enable VAAPI acceleration on Linux, including Intel
 11th-generation Core graphics, expose the host DRM devices as well:
 
