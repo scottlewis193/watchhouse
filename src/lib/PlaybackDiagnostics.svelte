@@ -1,5 +1,8 @@
 <script>
   let { playback = null, nextJob = null, video = null, credits = null, interruptions = [], report = null, embedded = false } = $props();
+  let selection = $derived(playback?.diagnostics?.releaseSelection);
+  let currentCandidate = $derived(selection?.candidates?.find(candidate => candidate.status === 'checking'));
+  let selectedCandidate = $derived(selection?.candidates?.find(candidate => candidate.status === 'selected'));
 
   function downloadTrace() {
     const blob = new Blob([JSON.stringify(report || { version: 1, interruptions }, null, 2)], { type: 'application/json' });
@@ -16,6 +19,10 @@
   }
   function stateLabel(value, labels) { return labels[value] || String(value ?? '—'); }
   function percent(value) { return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : '—'; }
+  function size(value) { return value ? `${(value / 1024 ** 3).toFixed(1)} GB` : 'Size unknown'; }
+  function position(value) { const seconds = Math.floor(value || 0); return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`; }
+  function quality(value) { return { quality: 'best quality', balanced: 'balanced', fast: 'fast start' }[value] || value; }
+  const candidateStatuses = { queued: 'Waiting', checking: 'Checking', rejected: 'Rejected', deferred: 'Deferred', skipped: 'Skipped', selected: 'Selected', 'not-tried': 'Not tried' };
   const readyLabels = ['Nothing', 'Metadata', 'Current data', 'Future data', 'Enough data'];
   function mediaFetchLabel(value) {
     if (value === 0) return 'Not started';
@@ -33,6 +40,28 @@
 <details class="playback-diagnostics mt-5 border-y border-base-300" class:playback-diagnostics-embedded={embedded} open={embedded}>
   <summary class="cursor-pointer py-4 text-xs font-semibold uppercase tracking-[0.16em] text-base-content/60" class:sr-only={embedded}>Playback diagnostics</summary>
   <div class="playback-diagnostics-content grid gap-8 border-t border-base-300 py-5 text-xs lg:grid-cols-2">
+    <section class="lg:col-span-2">
+      <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Release selection</h3>
+      {#if selection}
+        <p class="mt-2 text-base-content/65">{selection.candidates.length} ranked {selection.source === 'search' ? 'eligible releases' : selection.source === 'manual' ? 'manual release' : 'saved source'} · target {selection.targetResolution} · {quality(selection.playbackQuality)} · checking from {position(selection.start)}</p>
+        {#if selection.source === 'search'}<p class="mt-1 text-base-content/55">Search results already exclude title mismatches, releases labelled with unsupported audio languages, HDR, and resolutions above the target. “Not tried” means another source was selected first.</p>{/if}
+        {#if selection.source === 'saved source'}<p class="mt-1 text-base-content/55">A saved source was reused, so no indexer search ran for this play request.</p>{/if}
+        {#if currentCandidate}<p class="mt-2 font-medium text-primary">Checking #{currentCandidate.number}: {currentCandidate.title}</p>{/if}
+        {#if selectedCandidate}<p class="mt-2 font-medium text-success">Selected #{selectedCandidate.number}: {selectedCandidate.title}</p>{/if}
+        {#if !selection.candidates.length}<p class="mt-3 text-base-content/55">No eligible release is available under these settings.</p>{/if}
+        <ol class="release-selection-list mt-3 max-h-80 space-y-1 overflow-y-auto pr-1">
+          {#each selection.candidates as candidate (candidate.number)}
+            <li class="release-selection-row border border-base-300 px-3 py-2" data-status={candidate.status}>
+              <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
+                <span class="min-w-0 break-words font-medium"><span class="mr-2 text-base-content/45">#{candidate.number}</span>{candidate.title}</span>
+                <span class="release-selection-status shrink-0 font-semibold uppercase tracking-[0.08em]">{candidateStatuses[candidate.status] || candidate.status}</span>
+              </div>
+              <p class="mt-1 text-base-content/55">{candidate.resolution ? `${candidate.resolution}p` : 'Resolution unknown'} · {size(candidate.size)}{candidate.reason ? ` · ${candidate.reason}` : ''}</p>
+            </li>
+          {/each}
+        </ol>
+      {:else}<p class="mt-2 text-base-content/55">Waiting for release search or saved-source validation.</p>{/if}
+    </section>
     <section>
       <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Active playback</h3>
       <dl class="mt-3 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2">
@@ -108,4 +137,10 @@
 <style>
   .playback-diagnostics-embedded { margin: 0; border: 0; }
   .playback-diagnostics-embedded .playback-diagnostics-content { border: 0; padding: 0; }
+  .release-selection-row[data-status='checking'] { border-color: color-mix(in srgb, var(--color-primary) 65%, transparent); background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+  .release-selection-row[data-status='selected'] { border-color: color-mix(in srgb, var(--color-success) 55%, transparent); background: color-mix(in srgb, var(--color-success) 9%, transparent); }
+  .release-selection-row[data-status='rejected'] .release-selection-status { color: var(--color-error); }
+  .release-selection-row[data-status='selected'] .release-selection-status { color: var(--color-success); }
+  .release-selection-row[data-status='checking'] .release-selection-status { color: var(--color-primary); }
+  .release-selection-row[data-status='skipped'], .release-selection-row[data-status='not-tried'] { opacity: .72; }
 </style>

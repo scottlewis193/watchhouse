@@ -101,14 +101,15 @@ export function releaseTitleMatches(release, media) {
 
 export function releaseScore(release, media, preferences = {}) {
   const text = release.title.toLowerCase();
+  const resolution = releaseResolution(release);
   let score = releaseAudioConfidence(release) * (preferences.playbackQuality === 'quality' ? 5 : 20);
   const tag = episodeTag(media).toLowerCase();
   if (tag && text.includes(tag)) score += 120;
   else if (tag && text.includes(`${media.season}x${String(media.episode).padStart(2, '0')}`)) score += 100;
   if (media.type !== 'tv' && media.year && text.includes(media.year)) score += 80;
-  if (/2160p|4k|uhd/.test(text)) score += preferences.playbackQuality === 'quality' ? 65 : 30;
-  else if (/1080p/.test(text)) score += 40;
-  else if (/720p/.test(text)) score += 25;
+  if (resolution === 2160) score += preferences.playbackQuality === 'quality' ? 65 : 30;
+  else if (resolution === 1080) score += 40;
+  else if (resolution === 720) score += 25;
   if (/web[- .]?dl|bluray|blu[- .]?ray/.test(text)) score += 12;
   const dynamicRange = releaseDynamicRange(release);
   if (dynamicRange === 'dolby-vision') score -= 50;
@@ -121,7 +122,7 @@ export function releaseScore(release, media, preferences = {}) {
   if (preferences.playbackQuality === 'fast') {
     if (/\.mp4\b|web[- .]?dl.*h[ .]?264|x264/.test(text)) score += 60;
     if (/rar|7z|zip/.test(text)) score -= 80;
-    if (/2160p|4k|uhd/.test(text)) score -= 35;
+    if (resolution === 2160) score -= 35;
   }
   if (/cam|telesync|ts\b/.test(text)) score -= 100;
   return score;
@@ -147,9 +148,12 @@ export function englishAudioRelease(release) {
 
 export function releaseResolution(release) {
   const title = String(release.title || '').toLowerCase();
-  if (/\b(?:2160p|4k|uhd)\b/.test(title)) return 2160;
+  // A 1080p encode can be sourced from a UHD disc; the explicit output
+  // resolution takes precedence over source-provenance labels.
+  if (/\b2160p\b/.test(title)) return 2160;
   if (/\b1080p\b/.test(title)) return 1080;
   if (/\b720p\b/.test(title)) return 720;
+  if (/\b(?:4k|uhd)\b/.test(title)) return 2160;
   return 0;
 }
 

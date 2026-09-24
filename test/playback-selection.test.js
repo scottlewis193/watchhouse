@@ -44,6 +44,36 @@ test('tries the next release when the preferred live conversion cannot sustain p
   assert.equal(playback.preparedSession.sessionUrl, '/prepared/replacement');
 });
 
+test('diagnostics retain every ranked candidate and its live selection outcome', async () => {
+  const playback = { ...job(), diagnosticsEnabled: true, selectionStart: 6826 };
+  const releases = ['Film.2160p', 'Film.1080p', 'Film.720p', 'Film.480p'].map(title => ({ title, size: 4_000_000_000 }));
+  let enteredCheck, completeCheck;
+  const checking = new Promise(resolve => { enteredCheck = resolve; });
+  const finish = new Promise(resolve => { completeCheck = resolve; });
+  const preparation = preparePlayback(playback, { targetResolution: '2160p', playbackQuality: 'quality' }, {
+    search: async () => releases,
+    load: async () => nzb('mkv'), check: async () => Buffer.from('video'),
+    preflight: async candidate => {
+      if (candidate.release === 'Film.2160p') throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      enteredCheck();
+      await finish;
+      return { sessionUrl: '/prepared/1080p' };
+    },
+    health: { has: async (_settings, _media, release) => release === 'Film.720p' },
+    plans: createPlaybackPlanCache()
+  });
+  await checking;
+  assert.deepEqual(playback.releaseSelection.candidates.map(candidate => candidate.status), ['deferred', 'checking', 'skipped', 'queued']);
+  assert.match(playback.releaseSelection.candidates[0].reason, /too slow/);
+  assert.match(playback.releaseSelection.candidates[2].reason, /cooldown/);
+  completeCheck();
+  await preparation;
+  assert.deepEqual(playback.releaseSelection.candidates.map(candidate => candidate.status), ['deferred', 'selected', 'skipped', 'not-tried']);
+  assert.equal(playback.releaseSelection.targetResolution, '2160p');
+  assert.equal(playback.releaseSelection.playbackQuality, 'quality');
+  assert.equal(playback.releaseSelection.start, 6826);
+});
+
 test('poster prewarm checks a direct release before reporting it ready', async () => {
   const playback = { ...job(), speculative: true, selectionStart: 6826 };
   const checked = [];

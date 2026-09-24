@@ -103,7 +103,7 @@
             <label class="grid content-start gap-2">
               <span class="text-sm font-medium">Parallel connections</span>
               <input class="input input-bordered w-full" bind:value={form.maxConnections} type="number" min="1" max="50" />
-              <span class="text-xs leading-relaxed text-base-content/55">Use no more than your provider allows.</span>
+              <span class="text-xs leading-relaxed text-base-content/55">Shared limit for all provider activity. One direct stream uses up to 24 connections; downloads use up to 12. Use no more than your provider allows.</span>
             </label>
             <label class="grid content-start gap-2">
               <span class="text-sm font-medium">Target resolution</span>
@@ -146,7 +146,7 @@
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.playbackDiagnostics} />
-            <span><span class="block text-sm font-medium">Playback diagnostics</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Show live background-job events, selected release details, stream strategy, and browser video state on watch pages.</span></span>
+            <span><span class="block text-sm font-medium">Playback diagnostics</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Show live release selection with rejection reasons, background-job events, stream strategy, and browser video state on watch pages.</span></span>
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">

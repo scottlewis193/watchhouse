@@ -1109,7 +1109,7 @@
           {#if cacheClearing}<span class="loading loading-spinner loading-xs"></span>{:else}<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><ellipse cx="12" cy="5" rx="7" ry="2.5" /><path d="M5 5v6c0 1.4 3.1 2.5 7 2.5 1.1 0 2.2-.1 3.1-.3M5 11v6c0 1.4 3.1 2.5 7 2.5" /><path d="m16.5 16.5 4 4m0-4-4 4" /></svg>{/if}
         </button>
       {/if}
-      {#if playbackDiagnostics && (inPlayer || interruptionHistory.length)}
+      {#if playbackDiagnostics && (playback || interruptionHistory.length)}
         <button class="player-toolbar-button" class:player-toolbar-button-active={diagnosticsOpen} aria-expanded={diagnosticsOpen} aria-controls="player-diagnostics" onclick={() => { diagnosticsOpen = !diagnosticsOpen; if (diagnosticsOpen) guideOpen = false; showPlayerControls(); }} aria-label="Playback diagnostics" title="Playback diagnostics"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3" /><path d="M2.5 19.5h19" /></svg></button>
       {/if}
       {#if media.type === 'tv'}
@@ -1260,7 +1260,7 @@
       </div>
     {/if}
 
-    {#if playbackDiagnostics && interruptionHistory.length && playback?.status !== 'ready' && diagnosticsOpen}
+    {#if playbackDiagnostics && playback && playback.status !== 'ready' && diagnosticsOpen}
       {@render diagnosticsPanel()}
     {/if}
 

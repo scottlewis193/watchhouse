@@ -924,6 +924,16 @@ test('target resolution groups releases before playback preference and caps high
   assert.deepEqual(rankReleases(releases, media, { targetResolution: '720p' }).map(item => item.title), ['Film.2024.720p.H264']);
 });
 
+test('an explicit 1080p label outranks UHD source provenance in resolution selection', () => {
+  const media = { title: 'Harry Potter and the Prisoner of Azkaban', type: 'movie', year: '2004' };
+  const releases = [
+    { title: 'Harry.Potter.and.the.Prisoner.of.Azkaban.2004.1080p.UHD.BluRay.x264' },
+    { title: 'Harry.Potter.and.the.Prisoner.of.Azkaban.2004.2160p.BluRay.x265' }
+  ];
+  assert.deepEqual(rankReleases(releases, media, { targetResolution: '2160p', playbackQuality: 'quality' }), [releases[1], releases[0]]);
+  assert.deepEqual(rankReleases(releases, media, { targetResolution: '1080p' }), [releases[0]]);
+});
+
 test('best-quality playback does not let audio-label confidence override 2160p', () => {
   const ranked = rankReleases([
     { title: 'Film.2160p' },

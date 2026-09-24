@@ -3,6 +3,13 @@ import assert from 'node:assert/strict';
 import { createPostedSegmentLoader, writePostedFileRange } from '../src/lib/server/streamer.js';
 
 const posted = { segments: [{ id: 'part-1', number: 1, decodedBytes: 4 }, { id: 'part-2', number: 2, decodedBytes: 4 }] };
+
+test('live range reads can use more than twelve configured provider connections', async () => {
+  const widePost = { segments: Array.from({ length: 30 }, (_, index) => ({ id: `part-${index}`, decodedBytes: 4 })) };
+  const loader = createPostedSegmentLoader(widePost, { maxConnections: 50 }, new Map(), async () => { throw new Error('No article read expected'); });
+  try { assert.equal(loader.concurrency, 24); }
+  finally { await loader.close(); }
+});
 async function article(onLine, bytes, begin, total = 8) {
   await onLine(`=ybegin part=2 total=2 line=128 size=${total} name=video.mkv`);
   await onLine(`=ypart begin=${begin} end=${begin + bytes.length - 1}`);
