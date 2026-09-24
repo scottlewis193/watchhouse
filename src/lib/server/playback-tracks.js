@@ -10,9 +10,16 @@ export function playbackTracks(streams = []) {
     index: stream.index,
     type: stream.codec_type === 'audio' ? 'audio' : 'captions',
     language: stream.tags?.language || 'und',
-    label: stream.tags?.title || stream.tags?.language || `${stream.codec_type === 'audio' ? 'Audio' : 'Captions'} ${stream.index + 1}`,
+    label: stream.tags?.title || stream.tags?.handler_name || stream.tags?.language || `${stream.codec_type === 'audio' ? 'Audio' : 'Captions'} ${stream.index + 1}`,
     supported: stream.codec_type === 'audio' || textCodecs.has(stream.codec_name)
   }));
+}
+
+export function hasEnglishAudioTrack(tracks = []) {
+  return tracks.some(track => track.type === 'audio' && (
+    /^(?:eng|en)(?:-[a-z]{2})?$/i.test(track.language || '')
+    || /\b(?:english|eng)\b/i.test(track.label || '')
+  ));
 }
 
 export async function extractCaptions(path, index, start = 0, signal) {

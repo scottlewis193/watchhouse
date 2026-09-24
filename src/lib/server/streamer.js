@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
-import { episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, releaseResolution, titleVariants } from '../../../media.js';
+import { englishAudioRelease, episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, releaseResolution, titleVariants, unverifiedAnimeAudioRelease } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownloadCancelled } from './download-cancellation.js';
 import { createReleaseHealthStore, releaseIdentity } from './release-health.js';
@@ -16,7 +16,7 @@ import { stopConversion } from './conversion-process.js';
 import { waitForDrain } from './stream-drain.js';
 import { validateOpeningVideoDecode } from './video-decode-validation.js';
 import { conversionAdmission } from './conversion-admission.js';
-import { playbackTracks, extractCaptions } from './playback-tracks.js';
+import { hasEnglishAudioTrack, playbackTracks, extractCaptions } from './playback-tracks.js';
 import { createHlsSession, hlsOutputArgs, hlsKeyframeArgs } from './hls-session.js';
 import { createHlsPacing } from './hls-pacing.js';
 import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from './playback-capacity.js';
@@ -1127,6 +1127,9 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     let { audioIndex } = metadata;
     job.playbackTracks = metadata.tracks || [];
     job.selectedAudioTrack = audioIndex;
+    if (job.requireEnglishTrack && !hasEnglishAudioTrack(job.playbackTracks)) {
+      throw Object.assign(new Error('This release has no identified English audio track. Trying another release.'), { code: 'NO_ENGLISH_AUDIO' });
+    }
     if (audioTrack !== undefined && audioTrack !== null) {
       if (!Number.isInteger(audioTrack) || !job.playbackTracks.some(track => track.type === 'audio' && track.index === audioTrack)) throw Object.assign(new Error('The selected audio track is unavailable.'), { code: 'INVALID_AUDIO_TRACK' });
       // A newly selected language needs the same opening timeline checks as the default track.
@@ -1507,7 +1510,7 @@ export async function catalogueAlternativeTitles(settings, media, { request = tm
     .filter((title, index, titles) => titles.findIndex(other => other.toLowerCase() === title.toLowerCase()) === index)
     .slice(0, 8);
 }
-export async function findReleases(settings, media, includeYear = true, { request = fetch, alternativeTitles = catalogueAlternativeTitles } = {}) {
+export async function findReleases(settings, media, includeYear = true, { request = fetch, alternativeTitles = catalogueAlternativeTitles, allowUnverifiedAnimeAudio = false } = {}) {
   const episodic = media.type === 'tv' && media.season && media.episode;
   const searchTitle = async (title, mode) => {
     const endpoint = indexerEndpoint(settings.indexerUrl);
@@ -1551,7 +1554,7 @@ export async function findReleases(settings, media, includeYear = true, { reques
   const primaryTitles = titleVariants(media.title);
   const primary = await search(primaryTitles, mode);
   const unique = releases => [...new Map(releases.map(release => [release.nzbUrl || release.title, release])).values()];
-  const rank = (releases, selection = media) => rankReleases(unique(releases), selection, { playbackQuality: settings.playbackQuality, targetResolution: settings.manualReleaseSelection ? 'auto' : settings.targetResolution });
+  const rank = (releases, selection = media) => rankReleases(unique(releases), selection, { playbackQuality: settings.playbackQuality, targetResolution: settings.manualReleaseSelection ? 'auto' : settings.targetResolution, allowUnverifiedAnimeAudio });
   let candidates = primary;
   let ranked = rank(candidates);
   if (!ranked.length && media.type === 'movie') {
@@ -1825,7 +1828,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         }
       }
     }
-    setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await search(settings, job.media); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await search(settings, job.media, false);
+    const searchCandidates = includeYear => search === findReleases
+      ? search(settings, job.media, includeYear, { allowUnverifiedAnimeAudio: true })
+      : search(settings, job.media, includeYear);
+    setJob(job, 'selecting', 'Finding the best available release…', 5); let releases = job.manualRelease ? [job.manualRelease] : await searchCandidates(true); if (!job.manualRelease && !releases.length && (job.media.year || job.media.episode)) releases = await searchCandidates(false);
     releases = releases.filter(release => releaseDynamicRange(release) === 'sdr');
     if (!releases.length) {
       startReleaseSelection(job, settings, [], []);
@@ -1869,6 +1875,9 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       throwIfDownloadCancelled(job);
       settings.signal?.throwIfAborted();
       const release = releases[i];
+      const needsEnglishTrack = !job.manualRelease && unverifiedAnimeAudioRelease(release);
+      job.requireEnglishTrack = needsEnglishTrack;
+      job.playbackTracks = [];
       const candidateIndex = candidateIndices[i];
       setJob(job, 'selecting', `Checking release ${i + 1} of ${releases.length}…`, 5 + Math.floor(i / releases.length * 36));
       markReleaseSelection(job, candidateIndex, 'checking', 'Inspecting NZB and provider availability.');
@@ -1893,7 +1902,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
           if (!job.backgroundFor) await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== 'sdr');
-          if (shouldCacheDirectPlayback(job, settings) || job.downloadReplacement) {
+          if (!needsEnglishTrack && (shouldCacheDirectPlayback(job, settings) || job.downloadReplacement)) {
             markReleaseSelection(job, candidateIndex, 'checking', 'Downloading a playable copy.');
             await cache(job, settings);
             finishReleaseSelection(job, candidateIndex);
@@ -1902,7 +1911,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           const duration = Number(job.media.durationHint);
           const rate = speedMeter.rate(settings);
           const demand = candidatePlaybackDemand(direct, duration);
-          const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && strategy !== 'raw';
+          const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && (strategy !== 'raw' || needsEnglishTrack);
           // The spot check includes startup and can underestimate an otherwise
           // healthy source. Verify a marginal best-quality source with the
           // converter; an explicit resolution also gets two bounded live tries
@@ -1919,6 +1928,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             jobEvent(job, 'provider-speed', 'The article speed estimate is low; checking the requested resolution with live playback.', { release: release.title });
           }
           if (tooLarge && !verifyTarget) {
+            if (needsEnglishTrack) {
+              markReleaseSelection(job, candidateIndex, 'rejected', 'Provider speed is too low to verify the English audio track.');
+              continue;
+            }
             downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment, candidateIndex };
             markReleaseSelection(job, candidateIndex, 'deferred', 'Provider speed is below live playback demand; may use a downloaded copy.');
             jobEvent(job, 'release-rejected', 'Recent provider speed is below this release’s estimated playback demand.', { release: release.title });
@@ -1934,6 +1947,8 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
               if (error.code === 'INVALID_MEDIA_TIMELINE' || error.code === 'INVALID_MEDIA_DURATION') {
                 await health.reject(settings, job.media, releaseIdentity(release));
                 markReleaseSelection(job, candidateIndex, 'rejected', `Playback speed check failed: ${error.message}`);
+              } else if (needsEnglishTrack) {
+                markReleaseSelection(job, candidateIndex, 'rejected', `Audio check failed: ${error.message}`);
               } else {
                 downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment, candidateIndex };
                 markReleaseSelection(job, candidateIndex, 'deferred', `Live playback failed: ${error.message} May use a downloaded copy.`);
@@ -1941,6 +1956,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
               jobEvent(job, 'release-rejected', `Playback speed check failed: ${error.message}`, { release: release.title });
               continue;
             }
+          }
+          if (needsEnglishTrack && (!liveCheck || !hasEnglishAudioTrack(job.playbackTracks))) {
+            markReleaseSelection(job, candidateIndex, 'rejected', 'English audio could not be verified from this source.');
+            continue;
           }
           throwIfDownloadCancelled(job);
           if (matchesTargetResolution(release.title, settings)) {
@@ -1953,7 +1972,11 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           return;
         }
         if (archives.length && (!job.rejectedReleases?.size || job.downloadReplacement || progressive)) {
-          const choice = { archives, release: release.title, releaseKey: releaseIdentity(release), candidateIndex };
+          if (needsEnglishTrack && (!progressive || job.backgroundFor || job.prepareAhead || job.offlineDownload || job.speculative)) {
+            markReleaseSelection(job, candidateIndex, 'rejected', 'English audio cannot be checked before downloading this archive.');
+            continue;
+          }
+          const choice = { archives, release: release.title, releaseKey: releaseIdentity(release), needsEnglishTrack, candidateIndex };
           archiveChoices.push(choice);
           markReleaseSelection(job, candidateIndex, 'deferred', 'Archive needs progressive extraction or a full download.');
           jobEvent(job, 'archive-candidate', 'Release requires download and extraction.', { release: release.title });
@@ -1977,7 +2000,8 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
                 choice.unavailable = new Error('Archive could not sustain playback.');
                 markReleaseSelection(job, candidateIndex, 'rejected', choice.unavailable.message);
               } else {
-                markReleaseSelection(job, candidateIndex, 'deferred', 'Progressive opening was unavailable; full download may be tried.');
+                if (needsEnglishTrack) choice.unavailable = new Error('English audio could not be verified from this archive.');
+                markReleaseSelection(job, candidateIndex, needsEnglishTrack ? 'rejected' : 'deferred', choice.unavailable?.message || 'Progressive opening was unavailable; full download may be tried.');
               }
             }
             catch (error) {
@@ -2000,6 +2024,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     if (downloadChoice && !job.speculative && !job.rejectedReleases?.size) {
       const { candidateIndex: fallbackIndex, ...sourceChoice } = downloadChoice;
       Object.assign(job, { ...sourceChoice, prefetchedSegments: downloadChoice.firstSegment ? new Map([[0, downloadChoice.firstSegment]]) : new Map() });
+      job.requireEnglishTrack = false;
       if (fallbackIndex !== undefined) markReleaseSelection(job, fallbackIndex, 'checking', 'Downloading a playable copy.');
       jobEvent(job, 'download-fallback', 'No candidate sustained the playback speed check. Preparing the best direct release before playback.');
       await cache(job, settings);
@@ -2015,7 +2040,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     if (job.speculative) throw new Error('This archive will start preparing when playback is requested.');
     if (progressive) job.progressiveArchiveDisabled = true;
     if (job.rejectedReleases?.size && !job.downloadReplacement) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
-    let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; markReleaseSelection(job, choice.candidateIndex, 'checking', 'Downloading and extracting archive.'); await archive(job, settings, choice.archives); finishReleaseSelection(job, choice.candidateIndex); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); markReleaseSelection(job, choice.candidateIndex, 'rejected', error.message || 'Archive preparation failed.'); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
+    let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; job.requireEnglishTrack = choice.needsEnglishTrack; markReleaseSelection(job, choice.candidateIndex, 'checking', 'Downloading and extracting archive.'); await archive(job, settings, choice.archives); finishReleaseSelection(job, choice.candidateIndex); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); markReleaseSelection(job, choice.candidateIndex, 'rejected', error.message || 'Archive preparation failed.'); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { if (isDownloadCancelled(job, error)) { stopReleaseSelection(job, 'Playback preparation cancelled.'); job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } stopReleaseSelection(job, error.message || 'Playback preparation failed.'); setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
 }
 async function startOfflineMediaDownload(media, settings, backgroundFor = null) {
@@ -2143,7 +2168,7 @@ export function beginOfflineFinalization(job) {
 }
 
 function publicJob(job) {
-  const { archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, diagnosticsEnabled, events, releaseSelection, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job;
+  const { archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, requireEnglishTrack, diagnosticsEnabled, events, releaseSelection, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job;
   return {
     ...safe,
     mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode,
@@ -2304,9 +2329,10 @@ export async function handleRequest(req, res) {
       if (!media.title || !['movie', 'tv'].includes(media.type)) return json(res, 400, { error: 'A valid movie or show is required.' });
       if (media.type === 'tv' && (!Number.isInteger(media.season) || !Number.isInteger(media.episode))) return json(res, 400, { error: 'Select a season and episode first.' });
       const settings = await readSettings(); if (!settings.indexerUrl || !settings.indexerKey) return json(res, 400, { error: 'Complete the indexer settings first.' });
-      let releases = await findReleases(settings, media); if (!releases.length && (media.year || media.episode)) releases = await findReleases(settings, media, false);
+      const manualSearch = { ...settings, manualReleaseSelection: true };
+      let releases = await findReleases(manualSearch, media, true, { allowUnverifiedAnimeAudio: true }); if (!releases.length && (media.year || media.episode)) releases = await findReleases(manualSearch, media, false, { allowUnverifiedAnimeAudio: true });
       const expires = Date.now() + 20 * 60 * 1000;
-      const choices = releases.slice(0, 20).map(release => { const id = randomUUID(); manualReleases.set(id, { release, media, expires }); return { id, title: release.title, size: formatSize(release.size), category: release.category, published: release.published, readiness: releaseReadiness(release) }; });
+      const choices = releases.slice(0, 20).map(release => { const id = randomUUID(); manualReleases.set(id, { release, media, expires }); return { id, title: release.title, size: formatSize(release.size), category: release.category, published: release.published, readiness: releaseReadiness(release), audioStatus: englishAudioRelease(release) && /\b(?:eng|english|dual(?: audio)?)\b/i.test(release.title.replace(/[._-]+/g, ' ')) ? 'english' : 'unverified' }; });
       return json(res, 200, { releases: choices });
     }
     if (req.method === 'POST' && url.pathname === '/api/play/prewarm') {

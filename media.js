@@ -146,6 +146,12 @@ export function englishAudioRelease(release) {
   return releaseAudioConfidence(release) > 0;
 }
 
+export function unverifiedAnimeAudioRelease(release) {
+  if (!/anime/i.test(String(release?.category || '')) || englishAudioRelease(release)) return false;
+  const text = String(release?.title || '').toLowerCase().replace(/[._-]+/g, ' ');
+  return releaseAudioConfidence(release) === 1 && !/\bsub(?:bed|s)?\b/.test(text);
+}
+
 export function releaseResolution(release) {
   const title = String(release.title || '').toLowerCase();
   // A 1080p encode can be sourced from a UHD disc; the explicit output
@@ -161,10 +167,11 @@ export function rankReleases(releases, media, preferences) {
   const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[preferences?.targetResolution] || 0;
   return releases
     .filter(release => releaseTitleMatches(release, media))
-    .filter(englishAudioRelease)
+    .filter(release => englishAudioRelease(release) || preferences?.allowUnverifiedAnimeAudio && unverifiedAnimeAudioRelease(release))
     .filter(release => releaseDynamicRange(release) === 'sdr')
     .filter(release => !target || releaseResolution(release) <= target)
-    .sort((a, b) => (target ? releaseResolution(b) - releaseResolution(a) : 0)
+    .sort((a, b) => (preferences?.allowUnverifiedAnimeAudio ? Number(englishAudioRelease(b)) - Number(englishAudioRelease(a)) : 0)
+      || (target ? releaseResolution(b) - releaseResolution(a) : 0)
       || releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
 }
 

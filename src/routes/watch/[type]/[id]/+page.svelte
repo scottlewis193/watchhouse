@@ -632,6 +632,13 @@
     try { const job = await api.post(`/api/play/${id}/retry`); if (!playbackRequests.isCurrent(requestToken)) return; playback = job; void poll(job.id, requestToken, 0); } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { ...playback, status: 'error', message: e.message }; }
   }
 
+  async function chooseAnotherRelease() {
+    const item = currentMedia || selectedMediaItem();
+    const resume = resumePlayback;
+    await returnToHero();
+    if (item) await chooseRelease(item, resume);
+  }
+
   function formatPosition(seconds) { const value = Math.max(0, Math.round(seconds)); const hours = Math.floor(value / 3600), minutes = Math.floor(value % 3600 / 60), remainder = value % 60; return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}` : `${minutes}:${String(remainder).padStart(2, '0')}`; }
   function preparationTitle() { if (playback?.status === 'error') return 'Playback needs attention'; if (media.type === 'tv' && !currentMedia) return 'Choose an episode to begin'; return `Getting ${currentMedia?.episodeTitle || media.title || 'your title'} ready…`; }
   function formatAirDate(value) { if (!value) return ''; const [year, month, day] = value.split('-').map(Number); if (!year || !month || !day) return value; return new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(year, month - 1, day)); }
@@ -1137,6 +1144,7 @@
       {#if status !== 'error' && detailedPlaybackProgress && !unknown && !setup}<span class="hero-preparation-percent">{Math.round(shownProgress || 0)}%</span>{/if}
       {#if status !== 'error'}<button class="hero-preparation-retry" onclick={() => void returnToHero()}>Cancel</button>{/if}
       {#if status === 'error' && playback?.id}<button class="hero-preparation-retry" onclick={retryPlayback}>Try again</button>{/if}
+      {#if status === 'error' && !offlineMode && currentMedia}<button class="hero-preparation-retry" onclick={() => void chooseAnotherRelease()}>Choose release</button>{/if}
     </div>
     {#if status !== 'error'}
       <div class="hero-preparation-track" role="progressbar" aria-label="Preparing playback" aria-valuenow={unknown ? undefined : Math.round(shownProgress || 0)} aria-valuetext={setup ? `${setup.completed} of ${setup.total} preparation steps complete${setup.detail ? `, ${setup.detail}` : ''}` : undefined} aria-valuemin="0" aria-valuemax="100">
@@ -1256,7 +1264,7 @@
       {:else}
         <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
       {/if}
-      {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}</div>{/if}
+      {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}{#if !offlineMode && currentMedia}<button class="btn btn-sm" onclick={() => void chooseAnotherRelease()}>Choose release</button>{/if}</div>{/if}
       </div>
     {/if}
 
@@ -1321,7 +1329,7 @@
           </div>
         {/if}
       {/if}
-      {#if releaseChoices.length}<div class="release-picker mt-8 border-t border-base-300 pt-6" bind:this={releasePicker} tabindex="-1" aria-labelledby="release-picker-title"><p class="page-eyebrow" id="release-picker-title">Choose a release</p><div class="mt-4 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="release-option flex w-full items-start justify-between gap-3 py-4 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/45">{release.readiness.label} · {release.category}</span></span>{#if release.size}<span class="shrink-0 text-xs text-base-content/45">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
+      {#if releaseChoices.length}<div class="release-picker mt-8 border-t border-base-300 pt-6" bind:this={releasePicker} tabindex="-1" aria-labelledby="release-picker-title"><p class="page-eyebrow" id="release-picker-title">Choose a release</p><p class="mt-2 text-xs text-base-content/55">Audio marked unverified may be non-English. Check the audio tracks after playback starts.</p><div class="mt-4 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="release-option flex w-full items-start justify-between gap-3 py-4 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/45">{release.readiness.label} · {release.category} · {release.audioStatus === 'unverified' ? 'Audio unverified' : 'English audio indicated'}</span></span>{#if release.size}<span class="shrink-0 text-xs text-base-content/45">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
       </div>
     {/if}
   </div>

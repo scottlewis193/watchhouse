@@ -22,6 +22,22 @@ test('automatic and manual searches omit HDR releases that need CPU tone mapping
     assert.deepEqual(new Set(releases.map(release => release.title)), new Set([titles[1], titles[2]]));
   }
 });
+test('manual anime search offers unverified audio while automatic search remains English-only', async () => {
+  const anime = { type: 'tv', title: 'Attack on Titan', season: 1, episode: 17 };
+  const titles = [
+    'Attack.on.Titan.S01E17.1080p.Blu-ray.Dual-Audio.x265',
+    'Attack.on.Titan.2013-S01E17.17-Female.Titan.The.57th.Exterior.Scouting.Mission.Part.1.1080p.BluRay.x265.ImE',
+    'Attack.on.Titan.S01E17.1080p.WEB-DL.MULTi.VO.VFF',
+    'Attack.on.Titan.S01E17.Sub.1080p.WEB-DL'
+  ];
+  const request = async () => ({ ok: true, text: async () => `<rss><newznab:response offset="0" total="4" />${titles.map((title, i) => `<item><title>${title}</title><category>TV &gt; Anime</category><enclosure url="https://indexer.example/nzb/${i}" /></item>`).join('')}</rss>` });
+  const automatic = await findReleases(settings, anime, true, { request });
+  assert.deepEqual(automatic.map(release => release.title), [titles[0]]);
+  const manual = await findReleases({ ...settings, manualReleaseSelection: true }, anime, true, { request, allowUnverifiedAnimeAudio: true });
+  assert.deepEqual(manual.map(release => release.title), [titles[0], titles[1]]);
+  const automaticFallback = await findReleases(settings, anime, true, { request, allowUnverifiedAnimeAudio: true });
+  assert.deepEqual(automaticFallback.map(release => release.title), [titles[0], titles[1]]);
+});
 test('falls back to general indexer search when movie search returns no releases', async () => {
   const queries = [];
   const releases = await findReleases(settings, { id: 671, type: 'movie', title: "Harry Potter and the Philosopher's Stone", year: '2001' }, true, {
