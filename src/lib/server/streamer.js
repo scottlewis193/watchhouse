@@ -649,6 +649,9 @@ async function validatePreparedEpisode(job, path) {
 export async function optimizeCachedVideo(job, path, settings = {}) {
   await validatePreparedEpisode(job, path);
   const inspection = await inspectPlaybackSource(path, job.untaggedAudioTrack, { fullTimeline: true, repairVideoTimeline: Boolean(settings.repairVideoTimeline) });
+  if (job.requireEnglishTrack && !hasEnglishAudioTrack(inspection.tracks)) {
+    throw Object.assign(new Error('This release has no identified English audio track. Trying another release.'), { code: 'NO_ENGLISH_AUDIO' });
+  }
   const repairVideoFrameRate = inspection.repairVideoFrameRate || null;
   if (repairVideoFrameRate) jobEvent(job, 'timeline-repair', 'A video timestamp hole was found. Rebuilding the missing interval against the audio clock.');
   const strategy = repairVideoFrameRate ? 'transcode' : await cachedPlaybackStrategy(path, job.release);
@@ -969,6 +972,9 @@ function rejectPlaybackSource(job, settings, release, releaseKey, error) {
 }
 
 export async function recoverPlaybackSource(job, settings, prepare = preparePlayback) {
+  // A downloaded copy has already passed local validation. Its old live
+  // source may still be rejected, but that must not block HLS setup.
+  if (job.mode === 'cached' || job.mode === 'cached-convert') return;
   if (job.sourceRecovery) return job.sourceRecovery;
   const unavailable = message => Object.assign(new Error(message), { code: 'SOURCE_UNAVAILABLE' });
   if (job.sourceRecoveryError) throw unavailable(job.sourceRecoveryError);
@@ -1061,6 +1067,7 @@ export async function inspectPlaybackSource(input, untaggedAudioTrack = 2, { ful
   const duration = Number(probe.format?.duration);
   return {
     audioIndex,
+    tracks: playbackTracks(probe.streams || []),
     videoCodec: video?.codec_name || null,
     duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
     ...(issue?.type === 'video-only' ? { repairVideoFrameRate: frameRate(video), timelineIssue: issue } : {})
@@ -1194,7 +1201,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
   } catch (error) {
     await producer?.stop();
     await rangeSource?.close();
-    if (job.progressiveArchive && job.archives && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
+    if (job.progressiveArchive && job.archives && !settings.preflight && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
       job.progressiveArchiveDisabled = true;
       await prepareArchive(job, settings, job.archives);
       if (job.status !== 'ready') throw new Error(job.message || 'Archive fallback failed.');
@@ -1251,7 +1258,7 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
   const signal = settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal;
   let session;
   try {
-    session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal }, start, directory),
+    session = await sessionFactory({ root: PLAYBACK_CACHE_ROOT, produce: directory => convert(job, { ...settings, signal, preflight: true }, start, directory),
       onClose: () => {
         hlsSessions.delete(id);
         if (job.preparedSession?.sessionUrl === `/api/play/${job.id}/hls/${id}`) delete job.preparedSession;
@@ -1723,6 +1730,7 @@ function matchesTargetResolution(release, settings) {
 }
 export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed } = {}) {
   job.frameInterpolation = Boolean(settings.frameInterpolation);
+  const recoveringSource = Boolean(job.rejectedReleases?.size);
   let failedPlanRelease = null;
   let savedDownloadChoice = null;
   const checkArchivePlayback = async () => {
@@ -1743,6 +1751,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       if (['PLAYBACK_TOO_SLOW', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseKey);
       archivePlans.delete?.(job.media);
       jobEvent(job, 'release-rejected', `Archive playback check failed: ${error.message}`, { release: job.release });
+      await job.archiveSource?.close?.();
       delete job.archiveSource; delete job.progressiveArchive; delete job.archiveResume;
       // Keep the archive volumes so an explicit retry can prepare a full copy
       // when this was the only release. The failed live source is discarded.
@@ -1997,11 +2006,15 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             try {
               if (await progressive(job, settings, choice.archives)) {
                 if (await checkArchivePlayback()) { finishReleaseSelection(job, candidateIndex); return; }
-                choice.unavailable = new Error('Archive could not sustain playback.');
-                markReleaseSelection(job, candidateIndex, 'rejected', choice.unavailable.message);
+                if (!recoveringSource) {
+                  markReleaseSelection(job, candidateIndex, 'deferred', 'Live archive opening failed; preparing the downloaded copy.');
+                } else {
+                  choice.unavailable = new Error('Archive could not sustain playback.');
+                  markReleaseSelection(job, candidateIndex, 'rejected', choice.unavailable.message);
+                }
               } else {
-                if (needsEnglishTrack) choice.unavailable = new Error('English audio could not be verified from this archive.');
-                markReleaseSelection(job, candidateIndex, needsEnglishTrack ? 'rejected' : 'deferred', choice.unavailable?.message || 'Progressive opening was unavailable; full download may be tried.');
+                if (needsEnglishTrack && recoveringSource) choice.unavailable = new Error('English audio could not be verified from this archive.');
+                markReleaseSelection(job, candidateIndex, choice.unavailable ? 'rejected' : 'deferred', choice.unavailable?.message || 'Progressive opening was unavailable; full download may be tried.');
               }
             }
             catch (error) {
@@ -2039,7 +2052,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     if (!archiveChoices.length) throw new Error('No compatible video release was found.');
     if (job.speculative) throw new Error('This archive will start preparing when playback is requested.');
     if (progressive) job.progressiveArchiveDisabled = true;
-    if (job.rejectedReleases?.size && !job.downloadReplacement) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
+    if (job.rejectedReleases?.size && !job.downloadReplacement && recoveringSource) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
     let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; job.requireEnglishTrack = choice.needsEnglishTrack; markReleaseSelection(job, choice.candidateIndex, 'checking', 'Downloading and extracting archive.'); await archive(job, settings, choice.archives); finishReleaseSelection(job, choice.candidateIndex); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); markReleaseSelection(job, choice.candidateIndex, 'rejected', error.message || 'Archive preparation failed.'); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) { if (isDownloadCancelled(job, error)) { stopReleaseSelection(job, 'Playback preparation cancelled.'); job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } stopReleaseSelection(job, error.message || 'Playback preparation failed.'); setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
 }

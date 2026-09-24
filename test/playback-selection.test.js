@@ -480,8 +480,9 @@ test('speculative resume preparation does not extract a cold archive before play
   assert.equal(playback.status, 'error');
 });
 
-test('a failed progressive archive check keeps its volumes for a requested full download retry', async () => {
+test('a failed progressive archive check downloads a copy during initial playback', async () => {
   const playback = job();
+  let downloads = 0;
   await preparePlayback(playback, { usenetHost: 'provider.example' }, {
     search: async () => [{ title: 'Only archive' }],
     load: async () => nzb('rar'),
@@ -494,11 +495,29 @@ test('a failed progressive archive check keeps its volumes for a requested full 
       return true;
     },
     preflight: async () => { throw new Error('Progressive stream ended early.'); },
-    archive: async () => { assert.fail('Full download requires an explicit retry.'); }
+    archive: async candidate => { downloads++; candidate.status = 'ready'; candidate.mode = 'cached-convert'; }
   });
-  assert.equal(playback.status, 'error');
-  assert.match(playback.message, /No replacement streaming archive/);
-  assert.ok(playback.archives?.length, 'retry needs the selected archive volumes');
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.mode, 'cached-convert');
+  assert.equal(downloads, 1);
+});
+
+test('an explicitly chosen archive downloads after its progressive opening fails', async () => {
+  const release = { title: 'Attack.on.Titan.S01E17.1080p.BluRay.x265-ImE', category: 'TV > Anime' };
+  const playback = { ...job(), manualRelease: release };
+  const events = [];
+  await preparePlayback(playback, { usenetHost: 'provider.example' }, {
+    search: async () => assert.fail('Manual release must not search'),
+    load: async () => nzb('rar'), check: async () => Buffer.from('archive'),
+    health: { has: async () => false }, plans: createPlaybackPlanCache(),
+    progressive: async candidate => { candidate.status = 'ready'; candidate.mode = 'direct'; return true; },
+    preflight: async () => { throw new Error('Progressive stream ended early.'); },
+    archive: async candidate => { events.push('download'); candidate.status = 'ready'; candidate.mode = 'cached-convert'; }
+  });
+  assert.deepEqual(events, ['download']);
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.mode, 'cached-convert');
+  assert.equal(playback.events.some(event => event.activity === 'error'), false);
 });
 
 test('unsupported progressive archives retain the original ranked full-download fallback', async () => {

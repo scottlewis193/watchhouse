@@ -9,6 +9,21 @@ import { assertPlayableHlsOpening, preflightLiveCandidate } from '../src/lib/ser
 
 const run = promisify(execFile);
 
+test('preflight marks conversion so archive fallback stays with release selection', async () => {
+  let preflightFlag;
+  let position = 2;
+  await preflightLiveCandidate({ id: 'job', playbackTracks: [] }, {}, 0, {
+    sessionFactory: async ({ produce }) => {
+      await produce('/unused');
+      return { directory: '/unused', read: async () => Buffer.from('#EXTINF:2.0,'), health: () => ({ position, completed: false }), close: async () => {} };
+    },
+    convert: async (_job, settings) => { preflightFlag = settings.preflight; },
+    inspect: async () => [{ codec_type: 'video', start_time: '0' }],
+    wait: async ms => { if (ms === 2000) position += 8; }
+  });
+  assert.equal(preflightFlag, true);
+});
+
 test('rejects a large opening timestamp gap like the observed buffered-only tail', () => {
   assert.doesNotThrow(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '0.023' }, { codec_type: 'audio', start_time: '0.023' }]));
   assert.doesNotThrow(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '10.7' }, { codec_type: 'audio', start_time: '10.6' }]));

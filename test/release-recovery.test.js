@@ -59,3 +59,10 @@ test('an exhausted replacement search remains terminal instead of re-running on 
   }
   assert.equal(searches, 1);
 });
+
+test('a validated downloaded copy opens without re-entering live source recovery', async () => {
+  const job = { release: 'same-release', rejectedReleases: new Set(['same-release']), mode: 'cached-convert', status: 'ready' };
+  let searches = 0;
+  await recoverPlaybackSource(job, {}, async () => { searches++; });
+  assert.equal(searches, 0);
+});
