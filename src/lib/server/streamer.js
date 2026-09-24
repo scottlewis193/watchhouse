@@ -1222,7 +1222,11 @@ export function assertPlayableHlsOpening(streams = []) {
   if (!streams.length) throw Object.assign(new Error('The first playback segment could not be inspected yet.'), { code: 'PLAYBACK_SEGMENT_PROBE_FAILED' });
   const video = streams.find(stream => stream.codec_type === 'video');
   const audio = streams.find(stream => stream.codec_type === 'audio');
-  const videoStart = Number(video?.start_time), audioStart = Number(audio?.start_time);
+  const videoStart = video?.start_time == null ? NaN : Number(video.start_time);
+  const audioStart = audio?.start_time == null ? NaN : Number(audio.start_time);
+  // FFprobe 5.1 can list the audio stream before its first packet has arrived,
+  // leaving start_time unset on an otherwise healthy growing HLS playlist.
+  if (audio && !Number.isFinite(audioStart)) throw Object.assign(new Error('The first playback segment has no audio timestamp yet.'), { code: 'PLAYBACK_SEGMENT_PROBE_FAILED' });
   // HLS may preserve a shared source timestamp offset. Only the separation
   // between audio and video signals a missing opening track in that case.
   const invalidVideo = !video || !Number.isFinite(videoStart) || videoStart < -0.5;
@@ -1273,13 +1277,20 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
       jobEvent(job, 'playback-speed', `No first segment after ${(waitBudgetMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs: waitBudgetMs });
       throw Object.assign(new Error('No playable segment arrived during the playback speed check.'), { code: 'NO_PLAYABLE_SEGMENT' });
     }
-    let streams = await inspect(session.directory, signal) || [];
-    if (!streams.length) {
-      await wait(500);
+    // A growing playlist may expose its video stream before FFprobe can see
+    // an audio packet. Recheck briefly rather than banning that upload for a
+    // day based on incomplete stream metadata.
+    for (let attempt = 0; ; attempt++) {
       signal.throwIfAborted();
-      streams = await inspect(session.directory, signal) || [];
+      const streams = await inspect(session.directory, signal) || [];
+      try { assertPlayableHlsOpening(streams); break; }
+      catch (error) {
+        if (error.code !== 'PLAYBACK_SEGMENT_PROBE_FAILED' || attempt >= 15) throw error;
+        const state = session.health?.();
+        if (state?.failed || state?.closed) throw new Error('The playback converter stopped while checking its opening segment.');
+        await wait(500);
+      }
     }
-    assertPlayableHlsOpening(streams);
     const first = session.health().position;
     // A healthy source need not sit through the whole observation window.
     // Give a borderline startup four more seconds so FFmpeg's early progress

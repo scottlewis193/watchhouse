@@ -16,6 +16,8 @@ test('rejects a large opening timestamp gap like the observed buffered-only tail
   assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '10' }]), { code: 'INVALID_MEDIA_TIMELINE' });
   assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '10' }]), { code: 'INVALID_MEDIA_TIMELINE' });
   assert.throws(() => assertPlayableHlsOpening([]), { code: 'PLAYBACK_SEGMENT_PROBE_FAILED' });
+  assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '125.3' }, { codec_type: 'audio' }]), { code: 'PLAYBACK_SEGMENT_PROBE_FAILED' });
+  assert.throws(() => assertPlayableHlsOpening([{ codec_type: 'video', start_time: '125.3' }, { codec_type: 'audio', start_time: null }]), { code: 'PLAYBACK_SEGMENT_PROBE_FAILED' });
 });
 
 test('retries an empty opening probe before accepting a playable segment', async () => {
@@ -32,6 +34,24 @@ test('retries an empty opening probe before accepting a playable segment', async
     wait: async ms => { if (ms === 2000) position += 8; }
   });
   assert.equal(inspections, 2);
+});
+
+test('waits for an audio timestamp before judging a nonzero HLS origin', async () => {
+  let inspections = 0, position = 2;
+  const result = await preflightLiveCandidate({ id: 'job', playbackTracks: [] }, {}, 23, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position, completed: false }),
+      close: async () => {}
+    }),
+    convert: async () => {},
+    inspect: async () => ++inspections === 1
+      ? [{ codec_type: 'video', start_time: '125.3' }, { codec_type: 'audio' }]
+      : [{ codec_type: 'video', start_time: '125.3' }, { codec_type: 'audio', start_time: '125.28' }],
+    wait: async ms => { if (ms === 2000) position += 8; }
+  });
+  assert.equal(inspections, 2);
+  assert.equal(result.start, 23);
 });
 
 test('accepts an HLS opening whose audio and video share a nonzero timestamp origin', async () => {
