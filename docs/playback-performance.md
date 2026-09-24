@@ -1,5 +1,24 @@
 # Playback startup optimisation — 14 September 2026
 
+## Saved 4K resume preflight overlap (2026-09-24)
+
+A deployed Continue Watching run for the 2160p SDR Azkaban release resumed a
+saved direct source with NVENC. Source search was skipped. It took roughly
+15–16 seconds from click to moving video: the live check spent about 11 seconds
+between starting the converter and accepting the source, followed by browser
+buffering. This is one live observation, not a repeatable latency guarantee.
+
+The first-segment audio probe and the required two-second output-speed sample
+previously ran in sequence. They now run together once the first segment is
+ready. The session is still withheld until both checks pass, and the speed
+threshold uses the actual observation time when the probe takes longer. This
+can remove up to two seconds from a successful preflight; the 4K first-segment
+generation and browser buffer remain. Diagnostic events now mark first-segment
+readiness and completion of the opening audio/video probe so a deployed run
+can distinguish those costs. The deployed image has not yet been updated with
+this change, so the live latency improvement remains unmeasured.
+
+
 ## Scope and measurements
 
 Preserve release-quality ordering, English-audio selection, exact resume position,

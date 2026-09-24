@@ -94,6 +94,45 @@ test('keeps a candidate that produces segments faster than playback', async () =
   assert.equal(job.events.find(event => event.activity === 'playback-speed').producedSeconds, 8);
 });
 
+test('checks output speed while probing the first segment', async () => {
+  let position = 2, observationStarted = false;
+  const result = await preflightLiveCandidate({ id: 'job', playbackTracks: [] }, {}, 120, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position, completed: false }),
+      close: async () => {}
+    }),
+    convert: async () => {},
+    inspect: async () => {
+      assert.equal(observationStarted, true, 'the speed observation should already be running during the HLS probe');
+      return [{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '0' }];
+    },
+    wait: async ms => {
+      if (ms === 2000) { observationStarted = true; position += 4; }
+    }
+  });
+  assert.equal(result.start, 120);
+});
+
+test('a slow HLS probe does not inflate the measured conversion rate', async () => {
+  let elapsed = 0, position = 2;
+  await assert.rejects(preflightLiveCandidate({ id: 'job', playbackTracks: [] }, {}, 120, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position, completed: false }),
+      close: async () => {}
+    }),
+    convert: async () => {},
+    inspect: async () => {
+      elapsed += 5000;
+      position = 8;
+      return [{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '0' }];
+    },
+    now: () => elapsed,
+    wait: async ms => { elapsed += ms; }
+  }), { code: 'PLAYBACK_TOO_SLOW' });
+});
+
 test('rejects and closes a candidate that cannot keep producing segments', async () => {
   let closed = false;
   const waits = [];

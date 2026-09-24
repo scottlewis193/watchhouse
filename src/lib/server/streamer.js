@@ -1277,6 +1277,12 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
       jobEvent(job, 'playback-speed', `No first segment after ${(waitBudgetMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs: waitBudgetMs });
       throw Object.assign(new Error('No playable segment arrived during the playback speed check.'), { code: 'NO_PLAYABLE_SEGMENT' });
     }
+    const first = session.health().position;
+    const observationStarted = now();
+    jobEvent(job, 'first-segment-ready', 'First playback segment was produced.', { position: first });
+    // Probe the first segment while the converter produces the sample used by
+    // the speed check. Both checks still finish before exposing the session.
+    const observation = wait(2000);
     // A growing playlist may expose its video stream before FFprobe can see
     // an audio packet. Recheck briefly rather than banning that upload for a
     // day based on incomplete stream metadata.
@@ -1291,25 +1297,25 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
         await wait(500);
       }
     }
-    const first = session.health().position;
+    jobEvent(job, 'opening-segment-probed', 'Opening video and audio timestamps validated.');
     // A healthy source need not sit through the whole observation window.
     // Give a borderline startup four more seconds so FFmpeg's early progress
     // reports or one delayed article do not reject an otherwise usable stream.
-    await wait(2000);
+    await observation;
     signal.throwIfAborted();
     let health = session.health();
     if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
-    let observedSeconds = 2;
-    if (!health.completed && health.position - first < 2.5) {
+    let observedSeconds = Math.max(2, (now() - observationStarted) / 1000);
+    if (!health.completed && health.position - first < observedSeconds * 1.25) {
       await wait(4000);
       signal.throwIfAborted();
       health = session.health();
       if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
-      observedSeconds = 6;
+      observedSeconds = Math.max(6, (now() - observationStarted) / 1000);
     }
     const producedSeconds = Number.isFinite(health.position - first) ? Math.max(0, health.position - first) : 0;
     jobEvent(job, 'playback-speed', `Playback output: ${producedSeconds.toFixed(1)}s of video in ${observedSeconds}s (${(producedSeconds / observedSeconds).toFixed(1)}× viewing speed).`, { producedSeconds, observedSeconds });
-    if (!health.completed && producedSeconds < (observedSeconds === 2 ? 2.5 : 6.6)) {
+    if (!health.completed && producedSeconds < observedSeconds * (observedSeconds <= 2 ? 1.25 : 1.1)) {
       throw Object.assign(new Error('This release cannot produce playback segments faster than viewing speed.'), { code: 'PLAYBACK_TOO_SLOW' });
     }
     clearTimeout(timeout);
