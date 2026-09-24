@@ -6,8 +6,18 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startHlsConversion } from '../src/lib/server/streamer.js';
-import { createHlsSession } from '../src/lib/server/hls-session.js';
+import { createHlsSession, hlsKeyframeArgs } from '../src/lib/server/hls-session.js';
 const run = promisify(execFile);
+
+test('NVENC HLS forces IDR frames at the two-second segment boundary', () => {
+  assert.deepEqual(hlsKeyframeArgs('transcode', { kind: 'nvenc' }, 2), [
+    '-force_key_frames', 'expr:gte(t,n_forced*2)', '-forced-idr', '1'
+  ]);
+  assert.deepEqual(hlsKeyframeArgs('transcode', null, 2), [
+    '-force_key_frames', 'expr:gte(t,n_forced*2)'
+  ]);
+  assert.deepEqual(hlsKeyframeArgs('remux', { kind: 'nvenc' }, 4), []);
+});
 
 test('HLS fills its initial buffer promptly without changing the resumed video', { timeout: 20000 }, async t => {
   const help = (await run('ffmpeg', ['-hide_banner', '-h', 'full'], { maxBuffer: 4 * 1024 * 1024 })).stdout;

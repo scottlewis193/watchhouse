@@ -17,7 +17,7 @@ import { waitForDrain } from './stream-drain.js';
 import { validateOpeningVideoDecode } from './video-decode-validation.js';
 import { conversionAdmission } from './conversion-admission.js';
 import { playbackTracks, extractCaptions } from './playback-tracks.js';
-import { createHlsSession, hlsOutputArgs } from './hls-session.js';
+import { createHlsSession, hlsOutputArgs, hlsKeyframeArgs } from './hls-session.js';
 import { createHlsPacing } from './hls-pacing.js';
 import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from './playback-capacity.js';
 import { createArticleDeliveryMeter, createVideoOutputMeter, createVideoTimelineGuard } from './playback-throughput.js';
@@ -1172,7 +1172,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const args = hlsOutputArgs(mapped, directory, segmentSeconds);
     // Skip discarded input and fill two segments promptly, then pace at 1.5x.
     args.splice(args.indexOf('-i'), 0, ...pacing);
-    if (strategy !== 'remux') args.splice(args.indexOf('-f'), 0, '-force_key_frames', `expr:gte(t,n_forced*${segmentSeconds})`);
+    args.splice(args.indexOf('-f'), 0, ...hlsKeyframeArgs(strategy, acceleration, segmentSeconds));
     const release = job.release, releaseKey = job.releaseKey || release;
     producer = await startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start), settings.signal,
       job.progressiveArchive ? { frameRate: metadata.videoFrameRate, start,

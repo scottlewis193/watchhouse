@@ -11,6 +11,14 @@ export function hlsOutputArgs(mp4Args, directory, segmentSeconds = 4) {
     '-hls_segment_filename', join(directory, 'segment-%06d.m4s'), join(directory, 'index.m3u8')];
 }
 
+export function hlsKeyframeArgs(strategy, acceleration, segmentSeconds) {
+  if (strategy === 'remux') return [];
+  return ['-force_key_frames', `expr:gte(t,n_forced*${segmentSeconds})`,
+    // NVENC normally turns forced keyframes into I frames. HLS needs an IDR
+    // boundary; otherwise it waits for NVENC's default 250-frame GOP.
+    ...(acceleration?.kind === 'nvenc' ? ['-forced-idr', '1'] : [])];
+}
+
 function playlistCoversExpectedDuration(bytes, expectedDuration) {
   if (!Number.isFinite(expectedDuration) || expectedDuration <= 0) return false;
   const playlist = bytes.toString();
