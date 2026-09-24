@@ -1512,8 +1512,8 @@ export async function findReleases(settings, media, includeYear = true, { reques
   const searchTitle = async (title, mode) => {
     const endpoint = indexerEndpoint(settings.indexerUrl);
     endpoint.searchParams.set('t', mode);
-    endpoint.searchParams.set('q', episodic && !includeYear ? `${title} ${episodeTag(media)}` : `${title} ${media.type === 'movie' && includeYear ? media.year || '' : ''}`.trim());
-    if (episodic && includeYear) { endpoint.searchParams.set('season', media.season); endpoint.searchParams.set('ep', media.episode); }
+    endpoint.searchParams.set('q', episodic && (mode === 'search' || !includeYear) ? `${title} ${episodeTag(media)}` : `${title} ${media.type === 'movie' && includeYear ? media.year || '' : ''}`.trim());
+    if (episodic && mode === 'tvsearch' && includeYear) { endpoint.searchParams.set('season', media.season); endpoint.searchParams.set('ep', media.episode); }
     endpoint.searchParams.set('apikey', settings.indexerKey); endpoint.searchParams.set('limit', '100');
     const releases = new Map();
     // Fetch search metadata only; NZB/article inspection still uses the bounded
@@ -1558,7 +1558,11 @@ export async function findReleases(settings, media, includeYear = true, { reques
     candidates = [...candidates, ...await fallbackSearch(primaryTitles, 'search')];
     ranked = rank(candidates);
   }
-  if (ranked.length || !settings.tmdbToken || !media.id) return ranked;
+  if (episodic && includeYear && ranked.length <= 1) {
+    candidates = [...candidates, ...await fallbackSearch(primaryTitles, 'search')];
+    ranked = rank(candidates);
+  }
+  if (ranked.length > 1 || !settings.tmdbToken || !media.id || media.type === 'movie' && ranked.length) return ranked;
   const aliases = await alternativeTitles(settings, media).catch(() => { settings.signal?.throwIfAborted(); return []; });
   settings.signal?.throwIfAborted();
   const extraTitles = [...new Set(aliases.flatMap(titleVariants))].filter(title => !primaryTitles.includes(title)).slice(0, 8);
@@ -1567,6 +1571,7 @@ export async function findReleases(settings, media, includeYear = true, { reques
   candidates = [...candidates, ...await fallbackSearch(extraTitles, mode)];
   ranked = rank(candidates, selection);
   if (!ranked.length && media.type === 'movie') ranked = rank([...candidates, ...await fallbackSearch(extraTitles, 'search')], selection);
+  if (episodic && includeYear && ranked.length <= 1) ranked = rank([...candidates, ...await fallbackSearch(extraTitles, 'search')], selection);
   return ranked;
 }
 async function loadNzb(release, settings, signal) {
@@ -1736,7 +1741,9 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       archivePlans.delete?.(job.media);
       jobEvent(job, 'release-rejected', `Archive playback check failed: ${error.message}`, { release: job.release });
       delete job.archiveSource; delete job.progressiveArchive; delete job.archiveResume;
-      delete job.archives; delete job.file; delete job.preparedSession;
+      // Keep the archive volumes so an explicit retry can prepare a full copy
+      // when this was the only release. The failed live source is discarded.
+      delete job.file; delete job.preparedSession;
       return false;
     }
   };

@@ -480,6 +480,27 @@ test('speculative resume preparation does not extract a cold archive before play
   assert.equal(playback.status, 'error');
 });
 
+test('a failed progressive archive check keeps its volumes for a requested full download retry', async () => {
+  const playback = job();
+  await preparePlayback(playback, { usenetHost: 'provider.example' }, {
+    search: async () => [{ title: 'Only archive' }],
+    load: async () => nzb('rar'),
+    check: async () => Buffer.from('archive'),
+    health: { has: async () => false },
+    plans: createPlaybackPlanCache(),
+    progressive: async candidate => {
+      candidate.status = 'ready';
+      candidate.mode = 'direct';
+      return true;
+    },
+    preflight: async () => { throw new Error('Progressive stream ended early.'); },
+    archive: async () => { assert.fail('Full download requires an explicit retry.'); }
+  });
+  assert.equal(playback.status, 'error');
+  assert.match(playback.message, /No replacement streaming archive/);
+  assert.ok(playback.archives?.length, 'retry needs the selected archive volumes');
+});
+
 test('unsupported progressive archives retain the original ranked full-download fallback', async () => {
   const playback = job(), inspected = [], downloaded = [];
   await preparePlayback(playback, {}, {

@@ -103,8 +103,51 @@ test('searches a series alternative name with the selected episode', async () =>
       return { ok: true, text: async () => `<rss><newznab:response offset="0" total="${item ? 1 : 0}" />${item}</rss>` };
     }
   });
-  assert.deepEqual(queries, [['Original Series', '2', '3'], ['Other Series', '2', '3']]);
+  assert.deepEqual(queries, [
+    ['Original Series', '2', '3'],
+    ['Original Series S02E03', null, null],
+    ['Other Series', '2', '3'],
+    ['Other Series S02E03', null, null]
+  ]);
   assert.deepEqual(releases.map(release => release.title), ['Other.Series.S02E03.1080p.WEB-DL']);
+});
+
+test('widens an episode search when TV search finds only one eligible release', async () => {
+  const queries = [];
+  const releases = await findReleases(settings, { type: 'tv', title: 'Attack on Titan', season: 1, episode: 17 }, true, {
+    request: async url => {
+      const mode = url.searchParams.get('t'), query = url.searchParams.get('q');
+      queries.push([mode, query, url.searchParams.get('season'), url.searchParams.get('ep')]);
+      const title = mode === 'tvsearch'
+        ? 'Attack.on.Titan.S01E17.1080p.Dual-Audio.Bluray'
+        : mode === 'search' && query === 'Attack on Titan S01E17'
+          ? 'Attack.on.Titan.S01E17.720p.English.WEB-DL' : '';
+      return { ok: true, text: async () => `<rss><newznab:response offset="0" total="${title ? 1 : 0}" />${title ? `<item><title>${title}</title><enclosure url="https://indexer.example/nzb/${mode}" /></item>` : ''}</rss>` };
+    }
+  });
+  assert.deepEqual(releases.map(release => release.title).sort(), [
+    'Attack.on.Titan.S01E17.1080p.Dual-Audio.Bluray',
+    'Attack.on.Titan.S01E17.720p.English.WEB-DL'
+  ].sort());
+  assert.deepEqual(queries, [['tvsearch', 'Attack on Titan', '1', '17'], ['search', 'Attack on Titan S01E17', null, null]]);
+});
+
+test('searches series aliases even when the primary episode title has one release', async () => {
+  const queries = [];
+  const releases = await findReleases({ ...settings, tmdbToken: 'test' }, { id: 1429, type: 'tv', title: 'Attack on Titan', season: 1, episode: 17 }, true, {
+    alternativeTitles: async () => ['Shingeki no Kyojin'],
+    request: async url => {
+      const mode = url.searchParams.get('t'), query = url.searchParams.get('q');
+      queries.push([mode, query]);
+      const title = mode === 'tvsearch' && query === 'Attack on Titan'
+        ? 'Attack.on.Titan.S01E17.1080p.Dual-Audio.Bluray'
+        : mode === 'search' && query === 'Shingeki no Kyojin S01E17'
+          ? 'Shingeki.no.Kyojin.S01E17.720p.English.WEB-DL' : '';
+      return { ok: true, text: async () => `<rss><newznab:response offset="0" total="${title ? 1 : 0}" />${title ? `<item><title>${title}</title><enclosure url="https://indexer.example/nzb/${mode}-${encodeURIComponent(query)}" /></item>` : ''}</rss>` };
+    }
+  });
+  assert.equal(releases.length, 2);
+  assert.ok(queries.some(([mode, query]) => mode === 'search' && query === 'Shingeki no Kyojin S01E17'));
 });
 test('release discovery follows all result pages and retains later uploads', async () => {
   const offsets=[];
