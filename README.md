@@ -93,6 +93,28 @@ Local settings, downloads, credentials and generated build output are excluded
 from the Docker build context.
 
 
+## Playback logs
+
+Server playback events are written to stdout as JSON lines, independently of
+the Playback diagnostics setting. Each line includes a timestamp, `jobId`,
+activity, and the available playback mode and strategy. HLS requests, readiness,
+cancellations and preparation failures also include `sessionId`, the requested
+`start` position in seconds, and elapsed preparation time where applicable.
+Credential-shaped fields and HTTP URLs are redacted. Release titles can appear
+in logs.
+
+Capture an intermittent seek failure on the Docker host with:
+
+```sh
+docker logs --since 15m --timestamps watchhouse > playback.log 2>&1
+```
+
+Look for `hls-request`, `segments-ready`, `hls-error`, and `hls-cancelled`,
+then correlate entries by `jobId` and `sessionId`. Container logs follow Docker's
+configured retention policy. Browser-only seeks, buffering and player state
+still require the watch page's **Download diagnostic report**; enable Playback
+diagnostics before starting playback and download the report before refreshing.
+
 ## Progressive archive playback
 
 Foreground playback tries supported archives progressively after exhausting

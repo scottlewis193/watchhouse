@@ -34,6 +34,7 @@ import { downloadPostedFiles } from './archive-download.js';
 import { createArchiveResumeCache } from './archive-resume-cache.js';
 import { createProgressiveArchiveSource } from './progressive-archive.js';
 import { tryCreateStoredRarSource } from './stored-rar-source.js';
+import { logPlaybackEvent } from './playback-log.js';
 
 const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, 'data', 'settings.json');
@@ -1600,6 +1601,7 @@ async function probeObfuscatedNzb(nzb, settings) {
 }
 function jobEvent(job, activity, message, details = {}) {
   notifyPlayback(job);
+  logPlaybackEvent(job, activity, message, details);
   if (!job.diagnosticsEnabled) return;
   job.events ||= [];
   job.events.push({ at: Date.now(), activity, message, ...details });
@@ -2492,6 +2494,8 @@ export async function handleRequest(req, res) {
         const input = await body(req), start = Number(input.start || 0);
         if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid playback position.' });
         const id = randomUUID(), settings = await readSettings();
+        const requestedAt = Date.now();
+        jobEvent(job, 'hls-request', 'Browser requested playback segments.', { sessionId: id, start, audioTrack: input.audioTrack });
         // A session may opt out without modifying the saved user preference.
         if (input.frameInterpolation === false) settings.frameInterpolation = false;
         const preparationController = new AbortController(); settings.signal = preparationController.signal;
@@ -2505,7 +2509,7 @@ export async function handleRequest(req, res) {
           const serialized = JSON.stringify(event);
           if (serialized !== lastProgress) { lastProgress = serialized; res.write(serialized + '\n'); }
         };
-        req.on('close', () => { if (!delivered) { cancelled = true; preparationController.abort(); void session?.close().catch(() => {}); } });
+        req.on('close', () => { if (!delivered) { cancelled = true; jobEvent(job, 'hls-cancelled', 'Browser cancelled segment preparation.', { sessionId: id, start, elapsedMs: Date.now() - requestedAt }); preparationController.abort(); void session?.close().catch(() => {}); } });
         if (streaming) {
           res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
           report(0);
@@ -2521,7 +2525,7 @@ export async function handleRequest(req, res) {
           await session.ready(session.health().interpolated ? { maxWaitMs: 15000 } : job.progressiveArchive ? {
             progress: () => job.archiveSource?.available || 0, maxWaitMs: 300000
           } : undefined);
-          jobEvent(job, 'segments-ready', 'First playback segment is ready.');
+          jobEvent(job, 'segments-ready', 'First playback segment is ready.', { sessionId: id, start, elapsedMs: Date.now() - requestedAt });
           beginOfflineFinalization(job);
           if (cancelled) return;
           // Let the browser fetch its first local HLS assets before the
@@ -2542,13 +2546,14 @@ export async function handleRequest(req, res) {
             error.code = 'INTERPOLATION_TOO_SLOW';
             error.message = 'Frame interpolation could not prepare segments fast enough.';
           }
+          if (!cancelled) jobEvent(job, 'hls-error', error.message || 'Segment preparation failed.', { sessionId: id, start, elapsedMs: Date.now() - requestedAt, code: error.code });
           if (streaming) { if (!cancelled) res.end(JSON.stringify({ type: 'error', error: error.message, code: error.code }) + '\n'); return; }
           throw error;
         } finally { clearInterval(progressTimer); }
       }
       const entry = hlsSessions.get(sessionId);
       if (!entry || entry.jobId !== jobId) return json(res, 404, { error: 'Playback segments have expired.' });
-      if (req.method === 'POST' && asset === 'stop') { await entry.session.close(); return json(res, 200, { stopped: true }); }
+      if (req.method === 'POST' && asset === 'stop') { jobEvent(job, 'hls-stop', 'Browser stopped the playback session.', { sessionId }); await entry.session.close(); return json(res, 200, { stopped: true }); }
       if (req.method === 'POST' && asset === 'heartbeat') { entry.session.touch(); entry.session.playbackState(await body(req)); return json(res, 200, {}); }
       if (req.method === 'GET' && asset === 'status') { entry.session.touch(); return json(res, 200, { ...entry.session.health(), sourceRejected: Boolean(job.rejectedReleases?.has(job.releaseKey || job.release)) }); }
       if (['GET', 'HEAD'].includes(req.method) && /\.(m3u8|mp4|m4s)$/.test(asset)) {
@@ -2645,6 +2650,9 @@ export async function handleRequest(req, res) {
     }
     json(res, 404, { error: 'Not found.' });
   } catch (error) {
+    const streamJobId = req.url?.match(/^\/api\/play\/([\w-]+)\/stream(?:\?|$)/)?.[1];
+    const streamJob = streamJobId && playbackJobs.get(streamJobId);
+    if (streamJob) jobEvent(streamJob, 'stream-error', error.message || 'Video streaming failed.', { code: error.code });
     if (res.headersSent) res.destroy(error);
     else json(res, error.status === 429 ? 429 : 500, { error: error.message || 'Unexpected server error.', ...(error.code ? { code: error.code } : {}) });
   }
