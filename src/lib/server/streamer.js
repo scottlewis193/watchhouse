@@ -1666,6 +1666,7 @@ function setJob(job, status, message, progress = job.progress) {
   Object.assign(job, { status, message, progress });
   if (changed) jobEvent(job, status, message, { progress });
 }
+const downloadNotifications = new WeakMap();
 function updateDownload(job, state, maximum = 85) {
   const elapsed = Math.max((Date.now() - state.started) / 1000, 0.1);
   const speed = state.bytes / elapsed;
@@ -1675,6 +1676,12 @@ function updateDownload(job, state, maximum = 85) {
     download: { completedSegments: state.completed, totalSegments: state.total, bytes: state.bytes, bytesPerSecond: speed, remainingSeconds },
     message: `Downloading · ${state.completed}/${state.total} segments${remainingSeconds ? ` · about ${remainingSeconds}s remaining` : ''}`
   });
+  // Wake watch-page status requests without sending a response per article.
+  const now = Date.now(), last = downloadNotifications.get(state);
+  if (last === undefined || now - last >= 1000 || state.completed >= state.total) {
+    downloadNotifications.set(state, now);
+    notifyPlayback(job);
+  }
 }
 async function writePostedFile(posted, path, settings, job, state, maximum) {
   return writePostedFiles([{ posted, path }], settings, job, state, maximum);

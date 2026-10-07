@@ -20,6 +20,49 @@ test('buffered streamed seeks reuse the source and preserve pause', () => {
   assert.equal(f.warmups,0); assert.equal(f.scheduled,0);
 });
 
+test('seeks reuse produced HLS segments after the browser evicts them from its buffer', () => {
+  for (const paused of [true, false]) {
+    const f = fixture(paused);
+    f.state.player.currentTime = 120;
+    f.state.player.buffered = { length: 1, start: () => 90, end: () => 150 };
+    f.state.player.seekable = { length: 1, start: () => 0, end: () => 180 };
+    for (const target of [130, 270]) {
+      f.state.seekToPosition(target);
+      assert.equal(f.state.player.currentTime, target - 100);
+      assert.equal(f.state.resumeStreamOffset, 100);
+      assert.equal(f.state.player.paused, paused);
+      assert.equal(f.scheduled, 0, 'already produced segments must not start a new conversion');
+      assert.equal(f.warmups, 0);
+    }
+  }
+});
+
+test('a seek into produced segments cancels a pending conversion seek', () => {
+  const f = fixture();
+  const timers = new Map();
+  f.state.setTimeout = callback => { timers.set(1, callback); return 1; };
+  f.state.clearTimeout = id => timers.delete(id);
+  f.state.player.seekable = { length: 1, start: () => 0, end: () => 180 };
+  f.state.seekToPosition(420);
+  assert.equal(timers.size, 1);
+  f.state.seekToPosition(270);
+  assert.equal(timers.size, 0);
+  assert.equal(f.state.player.currentTime, 170);
+  assert.equal(f.state.resumeStreamOffset, 100);
+  assert.equal(f.warmups, 0);
+});
+
+test('positions outside produced ranges and at the unfinished edge still prepare a new stream', () => {
+  for (const target of [90, 220, 279.75, 280, 420]) {
+    const f = fixture();
+    f.state.player.buffered = { length: 0 };
+    f.state.player.seekable = { length: 2, start: i => i === 0 ? 0 : 140, end: i => i === 0 ? 100 : 180 };
+    f.state.seekToPosition(target);
+    assert.equal(f.scheduled, 1, `target ${target} needs fresh segments`);
+    assert.equal(f.state.player.currentTime, 20);
+  }
+});
+
 test('rapid unbuffered seeks replace pending work and preserve paused state', () => {
   const f=fixture();const timers=new Map();let id=0;
   f.state.setTimeout=callback=>{timers.set(++id,callback);return id;};

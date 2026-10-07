@@ -9,8 +9,33 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { writePostedFiles } from '../src/lib/server/streamer.js';
+import { waitForPlayback } from '../src/lib/server/playback-notifications.js';
 
 const execute = promisify(execFile);
+
+test('full download progress wakes the watch page while the next article is still pending', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'download-progress-'));
+  const job = { status: 'downloading', revision: 1 };
+  const state = { completed: 0, bytes: 0, total: 2, started: Date.now() };
+  let release, download;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const controller = new AbortController();
+  try {
+    const update = waitForPlayback(job, 1, { signal: controller.signal, timeout: 1000 });
+    download = writePostedFiles([{ path: join(directory, 'video'), posted: { segments: [{ id: 'first' }, { id: 'second' }] } }],
+      { maxConnections: 1 }, job, state, 90, async () => ({ close() {}, async body(id, line) {
+        if (id === 'second') await blocked;
+        await line(String.fromCharCode(65 + 42));
+      } }));
+    const notified = await Promise.race([update.then(() => true), delay(100).then(() => false)]);
+    assert.equal(notified, true, 'download progress must not wait for the 15-second readiness timeout');
+    assert.equal(job.status, 'downloading');
+    assert.ok(job.download.totalSegments > 0);
+    release(); await download;
+    assert.equal(job.download.completedSegments, 2);
+    assert.ok(job.revision > 1);
+  } finally { controller.abort(); release(); await download?.catch(() => {}); await rm(directory, { recursive: true, force: true }); }
+});
 
 test('archive workers cross volume boundaries while an earlier article is still downloading', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'archive-queue-'));

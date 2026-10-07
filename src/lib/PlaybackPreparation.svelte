@@ -1,5 +1,11 @@
 <script>
-  let { title, message = '', progress = 0, download = null, detailed = false, error = false, indeterminate = false, artwork = '' } = $props();
+  import { playbackDownloadProgress, playbackPreparationStage } from './playback-download.js';
+  let { title, message = '', progress = 0, download = null, status = '', detailed = false, error = false, indeterminate = false, artwork = '' } = $props();
+  const stage = $derived(playbackPreparationStage(status));
+  const downloading = $derived(status === 'downloading');
+  const transfer = $derived(playbackDownloadProgress(download));
+  const shownProgress = $derived(downloading ? transfer.percent : progress);
+  const unknown = $derived(indeterminate || downloading && transfer.percent === null);
 
   function formatBytes(bytes) {
     if (!bytes) return '';
@@ -16,19 +22,19 @@
   <div class="preparation-panel relative w-full max-w-lg">
     <div class="preparation-heading">
       <span class="playback-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.25 5.6v12.8L18 12 8.25 5.6Z" /></svg></span>
-      <p class="preparation-kicker">{error ? 'Playback unavailable' : 'Preparing playback'}</p>
+      <p class="preparation-kicker">{error ? 'Playback unavailable' : stage?.title || 'Preparing playback'}</p>
     </div>
     <h2 class="preparation-title">{title}</h2>
-    {#if message}<p class="preparation-message" aria-live="polite">{message}</p>{/if}
+    {#if stage?.message || message}<p class="preparation-message" aria-live="polite">{stage?.message || message}</p>{/if}
     {#if !error}
-      {#if indeterminate}
-        <div class="preparation-progress" role="progressbar" aria-label="Preparing the video stream"><div class="preparation-progress-indeterminate"></div></div>
-        <p class="preparation-detail">Still working — this final stage can take a little longer.</p>
+      {#if unknown}
+        <div class="preparation-progress" role="progressbar" aria-label={stage?.title || 'Preparing the video stream'}><div class="preparation-progress-indeterminate"></div></div>
+        <p class="preparation-detail">{downloading ? 'Starting download…' : 'Still working — this final stage can take a little longer.'}</p>
       {:else}
-        <div class="preparation-progress" role="progressbar" aria-label="Preparing playback" aria-valuenow={Math.round(progress || 0)} aria-valuemin="0" aria-valuemax="100"><div class="preparation-progress-fill" style={`width: ${Math.min(100, Math.max(3, progress || 0))}%`}></div></div>
-        {#if detailed}<p class="preparation-detail tabular-nums">{Math.round(progress || 0)}% complete</p>{/if}
+        <div class="preparation-progress" role="progressbar" aria-label={stage?.title || 'Preparing playback'} aria-valuenow={Math.round(shownProgress || 0)} aria-valuemin="0" aria-valuemax="100"><div class="preparation-progress-fill" style={`width: ${Math.min(100, Math.max(0, shownProgress || 0))}%`}></div></div>
+        {#if downloading || detailed}<p class="preparation-detail tabular-nums">{Math.round(shownProgress || 0)}% {downloading ? 'downloaded' : 'complete'}</p>{/if}
       {/if}
-      {#if detailed && download}<p class="preparation-detail">{formatBytes(download.bytes)} downloaded · {formatBytes(download.bytesPerSecond)}/s{download.remainingSeconds ? ` · about ${download.remainingSeconds}s remaining` : ''}</p>{/if}
+      {#if downloading}<p class="preparation-detail">{transfer.detail}</p>{:else if detailed && download && !stage}<p class="preparation-detail">{formatBytes(download.bytes)} downloaded · {formatBytes(download.bytesPerSecond)}/s{download.remainingSeconds ? ` · about ${download.remainingSeconds}s remaining` : ''}</p>{/if}
     {/if}
   </div>
 </div>

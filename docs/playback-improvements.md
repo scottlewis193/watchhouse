@@ -6,8 +6,10 @@ positions and offline-copy preference remain in place.
 
 ## Behaviour
 
-- Buffered seeks use the existing media element and session. Unbuffered seeks
-  coalesce for 150 ms; paused scrubbing and audio switching remain paused.
+- Buffered seeks and seeks within the current HLS seekable range use the existing
+  media element and session. Segments evicted from the browser's memory buffer
+  reload from the session's retained output instead of starting another conversion.
+  Seeks outside those ranges coalesce for 150 ms; paused scrubbing and audio switching remain paused.
   Keyboard range controls retain their native arrow handling. Exact-end seeks
   leave a quarter-second decoding margin.
 - Essential status checks retry transient failures with a capped backoff and
@@ -67,6 +69,54 @@ positions and offline-copy preference remain in place.
   wrap on narrow layouts rather than forcing horizontal overflow.
 
 ## Segment measurement
+
+### Full-download progress — 7 October 2026
+
+Full-download preparation now shows a distinct Downloading video stage in the
+title card and player preparation panel, even when detailed progress and
+diagnostics are disabled. It explains why playback is waiting, shows transfer
+percentage, downloaded bytes, speed and an approximate remaining time, and keeps
+Cancel available. Percentage comes from completed download articles rather than
+the overall preparation percentage, which reserves room for unpacking and checks.
+Unknown transfer totals use an indeterminate indicator instead of a guessed percentage.
+After the transfer, Unpacking video and Preparing video explain the remaining work.
+
+Download updates now notify held watch-page status requests, at most once a
+second during transfer plus the initial and completed updates. A regression
+using the actual file downloader previously failed to wake the waiting request
+within 100 ms and now passes while a later article is still blocked.
+
+The production build and all 429 tests passed. A Chromium check with mocked
+movie APIs verified progress changing from 50% to 75%, details with both display
+settings disabled, desktop and 375-pixel layouts, and transitions through
+downloading, unpacking and preparation. These are local checks; the deployed
+Umbrel container has not been changed.
+
+### Retained-segment seeking — 7 October 2026
+
+The deployed John Wick session requested position 5239.561858 seconds at
+2026-10-06T18:25:06.591Z and reported its first segment ready 4041 ms later.
+That identifies server preparation time for one seek, not its browser buffering
+time or whether its target was already available in a previous session.
+
+The player previously reused only `video.buffered`, even though EVENT playlists
+retain older segments on the server. A regression invoking the actual Svelte
+seek handler failed for an evicted but seekable target, then passed after adding
+`video.seekable` to the reuse check. Positions before the current session's
+offset, gaps, and the unfinished playlist edge still prepare a new session.
+
+A separate Chromium check used generated 100-second SDR/AAC media, the real
+HLS source action, and the actual seek handler. After seeking to 70 seconds,
+the browser's buffer began at 70 while its seekable range remained 0–100.
+Rewinding to 5 seconds reached advancing video in 166 ms, with one total
+conversion setup request and no session stop. Paused and playing seeks retained
+their intent; a target outside the playlist still entered preparation. This is
+a controlled local observation, not a production or 4K latency guarantee.
+Arbitrary jumps into unproduced video can still wait for source reads and encoding.
+Validation: `npm test` passed all 425 tests; `npm run build` passed with the
+existing `searchInput` reactivity warning in the layout; `git diff --check` passed.
+
+### Segment duration comparison
 
 `node scripts/measure-hls-segments.js` generates an isolated eight-second
 640 × 360 SDR/AAC fixture, alternates two/four-second trial order and performs

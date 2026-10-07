@@ -4,6 +4,7 @@
   import { frameTiming } from '$lib/frame-timing.js';
   import { playbackSource } from '$lib/hls-playback.js';
   import { playbackSetupProgress, readPlaybackSetup } from '$lib/playback-setup.js';
+  import { playbackDownloadProgress, playbackPreparationStage } from '$lib/playback-download.js';
   import { goto, replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
@@ -979,11 +980,16 @@
     seekPreview = null;
     if (hasGrowingStreamDuration(playback?.mode)) {
       const relative = target - resumeStreamOffset;
-      for (let i = 0; i < player.buffered.length; i++) {
-        if (relative >= player.buffered.start(i) && relative < player.buffered.end(i) - 0.25) {
-          clearTimeout(seekTimer); seekTimer = null;
-          player.currentTime = relative;
-          return;
+      // EVENT playlists retain produced segments even after the browser evicts
+      // them from its buffer. Reload those local segments instead of converting
+      // the same position again. Keep a margin at the unfinished playlist edge.
+      for (const ranges of [player.buffered, player.seekable]) {
+        for (let i = 0; i < (ranges?.length || 0); i++) {
+          if (relative >= ranges.start(i) && relative < ranges.end(i) - 0.25) {
+            clearTimeout(seekTimer); seekTimer = null;
+            player.currentTime = relative;
+            return;
+          }
         }
       }
       void savePlaybackProgress(true);
@@ -1134,20 +1140,23 @@
 {/snippet}
 
 {#snippet heroPreparation(message, progress = 0, status = '', indeterminate = false)}
-  {@const setup = resumeStarting && setupProgress}
-  {@const shownProgress = setup ? setup.percent : progress}
-  {@const unknown = indeterminate && !setup}
+  {@const setup = resumeStarting && status === 'ready' && setupProgress}
+  {@const downloading = status === 'downloading'}
+  {@const stage = playbackPreparationStage(status)}
+  {@const transfer = playbackDownloadProgress(playback?.download)}
+  {@const shownProgress = downloading ? transfer.percent : setup ? setup.percent : progress}
+  {@const unknown = downloading ? transfer.percent === null : indeterminate && !setup}
   <div class="hero-preparation" class:hero-preparation-error={status === 'error'} aria-live="polite">
     <div class="hero-preparation-heading">
       <span class="hero-preparation-mark" aria-hidden="true">{status === 'error' ? '!' : '▶'}</span>
-      <span class="hero-preparation-copy"><strong>{status === 'error' ? 'Playback unavailable' : heroLaunching && !playback ? 'Opening' : 'Preparing playback'}</strong><small>{setup ? `${setup.completed}/${setup.total} steps complete · ${setup.message}` : message || `Opening ${currentMedia?.episodeTitle || media.title}…`}{#if setup?.detail}<span class="mt-1 block text-white/55">{setup.detail}</span>{/if}</small></span>
-      {#if status !== 'error' && detailedPlaybackProgress && !unknown && !setup}<span class="hero-preparation-percent">{Math.round(shownProgress || 0)}%</span>{/if}
+      <span class="hero-preparation-copy"><strong>{status === 'error' ? 'Playback unavailable' : stage?.title || (heroLaunching && !playback ? 'Opening' : 'Preparing playback')}</strong><small>{setup ? `${setup.completed}/${setup.total} steps complete · ${setup.message}` : stage?.message || message || `Opening ${currentMedia?.episodeTitle || media.title}…`}{#if downloading}<span class="hero-download-detail">{transfer.detail}</span>{:else if setup?.detail}<span class="mt-1 block text-white/55">{setup.detail}</span>{/if}</small></span>
+      {#if status !== 'error' && (downloading || detailedPlaybackProgress) && !unknown && !setup}<span class="hero-preparation-percent">{Math.round(shownProgress || 0)}%</span>{/if}
       {#if status !== 'error'}<button class="hero-preparation-retry" onclick={() => void returnToHero()}>Cancel</button>{/if}
       {#if status === 'error' && playback?.id}<button class="hero-preparation-retry" onclick={retryPlayback}>Try again</button>{/if}
       {#if status === 'error' && !offlineMode && currentMedia}<button class="hero-preparation-retry" onclick={() => void chooseAnotherRelease()}>Choose release</button>{/if}
     </div>
     {#if status !== 'error'}
-      <div class="hero-preparation-track" role="progressbar" aria-label="Preparing playback" aria-valuenow={unknown ? undefined : Math.round(shownProgress || 0)} aria-valuetext={setup ? `${setup.completed} of ${setup.total} preparation steps complete${setup.detail ? `, ${setup.detail}` : ''}` : undefined} aria-valuemin="0" aria-valuemax="100">
+      <div class="hero-preparation-track" role="progressbar" aria-label={stage?.title || 'Preparing playback'} aria-valuenow={unknown ? undefined : Math.round(shownProgress || 0)} aria-valuetext={downloading ? `${unknown ? 'Starting download' : `${shownProgress}% downloaded`}, ${transfer.detail}` : setup ? `${setup.completed} of ${setup.total} preparation steps complete${setup.detail ? `, ${setup.detail}` : ''}` : undefined} aria-valuemin="0" aria-valuemax="100">
         <span class:hero-preparation-indeterminate={unknown} style={`width: ${Math.min(100, Math.max(0, shownProgress || 0))}%`}></span>
       </div>
     {/if}
@@ -1178,7 +1187,7 @@
         <h1>{media.title || 'Watch'}</h1>
         {#if currentMedia?.episodeTitle}<p class="watch-episode-name">{currentMedia.episodeTitle}</p>{/if}
         {#if titleDetails.overview}<p class="watch-overview">{titleDetails.overview}</p>{/if}
-        <div class="hero-action-slot" class:hero-action-slot-detailed={resumeStarting && setupProgress?.detail}>
+        <div class="hero-action-slot" class:hero-action-slot-detailed={resumeStarting && setupProgress?.detail} class:hero-action-slot-download={playback?.status === 'downloading'}>
           {#if playback || heroLaunching}
             {@render heroPreparation(resumeStarting ? (resumeStreamOffset > 0 ? `Opening the stream and restoring your position at ${formatPosition(resumeStreamOffset)}…` : 'Opening the video stream and preparing the first frames…') : playback?.message, playback?.progress, playback?.status, resumeStarting || heroLaunching && !playback || playback?.status === 'extracting' || playback?.status === 'optimizing')}
           {:else}
@@ -1257,12 +1266,12 @@
             </div>
             </div>{/if}
           {:else}
-            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
+            <div class="absolute inset-0 z-20"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} status={playback?.status} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
           {/if}
           {#if showUpNext && nextMedia}<div class="up-next-panel absolute inset-x-3 bottom-24 z-30 sm:left-auto sm:right-5 sm:w-[27rem]"><div class="up-next-countdown"><span>{upNextSeconds}</span><small>SEC</small></div><div class="min-w-0 flex-1"><p class="player-eyebrow">Up next · Episode {nextMedia.episode}</p><p class="up-next-title">{nextMedia.episodeTitle}</p><p class="up-next-detail">{nextJob?.status === 'ready' ? upNextReason : 'Preparing in the background…'}</p></div><div class="up-next-actions"><button class="player-popup-button player-popup-button-primary" onclick={playNextEpisode} disabled={nextJob?.status !== 'ready'} aria-label="Play next episode">▶</button><button class="player-popup-button" onclick={cancelUpNext}>Cancel</button></div></div>{/if}
         </div>
       {:else}
-        <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
+        <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} status={playback?.status} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
       {/if}
       {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}{#if !offlineMode && currentMedia}<button class="btn btn-sm" onclick={() => void chooseAnotherRelease()}>Choose release</button>{/if}</div>{/if}
       </div>
