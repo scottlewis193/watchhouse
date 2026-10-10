@@ -4,6 +4,16 @@ import { catalogueAlternativeTitles, findReleases } from '../src/lib/server/stre
 const media = { type: 'tv', title: 'Silo', season: 1, episode: 1 };
 const settings = { indexerUrl: 'https://indexer.example', indexerKey: 'test' };
 const xml = (start, count, total) => `<rss><newznab:response offset="${start}" total="${total}" />${Array.from({length:count}, (_, i) => `<item><title>Silo.S01E01.1080p.H264.Release${start+i}</title><enclosure url="https://indexer.example/nzb/${start+i}" /></item>`).join('')}</rss>`;
+test('Silo episode search reports an indexer account error instead of no releases', async () => {
+  let calls = 0;
+  await assert.rejects(findReleases(settings, { ...media, episode: 2 }, true, {
+    request: async () => {
+      calls++;
+      return { ok: true, text: async () => '<?xml version="1.0"?><error code="106" description="Account Flagged - Logon To View Reason"/>' };
+    }
+  }), /Indexer error 106: Account Flagged - Logon To View Reason/);
+  assert.equal(calls, 1);
+});
 test('automatic search orders target resolution before lower fallbacks while manual search shows every release', async () => {
   const titles = ['Silo.S01E01.720p.H264', 'Silo.S01E01.1080p.H264', 'Silo.S01E01.2160p.HEVC'];
   const request = async () => ({ ok: true, text: async () => `<rss><newznab:response offset="0" total="3" />${titles.map((title, i) => `<item><title>${title}</title><enclosure url="https://indexer.example/nzb/${i}" /></item>`).join('')}</rss>` });

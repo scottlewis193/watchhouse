@@ -157,6 +157,12 @@ test('decodes XML entities in Newznab enclosure URLs', () => {
   assert.equal(target.searchParams.has('amp;id'), false);
 });
 
+test('rejects Newznab error payloads but accepts genuinely empty search results', () => {
+  assert.throws(() => searchResults("<newznab:error code='100' description='Invalid &amp; expired key' />"), /Indexer error 100: Invalid & expired key/);
+  assert.throws(() => searchResults('<error code="500"/>'), /Indexer error 500: The provider rejected the search/);
+  assert.deepEqual(searchResults('<rss><channel><newznab:response offset="0" total="0"/></channel></rss>'), []);
+});
+
 test('maps only TMDB movies and shows from catalogue results', () => {
   const results = mapTmdbTitles({ results: [
     { id: 101, media_type: 'movie', title: 'Film', release_date: '2024-03-01', overview: 'Film overview', poster_path: '/film.jpg' },

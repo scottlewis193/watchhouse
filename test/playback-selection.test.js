@@ -3,10 +3,41 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { NntpClient, preparePlayback, createPlaybackPlanCache } from '../src/lib/server/streamer.js';
 import { rankReleases } from '../media.js';
+import { waitForPlayback } from '../src/lib/server/playback-notifications.js';
 
 const media = { type: 'tv', id: 95480, title: 'Slow Horses', season: 1, episode: 2 };
 const nzb = extension => `<nzb><file subject="episode.${extension}"><segments><segment number="1">article</segment></segments></file></nzb>`;
 const job = () => ({ media, events: [], status: 'selecting' });
+
+test('archive readiness notifications do not expose playback before preflight completes', async () => {
+  const playback = job();
+  let observed, notification, releaseCheck, pendingRevision;
+  const checked = new Promise(resolve => { releaseCheck = resolve; });
+  playback.archiveSource = {
+    metadata: { get name() {
+      notification ||= waitForPlayback(playback, playback.revision).then(() => { observed = playback.status; });
+      return 'episode.mkv';
+    }, size: 1024 },
+    randomAccess: true,
+    close: async () => {}
+  };
+  const preparation = preparePlayback(playback, { usenetHost: 'provider.example' }, {
+    search: async () => [{ title: 'Playable archive' }], load: async () => nzb('rar'),
+    check: async () => Buffer.from('archive'), health: { has: async () => false },
+    plans: createPlaybackPlanCache(), persistence: null,
+    preflight: async () => { await checked; return { sessionUrl: '/validated' }; }
+  });
+  try {
+    for (let i = 0; i < 50 && !notification; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(notification, 'the real progressive archive opening must publish a notification');
+    await notification;
+    assert.equal(observed, 'selecting', 'a status subscriber must not start HLS or fallback during preflight');
+    pendingRevision = playback.revision;
+  } finally { releaseCheck(); await preparation; }
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.preparedSession.sessionUrl, '/validated');
+  assert.ok(playback.revision > pendingRevision, 'validated readiness must wake subscribers even with diagnostics disabled');
+});
 
 test('checks later streamable releases before committing to a full archive download', async () => {
   const playback = job();
@@ -500,6 +531,22 @@ test('a failed progressive archive check downloads a copy during initial playbac
   assert.equal(playback.status, 'ready');
   assert.equal(playback.mode, 'cached-convert');
   assert.equal(downloads, 1);
+});
+
+test('an archive article missing during preflight never triggers a full download', async () => {
+  const playback = job();
+  let downloads = 0;
+  await preparePlayback(playback, { usenetHost: 'provider.example' }, {
+    search: async () => [{ title: 'Only archive' }], load: async () => nzb('rar'),
+    check: async () => Buffer.from('archive'), health: { has: async () => false, reject: async () => {} },
+    plans: createPlaybackPlanCache(),
+    progressive: async candidate => { candidate.status = 'ready'; candidate.mode = 'direct'; return true; },
+    preflight: async () => { throw Object.assign(new Error('Required archive article is missing.'), { code: 'USENET_ARTICLE_MISSING' }); },
+    archive: async () => { downloads++; }
+  });
+  assert.equal(downloads, 0, 'downloading cannot restore a missing article');
+  assert.equal(playback.status, 'error');
+  assert.match(playback.message, /missing/);
 });
 
 test('an explicitly chosen archive downloads after its progressive opening fails', async () => {

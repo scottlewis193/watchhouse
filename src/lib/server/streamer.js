@@ -181,6 +181,14 @@ function entityDecode(value = '') { return value.replace(/&amp;/g, '&').replace(
 function indexerError(xml) { return entityDecode((xml.match(/<error[^>]*\bdescription="([^"]*)"/i) || [, 'The indexer returned a non-NZB response.'])[1]); }
 function field(xml, name) { return entityDecode((xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i')) || [, ''])[1].replace(/<!\[CDATA\[|\]\]>/g, '').trim()); }
 export function searchResults(xml) {
+  // Newznab providers can return account/auth/rate-limit errors with HTTP 200.
+  // An error response is not evidence that the requested title has no releases.
+  const error = xml.match(/<(?:\w+:)?error\b([^>]*)>/i);
+  if (error) {
+    const code = error[1].match(/\bcode\s*=\s*["']([^"']*)["']/i)?.[1];
+    const description = error[1].match(/\bdescription\s*=\s*(["'])([\s\S]*?)\1/i)?.[2];
+    throw new Error(`Indexer error${code ? ` ${entityDecode(code)}` : ''}: ${description ? entityDecode(description) : 'The provider rejected the search.'}`);
+  }
   return [...xml.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/item>/gi)].map(([, item]) => ({
     title: field(item, 'title') || 'Untitled result',
     published: field(item, 'pubDate'),
@@ -1200,9 +1208,12 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     }
     return producer;
   } catch (error) {
+    // The local HTTP reader may have the actual provider/layout error while
+    // FFprobe reports only EOF. Preserve it before cleanup or fallback.
+    error = job.progressiveArchive && job.archiveSource?.failure || error;
     await producer?.stop();
     await rangeSource?.close();
-    if (job.progressiveArchive && job.archives && !settings.preflight && !['INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
+    if (job.progressiveArchive && job.archives && !settings.preflight && !['USENET_ARTICLE_MISSING', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
       job.progressiveArchiveDisabled = true;
       await prepareArchive(job, settings, job.archives);
       if (job.status !== 'ready') throw new Error(job.message || 'Archive fallback failed.');
@@ -1701,8 +1712,10 @@ async function tryProgressiveArchive(job, settings, archives) {
       job.archives = archives;
       const source = await progressiveSource(job, settings);
       const suggested = playbackStrategy(source.metadata.name, job.release);
-      Object.assign(job, { progressiveArchive: true, file: { subject: source.metadata.name }, strategy: suggested === 'raw' ? 'remux' : suggested, mode: 'direct', status: 'ready', progress: 100, message: 'Archive video is ready for progressive playback.' });
-      jobEvent(job, 'archive-progressive-ready', job.message, source.randomAccess
+      // Status subscribers can run before our caller resumes. Opening the
+      // archive must not expose it as playable while preflight is still pending.
+      Object.assign(job, { progressiveArchive: true, file: { subject: source.metadata.name }, strategy: suggested === 'raw' ? 'remux' : suggested, mode: 'direct', status: 'selecting', progress: 45, message: 'Archive video opened for progressive playback.' });
+      jobEvent(job, 'archive-progressive-opened', job.message, source.randomAccess
         ? { randomAccess: true, totalBytes: source.metadata.size }
         : { extractedBytes: source.available, totalBytes: source.metadata.size });
       return true;
@@ -1718,7 +1731,10 @@ async function tryProgressiveArchive(job, settings, archives) {
   return false;
 }
 async function prepareArchive(job, settings, archives) {
-  if (await tryProgressiveArchive(job, settings, archives)) return;
+  if (await tryProgressiveArchive(job, settings, archives)) {
+    setJob(job, 'ready', 'Archive video is ready for progressive playback.', 100);
+    return;
+  }
   await job.archiveSource?.close(); delete job.archiveSource; if (job.progressiveArchive) delete job.file; delete job.progressiveArchive;
   setJob(job, 'downloading', 'This release cannot stream directly. Downloading the archive first…', 0); const previousDirectory = job.directory; const root = job.offlineDownload && previousDirectory ? previousDirectory : PLAYBACK_CACHE_ROOT; await mkdir(root, { recursive: true }); const directory = await mkdtemp(join(root, job.offlineDownload ? 'candidate-' : 'playback-')); job.directory = directory; const names = archiveFilenames(archives); const total = archives.reduce((sum, file) => sum + file.segments.length, 0), state = { completed: 0, total, bytes: 0, started: Date.now() };
   try {
@@ -1742,22 +1758,28 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
   const recoveringSource = Boolean(job.rejectedReleases?.size);
   let failedPlanRelease = null;
   let savedDownloadChoice = null;
+  let archivePlaybackError = null;
   const checkArchivePlayback = async () => {
-    if (!preflight || !settings.usenetHost || job.speculative || job.prepareAhead || job.backgroundFor || job.offlineDownload) return true;
-    const readyMessage = job.message;
+    archivePlaybackError = null;
+    const readyMessage = job.message === 'Archive video opened for progressive playback.' ? 'Archive video is ready for progressive playback.' : job.message;
+    if (!preflight || !settings.usenetHost || job.speculative || job.prepareAhead || job.backgroundFor || job.offlineDownload) {
+      setJob(job, 'ready', readyMessage, 100);
+      return true;
+    }
     setJob(job, 'selecting', 'Checking archive playback speed…', 45);
     try {
       // Archive opening only checks availability. Verify sustained segment
       // production too, including when a previously opened archive is reused.
       job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs: 20000 });
-      Object.assign(job, { status: 'ready', progress: 100, message: readyMessage });
+      setJob(job, 'ready', readyMessage, 100);
       return true;
     } catch (error) {
       if (isDownloadCancelled(job, error)) throw error;
+      archivePlaybackError = error;
       const releaseKey = job.releaseKey || job.release;
       job.rejectedReleases ||= new Set();
       job.rejectedReleases.add(releaseKey);
-      if (['PLAYBACK_TOO_SLOW', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseKey);
+      if (['USENET_ARTICLE_MISSING', 'PLAYBACK_TOO_SLOW', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseKey);
       archivePlans.delete?.(job.media);
       jobEvent(job, 'release-rejected', `Archive playback check failed: ${error.message}`, { release: job.release });
       await job.archiveSource?.close?.();
@@ -1836,7 +1858,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       if (saved && matchesTargetResolution(saved.release, settings) && releaseDynamicRange(saved.release) === 'sdr'
         && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
         && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
-        Object.assign(job, saved, { archiveResume: true, status: 'ready', mode: 'direct', progress: 100, message: 'Reusing the archive video prepared earlier.' });
+        Object.assign(job, saved, { archiveResume: true, status: 'selecting', mode: 'direct', progress: 45, message: 'Reusing the archive video prepared earlier.' });
         if (await checkArchivePlayback()) {
           reusedReleaseSelection(job, settings, saved.release, 'Previously prepared archive passed its live playback check; search was skipped.');
           jobEvent(job, 'archive-resume-hit', job.message, saved.archiveSource.randomAccess
@@ -2015,7 +2037,11 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             try {
               if (await progressive(job, settings, choice.archives)) {
                 if (await checkArchivePlayback()) { finishReleaseSelection(job, candidateIndex); return; }
-                if (!recoveringSource) {
+                if (archivePlaybackError?.code === 'USENET_ARTICLE_MISSING') {
+                  choice.unavailable = archivePlaybackError;
+                  markReleaseSelection(job, candidateIndex, 'rejected', archivePlaybackError.message);
+                  missingArchiveProbes.set(resolution, (missingArchiveProbes.get(resolution) || 0) + 1);
+                } else if (!recoveringSource) {
                   markReleaseSelection(job, candidateIndex, 'deferred', 'Live archive opening failed; preparing the downloaded copy.');
                 } else {
                   choice.unavailable = new Error('Archive could not sustain playback.');
@@ -2581,7 +2607,7 @@ export async function handleRequest(req, res) {
         }
         return json(res, 200, publicJob(job));
       }
-      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || job.status === 'downloading') return json(res, 409, { error: 'Fallback download is not available.' }); const settings = await readSettings(); if (job.rejectedReleases?.has(job.releaseKey || job.release)) { job.downloadReplacement = true; delete job.file; delete job.prefetchedSegments; delete job.manualRelease; delete job.sourceRecoveryError; void preparePlayback(job, settings); } else if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
+      if (req.method === 'POST' && playMatch[2] === 'fallback') { if (job.mode !== 'direct' || ['selecting', 'downloading'].includes(job.status)) return json(res, 409, { error: 'Fallback download is not available while playback preparation is running.' }); jobEvent(job, 'download-fallback-request', 'Browser requested a downloaded playback copy.'); const settings = await readSettings(); if (job.rejectedReleases?.has(job.releaseKey || job.release)) { job.downloadReplacement = true; delete job.file; delete job.prefetchedSegments; delete job.manualRelease; delete job.sourceRecoveryError; void preparePlayback(job, settings); } else if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); return json(res, 202, publicJob(job)); }
       if (req.method === 'POST' && playMatch[2] === 'retry') { if (job.status !== 'error') return json(res, 409, { error: 'This playback job cannot be retried yet.' }); const settings = await readSettings(); if (job.progressiveArchive) { job.progressiveArchiveDisabled = true; void prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); } else if (job.file) cacheDirect(job, settings).catch(error => setJob(job, 'error', error.message, 0)); else if (job.archives) prepareArchive(job, settings, job.archives).catch(error => setJob(job, 'error', error.message, 0)); else return json(res, 409, { error: 'This release cannot be resumed.' }); return json(res, 202, publicJob(job)); }
       if (['GET', 'HEAD'].includes(req.method) && playMatch[2] === 'stream') {
         const start = Math.min(24 * 60 * 60, Math.max(0, Number(url.searchParams.get('start')) || 0));

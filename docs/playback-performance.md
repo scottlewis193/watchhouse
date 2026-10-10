@@ -1,5 +1,34 @@
 # Playback startup optimisation — 14 September 2026
 
+## Silo archive readiness race (2026-10-10)
+
+Silo S01E02 opened a stored RAR successfully, then FFprobe reported an HTTP EOF
+almost immediately and playback fell back to a full download. The browser's
+interruption history showed three “Conversion is not ready” retries immediately
+before the download. An API-only local replay streamed the same release, which
+initially hid the browser-dependent failure.
+
+Archive opening assigned `status: ready` and notified status subscribers before
+the caller resumed to run preflight. A long-poll response could therefore expose
+an archive without a prepared HLS session. The browser's failed HLS requests
+triggered automatic download fallback, whose server endpoint accepted the request
+even though the job was now selecting. Fallback closed the archive reader while
+FFprobe was reading it, producing EOF and disabling further progressive attempts.
+
+A separate localhost server inside the deployed container reproduced the same
+EOF by replaying that status/HLS/fallback sequence. With the readiness fix applied
+to that isolated copy, the same release produced a segment, and the first ready
+response contained its validated HLS session. No EOF or full download occurred.
+The live server was not restarted or modified during these checks.
+
+Archive opening now stays selecting until preflight succeeds; validated readiness
+wakes subscribers even when diagnostics are disabled. The fallback endpoint rejects
+requests while selection is running. Reader failures also preserve their underlying
+cause, and missing required articles exclude an archive from full-download fallback.
+A deterministic regression exercises the real progressive opening and status
+notification boundary: it observes premature readiness before the fix and stays
+selecting until validation completes afterwards. The full 434-test suite passed.
+
 ## Saved 4K resume preflight overlap (2026-09-24)
 
 A deployed Continue Watching run for the 2160p SDR Azkaban release resumed a

@@ -316,6 +316,19 @@ test('stored RAR5 maps video bytes across volume boundaries', async () => {
   } finally { await source?.close(); }
 });
 
+test('stored RAR metadata failure preserves the article error behind FFprobe EOF', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stored-rar-missing-'));
+  const input = storedInput(storedRarVolumes(randomBytes(1024 * 1024 + 321)));
+  const source = await tryCreateStoredRarSource(input);
+  const missing = Object.assign(new Error('Required archive article is missing.'), { code: 'USENET_ARTICLE_MISSING' });
+  input.read = async () => { throw missing; };
+  const playback = { media: { type: 'movie' }, progressiveArchive: true, archiveSource: source,
+    file: { subject: 'video.mkv' }, release: 'SDR', strategy: 'remux', mode: 'direct' };
+  try {
+    await assert.rejects(startHlsConversion(playback, { preflight: true }, 0, root), error => error === missing);
+  } finally { await source.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('deep stored-RAR HLS resume fetches the seek window instead of the film prefix', { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'stored-rar-resume-'));
   let source, session;
