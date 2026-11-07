@@ -875,3 +875,62 @@ test('allowed-fast grants cannot fill playback windows with unrelated torrent pi
     await new Promise(resolve => seeder.destroy(resolve));
   }
 });
+
+test('playback crosses cache windows and seeks back when only its original peer connection remains available', { timeout: 15000 }, async () => {
+  const { default: WebTorrent } = await import('webtorrent');
+  const { createServer: tcpServer, connect } = await import('node:net');
+  const options = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };
+  const seeder = new WebTorrent(options);
+  const sockets = new Set();
+  const payload = Buffer.alloc(3 * 1024 ** 2 + 317);
+  for (let index = 0; index < payload.length; index++) payload[index] = index % 251;
+  let service, source, proxy, proxyClosed;
+  try {
+    const seeded = await new Promise(resolve => seeder.seed(payload, {
+      name: 'Silo.S01E02.x264.mkv', announce: [], pieceLength: 65536,
+      store: BoundedTorrentStore, storeOpts: { maxBytes: payload.length }
+    }, resolve));
+    proxy = tcpServer(socket => {
+      const upstream = connect(seeder.torrentPort, '127.0.0.1');
+      for (const active of [socket, upstream]) {
+        sockets.add(active);
+        active.on('error', () => { socket.destroy(); upstream.destroy(); });
+        active.once('close', () => { sockets.delete(active); socket.destroy(); upstream.destroy(); });
+      }
+      socket.pipe(upstream); upstream.pipe(socket);
+      proxyClosed = new Promise(resolve => proxy.close(resolve));
+    });
+    await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+    const peer = `127.0.0.1:${proxy.address().port}`;
+    service = createTorrentStreaming({
+      cacheBytes: 1024 ** 2, maxConcurrentStreams: 2, timeoutMs: 2000,
+      request: async () => new Response(seeded.torrentFile),
+      createClient: async settings => {
+        const client = new WebTorrent({ ...settings, ...options });
+        const add = client.add.bind(client);
+        client.add = (...args) => {
+          const torrent = add(...args);
+          torrent.once('infoHash', () => torrent.addPeer(peer));
+          return torrent;
+        };
+        return client;
+      }
+    });
+    const descriptor = await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.x264', torrentUrl: 'https://indexer.example/torrent' }
+    });
+    source = await service.open(descriptor);
+    const read = async range => Buffer.from(await (await fetch(source.url, {
+      headers: range ? { range } : {}, signal: AbortSignal.timeout(6000)
+    })).arrayBuffer());
+    assert.deepEqual(await read(), payload.subarray(0));
+    assert.deepEqual(await read('bytes=133-1048708'), payload.subarray(133, 1048709));
+  } finally {
+    await source?.close();
+    await service?.close();
+    for (const socket of sockets) socket.destroy();
+    if (proxy?.listening) await new Promise(resolve => proxy.close(resolve));
+    await proxyClosed;
+    await new Promise(resolve => seeder.destroy(resolve));
+  }
+});

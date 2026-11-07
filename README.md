@@ -94,9 +94,11 @@ Opening probes and playback reuse verified pieces and connections within a
 retained window instead of downloading the same opening data repeatedly.
 Matroska opening probes and playback from the beginning avoid unnecessary tail
 index seeks; seeking to another playback position remains supported.
-Moving outside retained windows can evict an idle window and require fetching
-pieces again. Closing a source destroys its windows. A bounded, memory-only
-cache of connected peer addresses avoids repeating discovery after eviction.
+Completed windows advance or seek by clearing their cached pieces and verified
+state while retaining the established peer connections. This avoids cold swarm
+startup at every 64 MiB boundary. A partially downloaded or failed window may
+still require a fresh connection; remembered peer addresses avoid rediscovery.
+Evicted ranges must be downloaded again. Closing a source destroys its windows.
 Foreground selection hands its live magnet metadata connection to the first
 playback window instead of reconnecting. Its initially zero-byte piece store is
 enabled only after a window slot is reserved; unused metadata connections are

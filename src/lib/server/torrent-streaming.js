@@ -105,8 +105,8 @@ function rankTorrentReleases(releases, media, settings) {
   return ranked;
 }
 
-// No eviction: a WebTorrent bitfield must never advertise evicted pieces. Each
-// bounded window gets a fresh torrent/store, using only public lifecycle APIs.
+// The store never evicts on its own. Window rotation must invalidate the
+// corresponding WebTorrent piece state before releasing cached bytes.
 export class BoundedTorrentStore {
   constructor(chunkLength, { maxBytes = 64 * 1024 ** 2 } = {}) { this.chunkLength = chunkLength; this.maxBytes = maxBytes; this.bytes = 0; this.chunks = new Map(); this.closed = false; }
   put(index, chunk, callback) {
@@ -273,7 +273,6 @@ export function createTorrentStreaming({
       check(signal);
       check(failure.signal);
       torrent.files.forEach(file => file.deselect());
-      torrent.pause();
       return {
         client, torrent, failureSignal: failure.signal,
         setSignal(next) {
@@ -282,6 +281,28 @@ export function createTorrentStreaming({
           if (signal?.aborted) onAbort();
         },
         enableCache() { store.maxBytes = cacheBytes; },
+        rotate(first, last) {
+          last = Math.min(last, torrent.pieces.length - 1);
+          // A completed window has no unfinished piece verification that
+          // could repopulate the store after it moves. Cancelled partial
+          // windows remain readable, but are not recycled for another range.
+          for (let index = first; index <= last; index++) if (!torrent.bitfield.get(index)) return false;
+          for (const wire of torrent.wires) {
+            while (wire.requests.length) {
+              const request = wire.requests[0];
+              wire.cancel(request.piece, request.offset, request.length);
+            }
+          }
+          for (const index of store.chunks.keys()) {
+            // WebTorrent's rescan uses this same operation to reset both its
+            // verified bitfield and piece buffers. Keep this adapter covered
+            // by real TCP rollover and backward-seek tests.
+            torrent._markUnverified(index);
+            for (const wire of torrent.wires) wire.lt_donthave.donthave(index);
+          }
+          store.chunks.clear(); store.bytes = 0;
+          return true;
+        },
         async close() { signal?.removeEventListener('abort', onAbort); await closeClient(client); }
       };
     } catch (error) {
@@ -304,6 +325,9 @@ export function createTorrentStreaming({
   }
   async function acquireWindow(source, position, signal) {
     const absolute = position + source.file.offset;
+    const pieceLength = source.parsed.pieceLength;
+    const first = Math.floor(absolute / pieceLength);
+    const slots = Math.floor(cacheBytes / pieceLength);
     while (true) {
       check(signal);
       let idle;
@@ -316,6 +340,16 @@ export function createTorrentStreaming({
         }
         idle ||= window;
       }
+      // Preserve a proven peer connection across sequential windows instead
+      // of making every cache boundary start a cold swarm connection.
+      for (const window of windows) {
+        if (window.busy || window.closing || window.source !== source
+          || window.connection.client.destroyed || window.connection.failureSignal.aborted) continue;
+        if (!window.connection.rotate(window.start / pieceLength, (window.end + 1) / pieceLength - 1)) continue;
+        window.start = first * pieceLength; window.end = (first + slots) * pieceLength - 1;
+        window.busy = true;
+        return window;
+      }
       if (windows.size >= maxConcurrentStreams) {
         if (idle) await discardWindow(idle);
         else {
@@ -325,9 +359,6 @@ export function createTorrentStreaming({
         }
         continue;
       }
-      const pieceLength = source.parsed.pieceLength;
-      const first = Math.floor(absolute / pieceLength);
-      const slots = Math.floor(cacheBytes / pieceLength);
       const window = {
         source, start: first * pieceLength, end: (first + slots) * pieceLength - 1,
         busy: true, operation: linkedController(source.controller.signal, 0)
@@ -356,7 +387,6 @@ export function createTorrentStreaming({
     const { torrent } = window.connection;
     if (!torrent.destroyed) {
       torrent.files[window.source.file.index]?.deselect();
-      torrent.pause();
     }
     window.busy = false;
     if (window.source.controller.signal.aborted) void discardWindow(window);
@@ -511,7 +541,6 @@ export function createTorrentStreaming({
         const file = torrent.files[source.file.index];
         if (!file || file.path !== source.file.path || file.length !== source.file.size) throw new Error('Torrent file changed since selection.');
         const end = Math.min(range.end, window.end - file.offset);
-        torrent.resume();
         // WebTorrent treats end:0 as unspecified. Read two bytes in that case
         // and trim the response, never expanding a one-byte HTTP range.
         iterator = file[Symbol.asyncIterator]({ start: position, end: end === 0 ? Math.min(1, file.length - 1) : end });
@@ -583,7 +612,6 @@ export function createTorrentStreaming({
         const { torrent } = window.connection;
         const connectSignal = AbortSignal.any([operation.controller.signal, window.connection.failureSignal]);
         check(connectSignal);
-        torrent.resume();
         if (!torrent.wires.length) await once(torrent, 'wire', { signal: connectSignal });
         check(connectSignal);
       } catch (error) { await disposeSource(id); throw error; }
