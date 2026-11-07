@@ -226,18 +226,32 @@ export function createTorrentStreaming({
     const operation = linkedController(signal, timeoutMs); operations.add(operation.controller);
     try {
       const candidates = release ? rankReleases([release], media, settings) : await search(media, settings, { signal: operation.controller.signal });
+      const indexerOrigin = settings.torrentIndexerKey ? new URL(settings.torrentIndexerUrl).origin : null;
       let lastError;
       for (const candidate of candidates) {
         check(operation.controller.signal);
         try {
           let bytes;
-          if (candidate.torrentUrl.startsWith('magnet:')) {
-            const connection = await clientTorrent(candidate.torrentUrl, operation.controller.signal, true);
-            try { bytes = Buffer.from(connection.torrent.torrentFile); } finally { await connection.close(); }
-          } else {
-            const url = new URL(candidate.torrentUrl);
-            if (settings.torrentIndexerKey && url.origin === new URL(settings.torrentIndexerUrl).origin && !url.searchParams.has('apikey')) url.searchParams.set('apikey', settings.torrentIndexerKey);
-            bytes = await boundedBody(await request(url, { signal: operation.controller.signal }), METADATA_LIMIT);
+          let url = new URL(candidate.torrentUrl);
+          for (let redirects = 0; ; redirects++) {
+            if (url.protocol === 'magnet:') {
+              const connection = await clientTorrent(url.href, operation.controller.signal, true);
+              try { bytes = Buffer.from(connection.torrent.torrentFile); } finally { await connection.close(); }
+              break;
+            }
+            if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Torrent metadata URL must use HTTP, HTTPS or magnet.');
+            if (indexerOrigin && url.origin === indexerOrigin && !url.searchParams.has('apikey')) url.searchParams.set('apikey', settings.torrentIndexerKey);
+            const response = await request(url, { signal: operation.controller.signal, redirect: 'manual' });
+            if (response.status === 301 || response.status === 302 || response.status === 303 || response.status === 307 || response.status === 308) {
+              const location = response.headers.get('location');
+              await response.body?.cancel();
+              if (!location) throw new Error('Torrent metadata redirect has no location.');
+              if (redirects >= 20) throw new Error('Too many torrent metadata redirects.');
+              url = new URL(location, url);
+              continue;
+            }
+            bytes = await boundedBody(response, METADATA_LIMIT);
+            break;
           }
           if (bytes.length > METADATA_LIMIT) throw new Error('Torrent metadata is too large.');
           const parsed = await parse(bytes);

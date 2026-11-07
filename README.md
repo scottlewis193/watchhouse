@@ -54,7 +54,9 @@ VPN deployment below to protect server-side traffic; a standalone `docker run`
 does **not** automatically provide a VPN.
 
 Only torrent metadata is fetched proactively; magnet metadata lookup may contact
-peers but does not fetch video pieces. Actual playback reads pieces into memory
+peers but does not fetch video pieces. HTTP download links that redirect to magnets
+use the same metadata-only peer lookup rather than treating magnets as HTTP URLs.
+Actual playback reads pieces into memory
 and feeds the existing FFmpeg remux/transcode pipeline. Archives, wrong episodes
 and ambiguous video collections are rejected. Stored pieces are capped at 64 MiB
 per HTTP reader, with at most two simultaneous readers (128 MiB total stored

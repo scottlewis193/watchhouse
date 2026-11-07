@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { BoundedTorrentStore, createTorrentStreaming, torrentByteRange, torrentFileSelection, torrentSearchResults } from '../src/lib/server/torrent-streaming.js';
 
 const media = { type: 'tv', title: 'Silo', season: 1, episode: 2 };
@@ -93,6 +94,49 @@ test('metadata selection persists a validated source without opening video strea
     } finally { await source.close(); }
     assert.equal((await fetch(source.url)).status, 404);
   } finally { await service.close(); }
+});
+
+test('metadata selection follows HTTP redirects to a magnet without treating it as an HTTP resource', { timeout: 30000 }, async () => {
+  const { default: WebTorrent } = await import('webtorrent');
+  const localOptions = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };
+  const seeder = new WebTorrent(localOptions);
+  let service;
+  let server;
+  try {
+    const payload = Buffer.alloc(32768, 7);
+    const seeded = await new Promise((resolve, reject) => {
+      seeder.once('error', reject);
+      seeder.seed(payload, { name: 'Silo.S01E02.1080p.x264.mp4', announce: [] }, resolve);
+    });
+    server = createServer((req, res) => {
+      res.writeHead(302, { location: req.url.startsWith('/download') ? '/magnet' : seeded.magnetURI });
+      res.end();
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    service = createTorrentStreaming({
+      createClient: async options => {
+        const client = new WebTorrent({ ...options, ...localOptions });
+        const add = client.add.bind(client);
+        client.add = (...args) => {
+          const torrent = add(...args);
+          torrent.once('infoHash', () => torrent.addPeer(`127.0.0.1:${seeder.torrentPort}`));
+          return torrent;
+        };
+        return client;
+      }
+    });
+    const descriptor = await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.1080p.x264', torrentUrl: `http://127.0.0.1:${server.address().port}/download` }
+    });
+    assert.equal(descriptor.infoHash, seeded.infoHash);
+    assert.equal(descriptor.name, 'Silo.S01E02.1080p.x264.mp4');
+    assert.equal(descriptor.size, payload.length);
+  } finally {
+    await service?.close();
+    server?.closeAllConnections();
+    if (server) await new Promise(resolve => server.close(resolve));
+    await new Promise(resolve => seeder.destroy(resolve));
+  }
 });
 
 test('local TCP torrent streams exact ranges across cache windows and destroys every download client', { timeout: 60000 }, async () => {
