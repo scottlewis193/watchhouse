@@ -65,8 +65,10 @@ is bounded to 40 seconds, with separate 20-second metadata and opening-timeline
 probe limits. Failed sources are closed before another release is tried.
 Each candidate gets at most twenty seconds to acquire torrent metadata; selection
 continues through unique swarms within its overall 90-second deadline rather
-than stopping after three checks. Successful checks retain their playable
-segments as the initial buffer. This rejects observed stalls, but cannot
+than stopping after three checks. Cached validation and fallback search share
+that deadline; a failed cached source does not restart the clock.
+Successful checks retain their playable segments as the initial buffer.
+This rejects observed stalls, but cannot
 guarantee that peer speeds will remain sufficient throughout playback.
 
 With **Start fastest** and **Auto resolution**, smaller browser-compatible
@@ -93,6 +95,9 @@ Foreground selection hands its live magnet metadata connection to the first
 playback window instead of reconnecting. Its initially zero-byte piece store is
 enabled only after a window slot is reserved; unused metadata connections are
 closed. Peer addresses are retained only in memory and are not persisted.
+Saved selections establish a peer connection before starting the media probe.
+This warmup counts toward the 40-second preflight limit and shares the same
+bounded reader queue and piece windows; it does not download video proactively.
 The downloaded-copy fallback is NZB-only; an unavailable or too-slow torrent
 source requires another release rather than a torrent video download.
 

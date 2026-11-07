@@ -516,7 +516,7 @@ export function createTorrentStreaming({
     source.signal?.removeEventListener('abort', source.cancel);
     return Promise.all([...source.completions, source.pendingConnection?.connection.close(), ...[...windows].filter(window => window.source === source).map(discardWindow)]);
   }
-  async function open(descriptor, { signal } = {}) {
+  async function open(descriptor, { signal, connect = false } = {}) {
     ensureOpen(); check(signal);
     if (sources.size >= maxSources) throw new Error('Too many active torrent playback sources.');
     if (descriptor?.kind !== 'torrent' || descriptor.version !== 1 || typeof descriptor.torrent !== 'string' || descriptor.torrent.length > METADATA_LIMIT * 1.4) throw new Error('Invalid saved torrent source.');
@@ -529,8 +529,28 @@ export function createTorrentStreaming({
     const id = randomUUID(); const controller = new AbortController();
     const cancel = () => disposeSource(id);
     const pendingConnection = metadataConnections.get(descriptor); metadataConnections.delete(descriptor);
-    sources.set(id, { bytes, parsed, file, peers: metadataPeers.get(descriptor) || new Set(), pendingConnection, controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel });
+    const source = { bytes, parsed, file, peers: metadataPeers.get(descriptor) || new Set(), pendingConnection, controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel };
+    sources.set(id, source);
     signal?.addEventListener('abort', cancel, { once: true });
+    if (connect) {
+      const operation = linkedController(controller.signal, metadataTimeoutMs);
+      operations.add(operation.controller);
+      let window; let release;
+      try {
+        // Saved metadata has no live peer. Connect before media inspection,
+        // retaining this same bounded window for the probe and playback.
+        release = await admission.acquire({ signal: operation.controller.signal });
+        window = await acquireWindow(source, 0, operation.controller.signal);
+        const { torrent } = window.connection;
+        torrent.resume();
+        if (!torrent.wires.length) await once(torrent, 'wire', { signal: operation.controller.signal });
+        check(operation.controller.signal);
+      } catch (error) { await disposeSource(id); throw error; }
+      finally {
+        releaseWindow(window); release?.();
+        operations.delete(operation.controller); operation.dispose();
+      }
+    }
     return { url: `http://127.0.0.1:${port}/${id}/video`, size: file.size, mime: file.mime, filename: file.path, strategy: file.strategy, close: async () => disposeSource(id) };
   }
   const sweep = setInterval(() => {

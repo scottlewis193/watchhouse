@@ -11,7 +11,7 @@ const media = { type: 'tv', id: 95480, title: 'Slow Horses', season: 1, episode:
 const nzb = extension => `<nzb><file subject="episode.${extension}"><segments><segment number="1">article</segment></segments></file></nzb>`;
 const job = () => ({ media, events: [], status: 'selecting' });
 
-async function withTorrentIndexer(run) {
+async function withTorrentIndexer(run, { onSearch } = {}) {
   const { default: WebTorrent } = await import('webtorrent');
   const seeder = new WebTorrent({ dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false });
   let server;
@@ -25,6 +25,7 @@ async function withTorrentIndexer(run) {
     server = createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost');
       if (url.pathname === '/api') {
+        onSearch?.();
         res.end(`<rss>${['First', 'Second'].map((name, index) => `<item><title>Slow.Horses.S01E02.1080p.x264.${name}</title><enclosure url="http://127.0.0.1:${server.address().port}/${index}"/></item>`).join('')}</rss>`);
       } else res.end(torrents[Number(url.pathname.slice(1))].torrentFile);
     });
@@ -120,6 +121,36 @@ test('metadata-only torrent preparation is rechecked before foreground reuse', a
     assert.equal(foreground.status, 'ready');
     assert.equal(foreground.release, 'Slow.Horses.S01E02.1080p.x264.Second');
   });
+});
+
+test('cached torrent validation and fallback search share one selection deadline', { timeout: 10000 }, async t => {
+  let foreground = false;
+  await withTorrentIndexer(async settings => {
+    const options = { search: async () => [], plans: createPlaybackPlanCache(), persistence: null };
+    const requested = { ...media, id: 95482 };
+    await preparePlayback({ ...job(), media: requested, speculative: true, prepareAhead: true }, settings, options);
+    const playback = { ...job(), media: requested }, attempted = [];
+    foreground = true;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      await preparePlayback(playback, settings, {
+        ...options,
+        preflight: async (candidate, { signal }) => {
+          attempted.push(candidate.release);
+          if (candidate.release.endsWith('.First')) {
+            t.mock.timers.tick(30000);
+            throw new Error('Cached source is no longer playable.');
+          }
+          signal.throwIfAborted();
+          return { sessionUrl: '/prepared/replacement' };
+        }
+      });
+      assert.equal(playback.status, 'error');
+      assert.match(playback.message, /torrent selection timed out/i);
+      assert.deepEqual(attempted, ['Slow.Horses.S01E02.1080p.x264.First']);
+      assert.equal(playback.preparedSession, undefined);
+    } finally { t.mock.timers.reset(); }
+  }, { onSearch: () => { if (foreground) t.mock.timers.tick(60000); } });
 });
 
 test('cancelling torrent admission stops selection without trying another swarm', async () => {

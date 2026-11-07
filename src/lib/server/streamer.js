@@ -77,6 +77,8 @@ async function prepareTorrentPlayback(job, settings, persistence = playbackPersi
 } = {}) {
   if (!settings.torrentIndexerUrl || job.manualRelease || job.offlineDownload || settings.manualReleaseSelection) return false;
   const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(Object.assign(new Error('Torrent selection timed out.'), { code: 'TORRENT_SELECTION_TIMEOUT' })), 90000);
+  timeout.unref?.();
   const removeCancel = onDownloadCancel(job, () => controller.abort(new Error('Torrent selection cancelled.')));
   settings = { ...settings, signal: settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal };
   try {
@@ -144,11 +146,11 @@ async function prepareTorrentPlayback(job, settings, persistence = playbackPersi
     return true;
   } catch (error) {
     if (foreground && !job.cancelled) {
-      if (settings.signal.aborted) setJob(job, 'ready', 'Torrent playback check cancelled. Retry playback to check again.', 100);
+      if (settings.signal.aborted && controller.signal.reason?.code !== 'TORRENT_SELECTION_TIMEOUT') setJob(job, 'ready', 'Torrent playback check cancelled. Retry playback to check again.', 100);
       else setJob(job, 'error', error.message || 'Torrent playback check failed.', 0);
     }
     throw error;
-  } finally { removeCancel(); }
+  } finally { clearTimeout(timeout); removeCancel(); }
 }
 const proactive = createProactivePreparation({
   key: (media, settings) => `${offlineMediaKey(media)}:${playbackScope(settings)}`,
@@ -1046,7 +1048,7 @@ async function progressiveSource(job, settings) {
 }
 
 export async function openPostedRangeServer(job, settings, connect = connectNntp, options = {}) {
-  if (job.torrentSource) return torrentStreaming.open(job.torrentSource, { signal: settings.signal });
+  if (job.torrentSource) return torrentStreaming.open(job.torrentSource, { signal: settings.signal, connect: true });
   if (job.progressiveArchive) return (await progressiveSource(job, settings)).retain(options);
   const posted = job.file, release = job.release, releaseKey = job.releaseKey || release;
   const layout = postedFileByteLayout(posted);

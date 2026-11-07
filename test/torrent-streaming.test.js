@@ -456,7 +456,9 @@ test('playback can reconnect to a metadata peer without another discovery servic
   }
 });
 
-test('foreground playback keeps its metadata connection when new connections become unavailable', { timeout: 10000 }, async () => {
+for (const restored of [false, true]) test(restored
+  ? 'saved torrent playback connects before inspection and keeps that wire for its first payload'
+  : 'foreground playback keeps its metadata connection when new connections become unavailable', { timeout: 10000 }, async () => {
   const { default: WebTorrent } = await import('webtorrent');
   const { createServer: tcpServer, connect } = await import('node:net');
   const options = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };
@@ -482,6 +484,7 @@ test('foreground playback keeps its metadata connection when new connections bec
     const peer = `127.0.0.1:${proxy.address().port}`;
     service = createTorrentStreaming({
       cacheBytes: 1024 ** 2, maxConcurrentStreams: 1, timeoutMs: 5000,
+      request: async () => new Response(seeded.torrentFile),
       createClient: async settings => {
         const client = new WebTorrent({ ...settings, ...options });
         if (discover) {
@@ -496,16 +499,18 @@ test('foreground playback keeps its metadata connection when new connections bec
         return client;
       }
     });
-    await service.select(media, settings, {
-      release: { title: 'Silo.S01E02.x264', torrentUrl: `magnet:?xt=urn:btih:${seeded.infoHash}` },
-      validate: async descriptor => {
-        proxyClosed = new Promise(resolve => proxy.once('close', resolve));
-        proxy.close();
-        source = await service.open(descriptor);
-        const response = await fetch(source.url, { headers: { range: 'bytes=0-65535' }, signal: AbortSignal.timeout(2000) });
-        assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(0, 65536));
-      }
+    const validate = async descriptor => {
+      source = await service.open(restored ? JSON.parse(JSON.stringify(descriptor)) : descriptor, { connect: true });
+      proxyClosed = new Promise(resolve => proxy.once('close', resolve));
+      proxy.close();
+      const response = await fetch(source.url, { headers: { range: 'bytes=0-65535' }, signal: AbortSignal.timeout(2000) });
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(0, 65536));
+    };
+    const descriptor = await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.x264', torrentUrl: restored ? 'https://indexer.example/file' : `magnet:?xt=urn:btih:${seeded.infoHash}` },
+      validate: restored ? undefined : validate
     });
+    if (restored) await validate(descriptor);
   } finally {
     await source?.close();
     await service?.close();
