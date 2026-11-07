@@ -262,9 +262,11 @@ export async function clearPlaybackCacheForMedia(media, {
     cancelDownloadJob(job);
     await job.archiveSource?.close();
     if (job.file) { inspections.delete(job.file); segments.delete(job.file); }
+    if (job.torrentSource) inspections.delete(job.torrentSource);
     if (playbackCacheDirectory(job.directory, root)) directories.add(job.directory);
     jobs.delete(id);
   }
+  torrentStreaming.clear(media);
   const persisted = await persistence.deleteMedia(media);
   await health.delete(media);
   for (const directory of directories) await remove(directory, { recursive: true, force: true });
@@ -1048,7 +1050,7 @@ async function progressiveSource(job, settings) {
 }
 
 export async function openPostedRangeServer(job, settings, connect = connectNntp, options = {}) {
-  if (job.torrentSource) return torrentStreaming.open(job.torrentSource, { signal: settings.signal, connect: true });
+  if (job.torrentSource) return torrentStreaming.open(job.torrentSource, { signal: settings.signal, connect: true, media: job.media });
   if (job.progressiveArchive) return (await progressiveSource(job, settings)).retain(options);
   const posted = job.file, release = job.release, releaseKey = job.releaseKey || release;
   const layout = postedFileByteLayout(posted);
@@ -1253,7 +1255,7 @@ function torrentMatroskaInput(job, input) {
 const playbackInspections = createValidatedPreparationCache();
 function playbackInspection(job, settings, input) {
   settings.signal?.throwIfAborted();
-  const source = ['cached-convert', 'cached'].includes(job.mode) ? job : job.file;
+  const source = ['cached-convert', 'cached'].includes(job.mode) ? job : job.torrentSource || job.file;
   const scope = playbackScope(settings);
   return playbackInspections.get(source, scope, async publish => {
       const persistent = job.mode !== 'cached-convert' && !job.progressiveArchive && !job.torrentSource && settings.usenetHost;

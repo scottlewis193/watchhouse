@@ -83,10 +83,12 @@ remain rejected.
 
 Actual playback reads pieces into memory and feeds the existing FFmpeg
 remux/transcode pipeline. Archives, wrong episodes and ambiguous video
-collections are rejected. At most two 64 MiB windows retain stored pieces
-(128 MiB total, plus metadata/protocol buffers), with at most two simultaneous
-HTTP readers. Additional seek/probe requests wait in a bounded queue.
-No torrent video files are saved to disk.
+collections are rejected. At most two 48 MiB windows retain stored pieces.
+A separate 16 MiB header/index cache and 16 MiB recent-playhead cache retain
+consumed, hash-verified pieces across player sessions, keyed by torrent info hash.
+The total stored-piece budget remains 128 MiB, plus metadata/protocol buffers.
+At most two HTTP readers run; additional seek/probe requests wait in a bounded
+queue. No torrent video files are saved to disk.
 Optional BEP6 allowed-fast grants are ignored because WebTorrent can request
 those pieces outside the active window, exhausting its cache. Ordinary unchoked
 downloads and other fast-extension messages remain supported.
@@ -94,11 +96,19 @@ Opening probes and playback reuse verified pieces and connections within a
 retained window instead of downloading the same opening data repeatedly.
 Matroska opening probes and playback from the beginning avoid unnecessary tail
 index seeks; seeking to another playback position remains supported.
-Completed windows advance or seek by clearing their cached pieces and verified
-state while retaining the established peer connections. This avoids cold swarm
-startup at every 64 MiB boundary. A partially downloaded or failed window may
-still require a fresh connection; remembered peer addresses avoid rediscovery.
-Evicted ranges must be downloaded again. Closing a source destroys its windows.
+Completed and partially downloaded windows advance or seek by cancelling pending
+block requests and clearing their cached, verified and partial piece state while
+retaining established peer connections. Header → tail-index → saved-position
+reads therefore do not need cold connections merely because a window
+was not filled. Windows with a piece still being hashed/stored, or a failed
+connection, use the fresh-connection path; remembered peers avoid rediscovery.
+Evicted ranges must be downloaded again. Closing a source destroys its windows
+and connections, but retains bounded resume bytes until evicted, the episode's
+cache is cleared, or the process restarts. Opening a saved torrent still requires
+a live peer, and resumed playback still passes the full sustained-speed check.
+Repeated playback jobs sharing the same immutable torrent descriptor also reuse
+its successfully validated track/timeline inspection; failed or cancelled
+inspections are not reused. Clearing the episode cache removes that inspection.
 Foreground selection hands its live magnet metadata connection to the first
 playback window instead of reconnecting. Its initially zero-byte piece store is
 enabled only after a window slot is reserved; unused metadata connections are

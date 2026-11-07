@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { isIP } from 'node:net';
 import { englishAudioRelease, episodeTag, playbackStrategy, rankReleases, releaseResolution, releaseTitleMatches, titleVariants } from '../../../media.js';
 import { createConversionAdmission } from './conversion-admission.js';
+import { createSegmentCache } from './segment-cache.js';
 
 const METADATA_LIMIT = 4 * 1024 ** 2;
 const VIDEO_TYPES = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska', webm: 'video/webm' };
@@ -108,7 +109,7 @@ function rankTorrentReleases(releases, media, settings) {
 // The store never evicts on its own. Window rotation must invalidate the
 // corresponding WebTorrent piece state before releasing cached bytes.
 export class BoundedTorrentStore {
-  constructor(chunkLength, { maxBytes = 64 * 1024 ** 2 } = {}) { this.chunkLength = chunkLength; this.maxBytes = maxBytes; this.bytes = 0; this.chunks = new Map(); this.closed = false; }
+  constructor(chunkLength, { maxBytes = 64 * 1024 ** 2, onRead } = {}) { this.chunkLength = chunkLength; this.maxBytes = maxBytes; this.onRead = onRead; this.bytes = 0; this.chunks = new Map(); this.closed = false; }
   put(index, chunk, callback) {
     if (this.closed) return queueMicrotask(() => callback(new Error('Torrent store is closed.')));
     const bytes = this.bytes - (this.chunks.get(index)?.byteLength || 0) + chunk.byteLength;
@@ -120,6 +121,7 @@ export class BoundedTorrentStore {
     if (typeof options === 'function') { callback = options; options = {}; }
     const chunk = this.chunks.get(index);
     if (this.closed || !chunk) return queueMicrotask(() => callback(new Error('Torrent piece is not cached.')));
+    this.onRead?.(index, chunk);
     const offset = options?.offset || 0;
     const result = chunk.subarray(offset, options?.length === undefined ? undefined : offset + options.length);
     queueMicrotask(() => callback(null, result));
@@ -203,6 +205,45 @@ export function createTorrentStreaming({
   idleMs = 2 * 60 * 1000, timeoutMs = 90 * 1000, metadataTimeoutMs = 20 * 1000
 } = {}) {
   if (!Number.isSafeInteger(cacheBytes) || cacheBytes < 1024 ** 2 || !Number.isInteger(maxConcurrentStreams) || maxConcurrentStreams < 1) throw new Error('Invalid torrent streaming limits.');
+  // Retain consumed, verified pieces across player sessions without increasing
+  // the old total piece budget. Keep headers/indexes separate from the moving
+  // playhead so a long episode cannot evict its own resume metadata.
+  const windowBytes = Math.floor(cacheBytes * 3 / 4);
+  const retainedBytes = Math.floor((cacheBytes - windowBytes) * maxConcurrentStreams / 2);
+  const metadataPieces = createSegmentCache(retainedBytes);
+  const resumePieces = createSegmentCache(retainedBytes);
+  const cacheSources = new Map();
+  function forgetCachedSource(hash) {
+    const owner = cacheSources.get(hash);
+    if (!owner) return;
+    owner.active = false;
+    metadataPieces.delete(owner); resumePieces.delete(owner);
+    cacheSources.delete(hash);
+  }
+  function cachedSource(descriptor, media) {
+    const key = `${descriptor.infoHash}:${descriptor.file.index}`;
+    let owner = cacheSources.get(key);
+    if (!owner) {
+      if (cacheSources.size >= 256) forgetCachedSource(cacheSources.keys().next().value);
+      owner = { active: true, media };
+    }
+    else if (media.id) owner.media = media;
+    cacheSources.delete(key); cacheSources.set(key, owner);
+    return owner;
+  }
+  function retainedPiece(source, index) {
+    if (!source.cache.active) return;
+    return metadataPieces.get(source.cache, index) || resumePieces.get(source.cache, index);
+  }
+  function clear(media) {
+    for (const [hash, owner] of cacheSources) {
+      const sameMedia = owner.media.id && media?.id ? Number(owner.media.id) === Number(media.id)
+        : owner.media.title?.toLowerCase() === media?.title?.toLowerCase();
+      if (!media || owner.media.type === media.type && sameMedia
+        && (media.type !== 'tv' || Number(owner.media.season) === Number(media.season) && Number(owner.media.episode) === Number(media.episode))
+        && (media.type !== 'movie' || !media.year || !owner.media.year || String(owner.media.year) === String(media.year))) forgetCachedSource(hash);
+    }
+  }
   const sources = new Map(); const operations = new Set();
   const windows = new Set();
   const liveClients = new Set(); const dhtNodes = new Map();
@@ -237,7 +278,7 @@ export function createTorrentStreaming({
     const failure = new AbortController();
     const onAbort = () => { void closeClient(client); };
     signal?.addEventListener('abort', onAbort, { once: true });
-    let abort; let store;
+    let abort; let store; let cacheContext;
     try {
       check(signal);
       if (client.dht && typeof client.dht.addNode === 'function') {
@@ -248,7 +289,14 @@ export function createTorrentStreaming({
         const fail = error => { failure.abort(error); reject(error); };
         client.on('error', fail);
         signal?.addEventListener('abort', abort, { once: true });
-        const torrent = client.add(id, { deselect: true, uploads: false, store: function (length, options) { return store = new BoundedTorrentStore(length, options); }, storeOpts: { maxBytes: metadataOnly ? 0 : cacheBytes }, storeCacheSlots: 0, destroyStoreOnDestroy: true, ...(parsed ? { bitfield: new Uint8Array(Math.ceil(parsed.pieces.length / 8)) } : {}) }, ready => {
+        const torrent = client.add(id, { deselect: true, uploads: false, store: function (length, options) {
+          return store = new BoundedTorrentStore(length, { ...options, onRead: (index, bytes) => {
+            // WebTorrent's iterator reads the store only after hash verification.
+            if (!cacheContext?.owner.active) return;
+            const cache = index <= cacheContext.first + 1 || index >= cacheContext.last - 1 ? metadataPieces : resumePieces;
+            cache.set(cacheContext.owner, index, bytes);
+          } });
+        }, storeOpts: { maxBytes: metadataOnly ? 0 : windowBytes }, storeCacheSlots: 0, destroyStoreOnDestroy: true, ...(parsed ? { bitfield: new Uint8Array(Math.ceil(parsed.pieces.length / 8)) } : {}) }, ready => {
           signal?.removeEventListener('abort', abort); resolve(ready);
         });
         torrent.on('error', fail);
@@ -280,24 +328,33 @@ export function createTorrentStreaming({
           signal?.addEventListener('abort', onAbort, { once: true });
           if (signal?.aborted) onAbort();
         },
-        enableCache() { store.maxBytes = cacheBytes; },
+        enableCache() { store.maxBytes = windowBytes; },
+        retainReads(owner, file) {
+          cacheContext = { owner, first: Math.floor(file.offset / torrent.pieceLength), last: Math.floor((file.offset + file.size - 1) / torrent.pieceLength) };
+        },
         rotate(first, last) {
           last = Math.min(last, torrent.pieces.length - 1);
-          // A completed window has no unfinished piece verification that
-          // could repopulate the store after it moves. Cancelled partial
-          // windows remain readable, but are not recycled for another range.
-          for (let index = first; index <= last; index++) if (!torrent.bitfield.get(index)) return false;
+          // A probe or seek leaves a partial window. Reuse its peers only
+          // when no completed piece is still being hashed/stored: WebTorrent
+          // does not recheck piece identity after its asynchronous hash.
+          for (let index = first; index <= last; index++) {
+            if (torrent.pieces[index]?.missing === 0) return false;
+          }
           for (const wire of torrent.wires) {
             while (wire.requests.length) {
               const request = wire.requests[0];
               wire.cancel(request.piece, request.offset, request.length);
             }
           }
-          for (const index of store.chunks.keys()) {
-            // WebTorrent's rescan uses this same operation to reset both its
-            // verified bitfield and piece buffers. Keep this adapter covered
-            // by real TCP rollover and backward-seek tests.
+          for (let index = first; index <= last; index++) {
+            const verified = torrent.bitfield.get(index);
+            const piece = torrent.pieces[index];
+            if (!verified && piece.missing === piece.length) continue;
+            // Reset both cached and partially downloaded pieces. Cancelled
+            // block callbacks cannot fill the replaced piece instance.
+            // Keep this private WebTorrent adapter covered by real TCP tests.
             torrent._markUnverified(index);
+            if (!verified) continue;
             for (const wire of torrent.wires) wire.lt_donthave.donthave(index);
           }
           store.chunks.clear(); store.bytes = 0;
@@ -327,7 +384,7 @@ export function createTorrentStreaming({
     const absolute = position + source.file.offset;
     const pieceLength = source.parsed.pieceLength;
     const first = Math.floor(absolute / pieceLength);
-    const slots = Math.floor(cacheBytes / pieceLength);
+    const slots = Math.floor(windowBytes / pieceLength);
     while (true) {
       check(signal);
       let idle;
@@ -340,8 +397,8 @@ export function createTorrentStreaming({
         }
         idle ||= window;
       }
-      // Preserve a proven peer connection across sequential windows instead
-      // of making every cache boundary start a cold swarm connection.
+      // Preserve proven peers across sequential windows and the small header,
+      // tail-index and saved-position reads required by a resumed stream.
       for (const window of windows) {
         if (window.busy || window.closing || window.source !== source
           || window.connection.client.destroyed || window.connection.failureSignal.aborted) continue;
@@ -378,6 +435,7 @@ export function createTorrentStreaming({
           window.connection.setSignal(window.operation.controller.signal);
           window.connection.enableCache();
         }
+        window.connection.retainReads(source.cache, source.file);
         return window;
       } catch (error) { await discardWindow(window); throw error; }
     }
@@ -534,13 +592,30 @@ export function createTorrentStreaming({
       let position = range.start;
       while (position <= range.end) {
         check(operation.controller.signal); touch();
+        const absolute = position + source.file.offset;
+        const pieceIndex = Math.floor(absolute / source.parsed.pieceLength);
+        const cached = retainedPiece(source, pieceIndex);
+        if (cached) {
+          const offset = absolute % source.parsed.pieceLength;
+          const output = cached.subarray(offset, Math.min(cached.length, offset + range.end - position + 1));
+          if (!output.length) throw new Error('Cached torrent piece does not cover the requested range.');
+          if (!res.write(output)) await drain(res, operation.controller.signal);
+          position += output.length;
+          continue;
+        }
         window = await acquireWindow(source, position, operation.controller.signal);
         const { torrent } = window.connection;
         const readSignal = AbortSignal.any([operation.controller.signal, window.connection.failureSignal]);
         check(readSignal);
         const file = torrent.files[source.file.index];
         if (!file || file.path !== source.file.path || file.length !== source.file.size) throw new Error('Torrent file changed since selection.');
-        const end = Math.min(range.end, window.end - file.offset);
+        let end = Math.min(range.end, window.end - file.offset);
+        // Stop before a retained piece instead of downloading it again as
+        // part of a larger uncached range.
+        const lastPiece = Math.floor((end + file.offset) / source.parsed.pieceLength);
+        for (let index = pieceIndex + 1; index <= lastPiece; index++) {
+          if (retainedPiece(source, index)) { end = index * source.parsed.pieceLength - file.offset - 1; break; }
+        }
         // WebTorrent treats end:0 as unspecified. Read two bytes in that case
         // and trim the response, never expanding a one-byte HTTP range.
         iterator = file[Symbol.asyncIterator]({ start: position, end: end === 0 ? Math.min(1, file.length - 1) : end });
@@ -584,7 +659,7 @@ export function createTorrentStreaming({
     source.signal?.removeEventListener('abort', source.cancel);
     return Promise.all([...source.completions, source.pendingConnection?.connection.close(), ...[...windows].filter(window => window.source === source).map(discardWindow)]);
   }
-  async function open(descriptor, { signal, connect = false } = {}) {
+  async function open(descriptor, { signal, connect = false, media = descriptor?.media } = {}) {
     ensureOpen(); check(signal);
     if (sources.size >= maxSources) throw new Error('Too many active torrent playback sources.');
     if (descriptor?.kind !== 'torrent' || descriptor.version !== 1 || typeof descriptor.torrent !== 'string' || descriptor.torrent.length > METADATA_LIMIT * 1.4) throw new Error('Invalid saved torrent source.');
@@ -597,7 +672,7 @@ export function createTorrentStreaming({
     const id = randomUUID(); const controller = new AbortController();
     const cancel = () => disposeSource(id);
     const pendingConnection = metadataConnections.get(descriptor); metadataConnections.delete(descriptor);
-    const source = { bytes, parsed, file, peers: metadataPeers.get(descriptor) || new Set(), pendingConnection, controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel };
+    const source = { bytes, parsed, file, cache: cachedSource(descriptor, media), peers: metadataPeers.get(descriptor) || new Set(), pendingConnection, controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel };
     sources.set(id, source);
     signal?.addEventListener('abort', cancel, { once: true });
     if (connect) {
@@ -632,6 +707,7 @@ export function createTorrentStreaming({
     server?.closeAllConnections();
     if (server?.listening) await new Promise(resolve => server.close(resolve));
     dhtNodes.clear();
+    clear();
   }
-  return { search, select, open, close };
+  return { search, select, open, close, clear };
 }
