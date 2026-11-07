@@ -98,8 +98,14 @@ closed. Peer addresses are retained only in memory and are not persisted.
 Saved selections establish a peer connection before starting the media probe.
 This warmup counts toward the 40-second preflight limit and shares the same
 bounded reader queue and piece windows; it does not download video proactively.
-The downloaded-copy fallback is NZB-only; an unavailable or too-slow torrent
-source requires another release rather than a torrent video download.
+Up to 64 DHT contacts are also retained in memory and supplied to fresh clients
+without replacing their normal bootstrap servers or adding another DHT client.
+Connection errors and closure interrupt pending reads instead of leaving them
+waiting for the range timeout.
+If torrent playback stalls, automatic recovery excludes that swarm and validates
+another release at the interrupted playhead, reusing its prepared HLS session.
+Replacement selection has the same speed gate and 90-second deadline. Exhausted
+alternatives stop with an error; the downloaded-copy fallback remains NZB-only.
 
 Torrent activity exposes the server's peer IP address and depends on peer
 availability; it is not debrid-backed streaming. Use sources you are entitled to

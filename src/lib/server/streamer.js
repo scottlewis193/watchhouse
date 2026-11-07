@@ -1908,12 +1908,12 @@ function matchesTargetResolution(release, settings) {
   const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[settings.targetResolution];
   return !target || releaseResolution({ title: release }) === target;
 }
-export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed } = {}) {
+export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed, torrentOnly = false } = {}) {
   let torrentAttempted = false;
   const prepareTorrent = async () => {
     if (torrentAttempted) return false;
     torrentAttempted = true;
-    return prepareTorrentPlayback(job, settings, persistence, { preflight: preflight || preflightLiveCandidate });
+    return prepareTorrentPlayback(job, settings, persistence, { preflight: preflight || preflightLiveCandidate, foreground: torrentOnly ? true : undefined });
   };
   job.frameInterpolation = Boolean(settings.frameInterpolation);
   const recoveringSource = Boolean(job.rejectedReleases?.size);
@@ -1952,6 +1952,11 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
   };
   try {
+    if (torrentOnly) {
+      throwIfDownloadCancelled(job);
+      if (!await prepareTorrent()) throw new Error('No alternative torrent passed the playback speed check.');
+      return;
+    }
     const savedPlan = !job.manualRelease && persistence ? await persistence.getPlan(job.media, settings).catch(() => null) : null;
     if (!job.offlineDownload && savedPlan?.torrentSource) torrentPlans.set(job.media, savedPlan.torrentSource, playbackScope(settings));
     if (!job.offlineDownload && !job.manualRelease && torrentPlans.get(job.media, playbackScope(settings))) {
@@ -2397,6 +2402,7 @@ function publicJob(job) {
   const { torrentSource, torrentPreflightInfoHash, archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, requireEnglishTrack, diagnosticsEnabled, events, releaseSelection, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job;
   return {
     ...safe,
+    ...(torrentSource ? { sourceKind: 'torrent' } : {}),
     mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode,
     title: media.title,
     hlsUrl: job.status === 'ready' && (['direct', 'cached-convert'].includes(job.mode) || job.frameInterpolation && job.mode === 'cached') ? `/api/play/${job.id}/hls` : null,
@@ -2821,7 +2827,7 @@ export async function handleRequest(req, res) {
       }
       return json(res, 405, { error: 'Method not allowed.' });
     }
-    const playMatch = url.pathname.match(/^\/api\/play\/([\w-]+)(?:\/(stream|fallback|retry))?$/);
+    const playMatch = url.pathname.match(/^\/api\/play\/([\w-]+)(?:\/(stream|fallback|retry|retry-source))?$/);
     if (playMatch) {
       const job = playbackJobs.get(playMatch[1]); if (!job) return json(res, 404, { error: 'Playback session not found.' });
       if (req.method === 'GET' && !playMatch[2]) {
@@ -2833,6 +2839,24 @@ export async function handleRequest(req, res) {
           if (controller.signal.aborted) return;
         }
         return json(res, 200, publicJob(job));
+      }
+      if (req.method === 'POST' && playMatch[2] === 'retry-source') {
+        const input = await body(req), start = Number(input.start || 0);
+        if (!Number.isFinite(start) || start < 0) return json(res, 400, { error: 'Invalid playback position.' });
+        const settings = await readSettings();
+        if (!job.torrentSource || job.cancelled || !['ready', 'error'].includes(job.status)) return json(res, 409, { error: 'Another torrent source cannot be selected for this job right now.' });
+        job.rejectedReleases ||= new Set();
+        job.rejectedReleases.add(`torrent:${job.torrentSource.infoHash}`);
+        job.selectionStart = start;
+        delete job.preparedSession; delete job.torrentPreflightInfoHash;
+        delete job.sourceRecoveryError;
+        jobEvent(job, 'torrent-source-retry', 'Trying another torrent after playback stopped advancing.', { start, release: job.release });
+        setJob(job, 'selecting', 'Trying another torrent release…', 45);
+        void (async () => {
+          await Promise.all([...hlsSessions.values()].filter(entry => entry.jobId === job.id).map(entry => entry.session.close()));
+          if (!job.cancelled) await preparePlayback(job, settings, { torrentOnly: true });
+        })().catch(error => { if (!job.cancelled) setJob(job, 'error', error.message || 'Torrent source replacement failed.', 0); });
+        return json(res, 202, publicJob(job));
       }
       if (req.method === 'POST' && job.torrentSource && ['fallback', 'retry'].includes(playMatch[2])) {
         return json(res, 409, { error: 'Torrent playback is memory-only; a downloaded fallback is not supported. Try another release.' });

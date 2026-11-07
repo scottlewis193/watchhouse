@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { isIP } from 'node:net';
 import { englishAudioRelease, episodeTag, playbackStrategy, rankReleases, releaseResolution, releaseTitleMatches, titleVariants } from '../../../media.js';
 import { createConversionAdmission } from './conversion-admission.js';
 
@@ -179,7 +180,7 @@ function drain(response, signal) {
   });
 }
 // WebTorrent's iterator can leave next() pending when its torrent is destroyed.
-// Race each read against cancellation rather than waiting for a stream wrapper.
+// Race reads against cancellation and connection failure, not a stream wrapper.
 function abortable(work, signal) {
   check(signal);
   return new Promise((resolve, reject) => {
@@ -203,28 +204,54 @@ export function createTorrentStreaming({
   if (!Number.isSafeInteger(cacheBytes) || cacheBytes < 1024 ** 2 || !Number.isInteger(maxConcurrentStreams) || maxConcurrentStreams < 1) throw new Error('Invalid torrent streaming limits.');
   const sources = new Map(); const operations = new Set();
   const windows = new Set();
+  const liveClients = new Set(); const dhtNodes = new Map();
   const metadataPeers = new WeakMap();
   const maxQueuedReaders = 16;
   const admission = createConversionAdmission({ limit: maxConcurrentStreams, maxQueued: maxQueuedReaders });
   let metadataActive = 0; let server; let starting; let closed = false;
   const metadataConnections = new WeakMap();
   function ensureOpen() { if (closed) throw new Error('Torrent streaming service is closed.'); }
+  function rememberDht(client) {
+    if (closed || client.destroyed || !client.dht || client.dht.destroyed || typeof client.dht.toJSON !== 'function') return;
+    const nodes = client.dht.toJSON().nodes;
+    if (!Array.isArray(nodes)) return;
+    for (const node of nodes) {
+      if (!node || typeof node.host !== 'string' || !isIP(node.host) || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535) continue;
+      const key = `${node.host}:${node.port}`;
+      dhtNodes.delete(key); dhtNodes.set(key, { host: node.host, port: node.port });
+      if (dhtNodes.size > 64) dhtNodes.delete(dhtNodes.keys().next().value);
+    }
+  }
+  async function closeClient(client) {
+    rememberDht(client); liveClients.delete(client);
+    await destroyClient(client);
+  }
   async function clientTorrent(id, signal, metadataOnly = false, parsed, peers) {
     check(signal);
+    // New windows need fresh stores, not a cold DHT routing table. Retain only
+    // bounded contact addresses; each client still owns its DHT and sockets.
+    for (const live of liveClients) rememberDht(live);
     const client = await createClient({ maxConns: 8, webSeeds: false, utp: false, lsd: false, natUpnp: false, natPmp: false });
-    const onAbort = () => { void destroyClient(client); };
+    liveClients.add(client);
+    const failure = new AbortController();
+    const onAbort = () => { void closeClient(client); };
     signal?.addEventListener('abort', onAbort, { once: true });
     let abort; let store;
     try {
       check(signal);
+      if (client.dht && typeof client.dht.addNode === 'function') {
+        for (const node of dhtNodes.values()) client.dht.addNode({ ...node });
+      }
       const torrent = await new Promise((resolve, reject) => {
         abort = () => reject(signal.reason || abortError());
-        client.on('error', reject);
+        const fail = error => { failure.abort(error); reject(error); };
+        client.on('error', fail);
         signal?.addEventListener('abort', abort, { once: true });
         const torrent = client.add(id, { deselect: true, uploads: false, store: function (length, options) { return store = new BoundedTorrentStore(length, options); }, storeOpts: { maxBytes: metadataOnly ? 0 : cacheBytes }, storeCacheSlots: 0, destroyStoreOnDestroy: true, ...(parsed ? { bitfield: new Uint8Array(Math.ceil(parsed.pieces.length / 8)) } : {}) }, ready => {
           signal?.removeEventListener('abort', abort); resolve(ready);
         });
-        torrent.on('error', reject);
+        torrent.on('error', fail);
+        torrent.once('close', () => fail(new Error('Torrent connection closed before playback completed.')));
         if (peers) {
           torrent.once('infoHash', () => { for (const address of peers) torrent.addPeer(address); });
           torrent.on('wire', (_wire, address) => {
@@ -235,22 +262,23 @@ export function createTorrentStreaming({
         }
       });
       check(signal);
+      check(failure.signal);
       torrent.files.forEach(file => file.deselect());
       torrent.pause();
       return {
-        client, torrent,
+        client, torrent, failureSignal: failure.signal,
         setSignal(next) {
           signal?.removeEventListener('abort', onAbort); signal = next;
           signal?.addEventListener('abort', onAbort, { once: true });
           if (signal?.aborted) onAbort();
         },
         enableCache() { store.maxBytes = cacheBytes; },
-        async close() { signal?.removeEventListener('abort', onAbort); await destroyClient(client); }
+        async close() { signal?.removeEventListener('abort', onAbort); await closeClient(client); }
       };
     } catch (error) {
       signal?.removeEventListener('abort', onAbort);
       signal?.removeEventListener('abort', abort);
-      await destroyClient(client);
+      await closeClient(client);
       throw error;
     }
   }
@@ -272,7 +300,7 @@ export function createTorrentStreaming({
       let idle;
       for (const window of windows) {
         if (window.busy || window.closing) continue;
-        if (window.source === source && !window.connection.client.destroyed
+        if (window.source === source && !window.connection.client.destroyed && !window.connection.failureSignal.aborted
           && absolute >= window.start && absolute <= window.end) {
           window.busy = true;
           return window;
@@ -469,6 +497,8 @@ export function createTorrentStreaming({
         check(operation.controller.signal); touch();
         window = await acquireWindow(source, position, operation.controller.signal);
         const { torrent } = window.connection;
+        const readSignal = AbortSignal.any([operation.controller.signal, window.connection.failureSignal]);
+        check(readSignal);
         const file = torrent.files[source.file.index];
         if (!file || file.path !== source.file.path || file.length !== source.file.size) throw new Error('Torrent file changed since selection.');
         const end = Math.min(range.end, window.end - file.offset);
@@ -478,12 +508,12 @@ export function createTorrentStreaming({
         iterator = file[Symbol.asyncIterator]({ start: position, end: end === 0 ? Math.min(1, file.length - 1) : end });
         let received = 0;
         while (true) {
-          const { done, value } = await nextPiece(iterator, operation.controller.signal);
+          const { done, value } = await nextPiece(iterator, readSignal);
           if (done) break;
-          check(operation.controller.signal); touch();
+          check(readSignal); touch();
           const output = value.subarray(0, end - position + 1 - received);
           received += output.byteLength;
-          if (!res.write(output)) await drain(res, operation.controller.signal);
+          if (!res.write(output)) await drain(res, readSignal);
         }
         if (received !== end - position + 1) throw new Error('Torrent ended before the requested byte range was complete.');
         await iterator.return(); iterator = null;
@@ -542,9 +572,11 @@ export function createTorrentStreaming({
         release = await admission.acquire({ signal: operation.controller.signal });
         window = await acquireWindow(source, 0, operation.controller.signal);
         const { torrent } = window.connection;
+        const connectSignal = AbortSignal.any([operation.controller.signal, window.connection.failureSignal]);
+        check(connectSignal);
         torrent.resume();
-        if (!torrent.wires.length) await once(torrent, 'wire', { signal: operation.controller.signal });
-        check(operation.controller.signal);
+        if (!torrent.wires.length) await once(torrent, 'wire', { signal: connectSignal });
+        check(connectSignal);
       } catch (error) { await disposeSource(id); throw error; }
       finally {
         releaseWindow(window); release?.();
@@ -562,6 +594,7 @@ export function createTorrentStreaming({
     await Promise.all([...sources.keys()].map(disposeSource));
     server?.closeAllConnections();
     if (server?.listening) await new Promise(resolve => server.close(resolve));
+    dhtNodes.clear();
   }
   return { search, select, open, close };
 }

@@ -30,7 +30,7 @@ async function withTorrentIndexer(run, { onSearch } = {}) {
       } else res.end(torrents[Number(url.pathname.slice(1))].torrentFile);
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-    await run({ torrentIndexerUrl: `http://127.0.0.1:${server.address().port}/api` });
+    await run({ torrentIndexerUrl: `http://127.0.0.1:${server.address().port}/api` }, torrents);
   } finally {
     server?.closeAllConnections();
     if (server) await new Promise(resolve => server.close(resolve));
@@ -151,6 +151,29 @@ test('cached torrent validation and fallback search share one selection deadline
       assert.equal(playback.preparedSession, undefined);
     } finally { t.mock.timers.reset(); }
   }, { onSearch: () => { if (foreground) t.mock.timers.tick(60000); } });
+});
+
+for (const playable of [true, false]) test(`torrent source recovery ${playable ? 'selects an alternative' : 'reports exhausted alternatives'} without repeating Usenet`, async () => {
+  await withTorrentIndexer(async (settings, torrents) => {
+    const playback = { ...job(), media: { ...media, id: playable ? 95483 : 95484 },
+      torrentSource: { infoHash: torrents[0].infoHash }, selectionStart: 117.5,
+      rejectedReleases: new Set([`torrent:${torrents[0].infoHash}`]) };
+    let usenetSearches = 0;
+    await preparePlayback(playback, settings, {
+      torrentOnly: true, plans: createPlaybackPlanCache(), persistence: null,
+      search: async () => { usenetSearches++; return []; },
+      preflight: async (candidate, _settings, start) => {
+        assert.equal(candidate.release, 'Slow.Horses.S01E02.1080p.x264.Second');
+        assert.equal(start, 117.5);
+        if (!playable) throw new Error('The remaining torrent cannot sustain playback.');
+        return { sessionUrl: '/prepared/replacement', start };
+      }
+    });
+    assert.equal(usenetSearches, 0);
+    assert.equal(playback.status, playable ? 'ready' : 'error');
+    if (playable) assert.equal(playback.preparedSession.start, 117.5);
+    else assert.equal(playback.preparedSession, undefined);
+  });
 });
 
 test('cancelling torrent admission stops selection without trying another swarm', async () => {

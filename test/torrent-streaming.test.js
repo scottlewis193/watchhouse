@@ -271,6 +271,58 @@ test('rejected swarms are not reconnected through alternate magnets or revalidat
   } finally { await service.close(); }
 });
 
+test('DHT contacts are bounded, validated and retained across live and cancelled clients without enabling disabled DHT', async () => {
+  const nodes = Array.from({ length: 80 }, (_, index) => ({ host: '192.0.2.1', port: 10000 + index }));
+  nodes.push({ host: 'not an address', port: 6881 }, { host: '192.0.2.2', port: 0 }, { host: '192.0.2.2', port: 65536 }, { host: null, port: 6881 });
+  const clients = [], added = [];
+  const firstController = new AbortController();
+  let started;
+  const firstStarted = new Promise(resolve => { started = resolve; });
+  let currentController = firstController;
+  const service = createTorrentStreaming({
+    createClient: async options => {
+      assert.equal(options.dht, undefined, 'the dependency must retain its default bootstrap configuration');
+      const index = clients.length, contacts = [];
+      const controller = currentController;
+      const client = stalledMetadataClient(() => {
+        if (index === 0) started();
+        else queueMicrotask(() => controller.abort(new Error('Selection cancelled.')));
+      });
+      client.dht = index === 3 ? false : {
+        toJSON() {
+          assert.equal(client.destroyed, undefined, 'contacts must be captured before client destruction');
+          return { nodes: index === 0 ? nodes : [] };
+        },
+        addNode(node) { contacts.push({ ...node }); node.id = 'not retained'; }
+      };
+      clients.push(client); added.push(contacts);
+      return client;
+    }
+  });
+  const selecting = (signal, hash) => service.select(media, settings, {
+    signal, release: { title: 'Silo.S01E02.x264', torrentUrl: `magnet:?xt=urn:btih:${hash.repeat(40)}` }
+  });
+  try {
+    const first = assert.rejects(selecting(firstController.signal, 'a'), /Selection cancelled/);
+    await firstStarted;
+    currentController = new AbortController();
+    await assert.rejects(selecting(currentController.signal, 'b'), /Selection cancelled/);
+    assert.deepEqual(added[1], nodes.slice(16, 80), 'a new client must reuse contacts from the still-live metadata client');
+    firstController.abort(new Error('Selection cancelled.'));
+    await first;
+    currentController = new AbortController();
+    await assert.rejects(selecting(currentController.signal, 'c'), /Selection cancelled/);
+    assert.deepEqual(added[2], nodes.slice(16, 80), 'teardown must preserve only address contacts, not DHT-owned node objects');
+    currentController = new AbortController();
+    await assert.rejects(selecting(currentController.signal, 'd'), /Selection cancelled/);
+    assert.deepEqual(added[3], [], 'dht:false must stay disabled');
+  } finally {
+    firstController.abort(new Error('Selection cancelled.'));
+    await service.close();
+  }
+  assert.ok(clients.every(client => client.destroyed));
+});
+
 test('timed-out magnet clients close and alternate results do not reconnect the same stalled swarm', async () => {
   const clients = [];
   const urls = [`magnet:?xt=urn:btih:${'0'.repeat(40)}`, `magnet:?xt=urn:btih:${'A'.repeat(32)}`, 'https://indexer.example/healthy'];
@@ -415,6 +467,120 @@ test('metadata selection follows HTTP redirects to a magnet without treating it 
     if (server) await new Promise(resolve => server.close(resolve));
     await new Promise(resolve => seeder.destroy(resolve));
   }
+});
+
+test('saved playback reuses DHT contacts when its original bootstrap node goes offline', { timeout: 15000 }, async () => {
+  const { default: WebTorrent } = await import('webtorrent');
+  const { default: DHT } = await import('bittorrent-dht');
+  const { createSocket } = await import('node:dgram');
+  const options = { tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };
+  const bootstrap = new DHT({ bootstrap: false });
+  const rendezvous = new DHT({ bootstrap: false });
+  const seeder = new WebTorrent({ ...options, dht: { bootstrap: false } });
+  const clients = [];
+  let service, source, blackhole;
+  const listen = dht => new Promise(resolve => dht.listen(0, '127.0.0.1', resolve));
+  const destroyDht = dht => dht.destroyed ? Promise.resolve() : new Promise(resolve => dht.destroy(resolve));
+  try {
+    await Promise.all([listen(bootstrap), listen(rendezvous)]);
+    const firstNode = { host: '127.0.0.1', port: bootstrap.address().port };
+    const warmNode = { host: '127.0.0.1', port: rendezvous.address().port };
+    bootstrap.addNode({ ...warmNode, id: rendezvous.nodeId });
+    seeder.dht.addNode({ ...warmNode, id: rendezvous.nodeId });
+    const payload = Buffer.alloc(128 * 1024, 79);
+    const seeded = await new Promise(resolve => seeder.seed(payload, {
+      name: 'Silo.S01E02.x264.mkv', announce: [], pieceLength: 16384,
+      store: BoundedTorrentStore, storeOpts: { maxBytes: payload.length }
+    }, resolve));
+    await new Promise((resolve, reject) => seeder.dht.announce(seeded.infoHash, seeder.torrentPort, error => error ? reject(error) : resolve()));
+    service = createTorrentStreaming({
+      timeoutMs: 5000, metadataTimeoutMs: 5000,
+      createClient: async settings => {
+        const client = new WebTorrent({ ...settings, ...options, dht: { bootstrap: [firstNode], timeout: 30000 } });
+        const record = { client, ready: false };
+        client.dht.once('ready', () => { record.ready = true; });
+        clients.push(record);
+        return client;
+      }
+    });
+    const descriptor = await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.x264', torrentUrl: `magnet:?xt=urn:btih:${seeded.infoHash}` }
+    });
+    assert.equal(clients.length, 1);
+    assert.ok(clients[0].client.destroyed, 'metadata discovery must close before saved-source playback');
+    await destroyDht(bootstrap);
+    // Keep the old endpoint unanswered, rather than letting an unrelated
+    // ephemeral socket reuse it and make cold discovery nondeterministic.
+    blackhole = createSocket('udp4');
+    await new Promise(resolve => blackhole.bind(firstNode.port, firstNode.host, resolve));
+    source = await service.open(JSON.parse(JSON.stringify(descriptor)), { connect: true });
+    const response = await fetch(source.url, { headers: { range: 'bytes=0-65535' }, signal: AbortSignal.timeout(3000) });
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(0, 65536));
+    assert.equal(clients.length, 2);
+    assert.equal(clients[1].ready, false, 'cached nodes must supply playback before the dead bootstrap query completes');
+  } finally {
+    await source?.close();
+    await service?.close();
+    await new Promise(resolve => seeder.destroy(resolve));
+    await Promise.all([destroyDht(bootstrap), destroyDht(rendezvous)]);
+    if (blackhole) await new Promise(resolve => blackhole.close(resolve));
+  }
+  assert.ok(clients.every(({ client }) => client.destroyed));
+});
+
+for (const failure of ['client error', 'torrent error', 'torrent close']) test(`${failure} promptly terminates a reader whose iterator never settles`, async () => {
+  const parsed = { ...metadata([video('Silo.S01E02.x264.mkv')]), infoHash: 'a'.repeat(40), pieces: ['a'] };
+  const client = new EventEmitter(), torrent = new EventEmitter();
+  let started, returned = false, store;
+  const reading = new Promise(resolve => { started = resolve; });
+  torrent.files = [{
+    ...parsed.files[0], deselect() {},
+    [Symbol.asyncIterator]() {
+      return {
+        next() { started(); return new Promise(() => {}); },
+        async return() { returned = true; return { done: true }; }
+      };
+    }
+  }];
+  torrent.pause = torrent.resume = () => {};
+  client.add = (_id, options, ready) => {
+    store = new options.store(parsed.pieceLength, options.storeOpts);
+    queueMicrotask(() => ready(torrent));
+    return torrent;
+  };
+  client.destroy = callback => {
+    client.destroyed = torrent.destroyed = true;
+    torrent.emit('close');
+    store.close(callback);
+  };
+  const service = createTorrentStreaming({
+    request: async () => new Response('metadata'),
+    parse: async () => parsed, createClient: async () => client,
+    timeoutMs: 5000
+  });
+  let source;
+  try {
+    const descriptor = await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.x264', torrentUrl: 'https://indexer.example/file' }
+    });
+    source = await service.open(descriptor);
+    const deadline = AbortSignal.timeout(1000);
+    const response = await fetch(source.url, { signal: deadline });
+    await reading;
+    if (failure === 'client error') client.emit('error', new Error('Client transport failed.'));
+    else {
+      torrent.destroyed = true;
+      if (failure === 'torrent error') torrent.emit('error', new Error('Torrent transport failed.'));
+      else torrent.emit('close');
+    }
+    await assert.rejects(response.arrayBuffer(), () => {
+      assert.equal(deadline.aborted, false, 'the connection failure must finish the response before caller or stall timeout');
+      return true;
+    });
+  } finally { await source?.close(); await service.close(); }
+  assert.equal(returned, true, 'the pending iterator must be returned during cleanup');
+  assert.equal(client.destroyed, true);
+  assert.equal(store.bytes, 0);
 });
 
 test('playback can reconnect to a metadata peer without another discovery service', { timeout: 10000 }, async () => {

@@ -21,7 +21,7 @@ function recoveryState(retries = 0) {
     plays: 0, automaticStreamRetries: retries, playbackDiagnostics: false,
     playbackRecovery: null, playbackNeedsAction: false, playbackSettled: true, pendingBufferedRecovery: null, preparedSession: null,
     connectionLost: false, interruptedWhileOffline: false,
-    continuePlaybackOnReady: false, playing: true, resumeStarting: false,
+    continuePlaybackOnReady: false, playing: true, resumeStarting: false, streamRestarting: false,
     resumeStreamOffset: 128, recoveryPosition: 0, resumePlayback: false,
     restoredMediaKey: 'episode', currentPlaybackRequestToken: 1,
     interruptionTimer: null, startupStableTimer: null, diagnosticPollTimer: null, fallbackPending: false,
@@ -102,6 +102,96 @@ test('an exhausted HLS preparation uses a downloaded copy instead of restarting 
   state.handlePlaybackInterruption('media-error', 'Timed out preparing playback segments.', { code: 'PLAYBACK_SEGMENT_TIMEOUT' });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(requests, ['/api/play/s02e03/fallback']);
+});
+
+for (const [reason, evidence] of [
+  ['buffering-timeout', {}],
+  ['media-error', { code: 'SOURCE_REJECTED' }],
+  ['media-error', { code: 'PLAYBACK_SEGMENT_TIMEOUT' }]
+]) test(`a torrent ${evidence.code || reason} selects another source at the interrupted playhead`, async () => {
+  const { state, requests, polls } = recoveryState();
+  state.playback.sourceKind = 'torrent';
+  state.api.post = async (url, input) => {
+    requests.push(url);
+    assert.equal(input.start, 140);
+    return { ...state.playback, status: 'selecting' };
+  };
+  state.handlePlaybackInterruption(reason, 'Torrent playback stopped.', evidence);
+  assert.equal(state.playback.status, 'selecting', 'deactivate the old player before awaiting replacement');
+  state.handlePlaybackInterruption(reason, 'Duplicate interruption.', evidence);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/api/play/s02e03/retry-source']);
+  assert.equal(state.restartedAt, undefined, 'must not seek the stalled torrent again');
+  assert.equal(state.preparingReplacement, undefined, 'the backend owns torrent replacement');
+  assert.equal(state.playback.status, 'selecting');
+  assert.equal(polls.length, 1);
+  assert.equal(state.recoveryPosition, 140);
+  assert.equal(state.continuePlaybackOnReady, true);
+});
+
+test('a failed torrent seek retains its requested position and adopts the replacement preflight', async () => {
+  const { state, requests } = recoveryState();
+  state.playback.sourceKind = 'torrent';
+  state.resumeStreamOffset = 600;
+  state.resumeStarting = state.streamRestarting = true;
+  state.api.post = async (url, input) => {
+    requests.push(url);
+    assert.equal(input.start, 600, 'the old media currentTime must not be added to the new seek target');
+    return { ...state.playback, status: 'selecting' };
+  };
+  state.handlePlaybackInterruption('media-error', 'Seek preparation timed out.', { code: 'PLAYBACK_SEGMENT_TIMEOUT' });
+  await new Promise(resolve => setImmediate(resolve));
+  const session = { start: 600, sessionUrl: '/replacement', playlistUrl: '/replacement/index.m3u8' };
+  state.player.currentTime = 0;
+  await state.showReadyPlayback({ ...state.playback, status: 'ready', preparedSession: session }, 2);
+  assert.deepEqual(requests, ['/api/play/s02e03/retry-source']);
+  assert.equal(state.resumeStreamOffset, 600);
+  assert.equal(state.preparedSession, session, 'must reuse the fully checked replacement converter');
+});
+
+test('changing episodes during torrent replacement discards the old selection response', async () => {
+  const { state, requests, polls } = recoveryState();
+  state.playback.sourceKind = 'torrent';
+  let deliver;
+  state.api.post = url => {
+    requests.push(url);
+    return new Promise(resolve => { deliver = resolve; });
+  };
+  state.handlePlaybackInterruption('buffering-timeout', 'No torrent progress.');
+  await new Promise(resolve => setImmediate(resolve));
+  state.playback = { id: 'new-episode', status: 'ready', mode: 'direct' };
+  state.playbackRequests.isCurrent = () => false;
+  deliver({ id: 's02e03', sourceKind: 'torrent', status: 'selecting', mode: 'direct' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/api/play/s02e03/retry-source']);
+  assert.equal(state.playback.id, 'new-episode');
+  assert.equal(polls.length, 0);
+});
+
+test('exhausted torrent alternatives stop recovery without falling back to a download', async () => {
+  const { state, requests } = recoveryState(3);
+  state.playback.sourceKind = 'torrent';
+  state.api.post = async url => {
+    requests.push(url);
+    return { ...state.playback, status: 'error', message: 'No playable torrent remains.' };
+  };
+  state.handlePlaybackInterruption('buffering-timeout', 'No torrent progress.');
+  await new Promise(resolve => setImmediate(resolve));
+  state.handlePlaybackInterruption('media-error', 'Late old-source failure.');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/api/play/s02e03/retry-source']);
+  assert.equal(state.playback.status, 'error');
+  assert.equal(state.restartedAt, undefined);
+});
+
+test('offline torrent buffering waits without selecting another source', () => {
+  const { state, requests } = recoveryState();
+  state.playback.sourceKind = 'torrent';
+  state.connectionLost = true;
+  state.handlePlaybackInterruption('buffering-timeout', 'Network unavailable.');
+  assert.deepEqual(requests, []);
+  assert.equal(state.playback.status, 'ready');
+  assert.equal(state.buffering, true);
 });
 
 test('a rejected source prepares a replacement while the buffered video remains active', () => {

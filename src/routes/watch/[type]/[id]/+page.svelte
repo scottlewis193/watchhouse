@@ -767,11 +767,12 @@
       return;
     }
     if (['PLAYBACK_BUSY', 'PLAYBACK_STORAGE_LIMIT', 'INVALID_AUDIO_TRACK'].includes(evidence.code)) { playback = { ...playback, status: 'error', message }; return; }
-    if (evidence.code === 'SOURCE_REJECTED') {
+    const torrent = playback.sourceKind === 'torrent';
+    if (evidence.code === 'SOURCE_REJECTED' && !torrent) {
       prepareBufferedSourceRecovery();
       return;
     }
-    const action = ['SOURCE_UNAVAILABLE', 'PLAYBACK_SEGMENT_TIMEOUT', 'PLAYBACK_TIMEOUT'].includes(evidence.code) ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries, 3, reason);
+    const action = torrent || ['SOURCE_UNAVAILABLE', 'PLAYBACK_SEGMENT_TIMEOUT', 'PLAYBACK_TIMEOUT'].includes(evidence.code) ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries, 3, reason);
     if (playbackDiagnostics) {
       interruptionHistory = playbackTrace.interrupt(traceSource(), {
         reason, message, evidence, action, retriesBefore: automaticStreamRetries,
@@ -781,7 +782,12 @@
         browser: navigator.userAgent
       }, traceSample());
     }
-    if (action === 'offer' && canUseFallback(playback)) { void fallback(); return; }
+    if (action === 'offer' && (torrent || canUseFallback(playback))) {
+      // During a failed seek, the retained media may still report the old
+      // currentTime. Retry the requested offset, not that time plus the offset.
+      void fallback(torrent && (resumeStarting || streamRestarting) ? resumeStreamOffset : null);
+      return;
+    }
     if (action !== 'retry') { offerPlaybackRecovery(message, evidence.code === 'SOURCE_UNAVAILABLE', reason); return; }
     automaticStreamRetries++;
     restartStream(currentPlaybackPosition());
@@ -792,23 +798,29 @@
     playbackRecovery = null; automaticStreamRetries = 0;
     restartStream(position);
   }
-  async function fallback() {
-    clearBufferedSourceRecovery(); preparedSession = null;
+  async function fallback(position = null) {
     if (fallbackPending && playbackRequests.isCurrent(fallbackPending)) return;
-    if (!canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. The download is complete; try a different release or check this browser’s codec support.' }; return; }
+    const torrent = playback?.sourceKind === 'torrent';
+    if (!torrent && !canUseFallback(playback)) { playback = { ...playback, status: 'error', message: 'The prepared video could not be played by this browser. The download is complete; try a different release or check this browser’s codec support.' }; return; }
     const requestToken = playbackRequests.begin(), id = playback.id;
     fallbackPending = requestToken;
     currentPlaybackRequestToken = requestToken;
     clearTimeout(interruptionTimer); clearTimeout(startupStableTimer);
-    recoveryPosition = playbackRecovery?.position ?? currentPlaybackPosition();
+    recoveryPosition = Number.isFinite(position) ? Math.max(0, position) : playbackRecovery?.position ?? currentPlaybackPosition();
     playbackRecovery = null; playbackNeedsAction = false;
     resumePlayback = recoveryPosition > 0;
     continuePlaybackOnReady = true;
+    // Deactivate the old action before dropping its prepared session, otherwise
+    // that key change can start another converter for the stalled torrent.
+    if (torrent) playback = { ...playback, status: 'selecting', message: 'Finding another playable torrent…' };
+    clearBufferedSourceRecovery(); preparedSession = null;
     try {
       await savePlaybackProgress(true);
       if (!playbackRequests.isCurrent(requestToken)) return;
       stopBackgroundPlayback();
-      const job = await api.post(`/api/play/${id}/fallback`);
+      const job = torrent
+        ? await api.post(`/api/play/${id}/retry-source`, { start: recoveryPosition })
+        : await api.post(`/api/play/${id}/fallback`);
       if (!playbackRequests.isCurrent(requestToken)) return;
       playback = job;
       void poll(job.id, requestToken, 0);
