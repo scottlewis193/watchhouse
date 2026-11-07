@@ -66,6 +66,8 @@ Completed windows discard their clients and caches, so seeking or crossing a
 window can require reconnecting to peers and downloading pieces again. A bounded,
 memory-only cache of connected peer addresses avoids repeating discovery for
 every range; peer addresses are not persisted.
+The downloaded-copy fallback is NZB-only; an unavailable or too-slow torrent
+source requires another release rather than a torrent video download.
 
 Torrent activity exposes the server's peer IP address and depends on peer
 availability; it is not debrid-backed streaming. Use sources you are entitled to
