@@ -417,6 +417,45 @@ test('metadata selection follows HTTP redirects to a magnet without treating it 
   }
 });
 
+test('playback can reconnect to a metadata peer without another discovery service', { timeout: 10000 }, async () => {
+  const { default: WebTorrent } = await import('webtorrent');
+  const options = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };
+  const seeder = new WebTorrent(options);
+  let service, source, discover = true;
+  try {
+    const payload = Buffer.alloc(128 * 1024, 83);
+    const seeded = await new Promise(resolve => seeder.seed(payload, {
+      name: 'Silo.S01E02.x264.mkv', announce: [], pieceLength: 16384
+    }, resolve));
+    service = createTorrentStreaming({
+      timeoutMs: 2000,
+      createClient: async settings => {
+        const client = new WebTorrent({ ...settings, ...options });
+        if (discover) {
+          discover = false;
+          const add = client.add.bind(client);
+          client.add = (...args) => {
+            const torrent = add(...args);
+            torrent.once('infoHash', () => torrent.addPeer(`127.0.0.1:${seeder.torrentPort}`));
+            return torrent;
+          };
+        }
+        return client;
+      }
+    });
+    const descriptor = await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.x264', torrentUrl: `magnet:?xt=urn:btih:${seeded.infoHash}` }
+    });
+    source = await service.open(descriptor);
+    const response = await fetch(source.url, { headers: { range: 'bytes=0-65535' }, signal: AbortSignal.timeout(2000) });
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(0, 65536));
+  } finally {
+    await source?.close();
+    await service?.close();
+    await new Promise(resolve => seeder.destroy(resolve));
+  }
+});
+
 test('local TCP torrent streams exact ranges across cache windows and destroys every download client', { timeout: 60000 }, async () => {
   const { default: WebTorrent } = await import('webtorrent');
   const localOptions = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };

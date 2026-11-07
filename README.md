@@ -63,7 +63,7 @@ first five seconds of startup output, then requires sustained output at least
 **1.25× viewing speed**. Borderline sources get four more seconds. Each preflight
 is bounded to 40 seconds, with separate 20-second metadata and opening-timeline
 probe limits. Failed sources are closed before another release is tried.
-Each candidate gets at most ten seconds to acquire torrent metadata; selection
+Each candidate gets at most twenty seconds to acquire torrent metadata; selection
 continues through unique swarms within its overall 90-second deadline rather
 than stopping after three checks. Successful checks retain their playable
 segments as the initial buffer. This rejects observed stalls, but cannot
@@ -88,7 +88,8 @@ Matroska opening probes and playback from the beginning avoid unnecessary tail
 index seeks; seeking to another playback position remains supported.
 Moving outside retained windows can evict an idle window and require fetching
 pieces again. Closing a source destroys its windows. A bounded, memory-only
-cache of connected peer addresses avoids repeating discovery after eviction;
+cache of connected peer addresses avoids repeating discovery after eviction.
+Peers learned while acquiring magnet metadata are handed directly to playback;
 peer addresses are not persisted.
 The downloaded-copy fallback is NZB-only; an unavailable or too-slow torrent
 source requires another release rather than a torrent video download.
