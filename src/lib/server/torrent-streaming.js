@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { episodeTag, playbackStrategy, rankReleases, releaseTitleMatches, titleVariants } from '../../../media.js';
+import { createConversionAdmission } from './conversion-admission.js';
 
 const METADATA_LIMIT = 4 * 1024 ** 2;
 const VIDEO_TYPES = { mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska', webm: 'video/webm' };
@@ -163,9 +164,11 @@ export function createTorrentStreaming({
 } = {}) {
   if (!Number.isSafeInteger(cacheBytes) || cacheBytes < 1024 ** 2 || !Number.isInteger(maxConcurrentStreams) || maxConcurrentStreams < 1) throw new Error('Invalid torrent streaming limits.');
   const sources = new Map(); const operations = new Set();
-  let active = 0; let metadataActive = 0; let server; let starting; let closed = false;
+  const maxQueuedReaders = 16;
+  const admission = createConversionAdmission({ limit: maxConcurrentStreams, maxQueued: maxQueuedReaders });
+  let metadataActive = 0; let server; let starting; let closed = false;
   function ensureOpen() { if (closed) throw new Error('Torrent streaming service is closed.'); }
-  async function clientTorrent(id, signal, metadataOnly = false, parsed) {
+  async function clientTorrent(id, signal, metadataOnly = false, parsed, peers) {
     check(signal);
     const client = await createClient({ maxConns: 8, webSeeds: false, utp: false, lsd: false, natUpnp: false, natPmp: false });
     const onAbort = () => { void destroyClient(client); };
@@ -181,6 +184,14 @@ export function createTorrentStreaming({
           signal?.removeEventListener('abort', abort); resolve(ready);
         });
         torrent.on('error', reject);
+        if (peers) {
+          torrent.once('infoHash', () => { for (const address of peers) torrent.addPeer(address); });
+          torrent.on('wire', (_wire, address) => {
+            if (typeof address !== 'string') return;
+            peers.delete(address); peers.add(address);
+            if (peers.size > 64) peers.delete(peers.values().next().value);
+          });
+        }
       });
       check(signal);
       torrent.files.forEach(file => file.deselect());
@@ -276,21 +287,25 @@ export function createTorrentStreaming({
     if (range.status === 206) headers['content-range'] = `bytes ${range.start}-${range.end}/${source.file.size}`;
     source.touched = Date.now();
     if (req.method === 'HEAD') { res.writeHead(range.status, headers); res.end(); return; }
-    if (active >= maxConcurrentStreams) { res.writeHead(429, { 'retry-after': '1' }); res.end(); return; }
-    active++;
+    if (admission.stats().queued >= maxQueuedReaders) { res.writeHead(429, { 'retry-after': '1' }); res.end(); return; }
     const operation = linkedController(source.controller.signal, 0); operations.add(operation.controller); source.readers.add(operation.controller);
     let settled; const completion = new Promise(resolve => { settled = resolve; }); source.completions.add(completion);
-    let connection; let iterator; let timer;
+    let connection; let iterator; let timer; let release;
     const touch = () => { source.touched = Date.now(); clearTimeout(timer); timer = setTimeout(() => operation.controller.abort(new Error('Torrent playback stalled.')), timeoutMs); timer.unref?.(); };
     const cancel = () => operation.controller.abort(abortError());
     const onAbort = () => res.destroy(operation.controller.signal.reason);
     res.once('close', cancel); operation.controller.signal.addEventListener('abort', onAbort, { once: true });
     try {
-      res.writeHead(range.status, headers);
+      touch();
+      // FFmpeg opens a seek response before closing its previous range. Send
+      // headers before waiting for a reader so that seek cannot deadlock.
+      res.writeHead(range.status, headers); res.flushHeaders();
+      release = await admission.acquire({ signal: operation.controller.signal });
+      check(operation.controller.signal);
       let position = range.start;
       while (position <= range.end) {
         check(operation.controller.signal); touch();
-        connection = await clientTorrent(source.bytes, operation.controller.signal, false, source.parsed);
+        connection = await clientTorrent(source.bytes, operation.controller.signal, false, source.parsed, source.peers);
         const { torrent } = connection;
         const file = torrent.files[source.file.index];
         if (!file || file.path !== source.file.path || file.length !== source.file.size) throw new Error('Torrent file changed since selection.');
@@ -320,7 +335,7 @@ export function createTorrentStreaming({
     finally {
       clearTimeout(timer); await iterator?.return(); await connection?.close();
       res.removeListener('close', cancel); operation.controller.signal.removeEventListener('abort', onAbort);
-      operation.dispose(); operations.delete(operation.controller); source.readers.delete(operation.controller); source.touched = Date.now(); active--;
+      operation.dispose(); operations.delete(operation.controller); source.readers.delete(operation.controller); source.touched = Date.now(); release?.();
       source.completions.delete(completion); settled();
     }
   }
@@ -350,7 +365,7 @@ export function createTorrentStreaming({
     if (sources.size >= maxSources) throw new Error('Too many active torrent playback sources.');
     const id = randomUUID(); const controller = new AbortController();
     const cancel = () => disposeSource(id);
-    sources.set(id, { bytes, parsed, file, controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel });
+    sources.set(id, { bytes, parsed, file, peers: new Set(), controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel });
     signal?.addEventListener('abort', cancel, { once: true });
     return { url: `http://127.0.0.1:${port}/${id}/video`, size: file.size, mime: file.mime, filename: file.path, strategy: file.strategy, close: async () => disposeSource(id) };
   }

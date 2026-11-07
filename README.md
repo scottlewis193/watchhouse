@@ -60,9 +60,12 @@ Actual playback reads pieces into memory
 and feeds the existing FFmpeg remux/transcode pipeline. Archives, wrong episodes
 and ambiguous video collections are rejected. Stored pieces are capped at 64 MiB
 per HTTP reader, with at most two simultaneous readers (128 MiB total stored
-pieces, plus metadata/protocol buffers). No torrent video files are saved to disk.
+pieces, plus metadata/protocol buffers). Additional seek/probe requests wait in a
+bounded queue for a reader. No torrent video files are saved to disk.
 Completed windows discard their clients and caches, so seeking or crossing a
-window can require reconnecting to peers and downloading pieces again.
+window can require reconnecting to peers and downloading pieces again. A bounded,
+memory-only cache of connected peer addresses avoids repeating discovery for
+every range; peer addresses are not persisted.
 
 Torrent activity exposes the server's peer IP address and depends on peer
 availability; it is not debrid-backed streaming. Use sources you are entitled to

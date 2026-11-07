@@ -147,6 +147,8 @@ test('local TCP torrent streams exact ranges across cache windows and destroys e
   for (let index = 0; index < payload.length; index++) payload[index] = index % 251;
   const clients = [];
   let service;
+  let discoverPeers;
+  const discoveryReady = new Promise(resolve => { discoverPeers = resolve; });
   try {
     const seeded = await new Promise((resolve, reject) => {
       seeder.once('error', reject);
@@ -154,10 +156,13 @@ test('local TCP torrent streams exact ranges across cache windows and destroys e
     });
     service = createTorrentStreaming({
       cacheBytes: 1024 ** 2,
+      maxConcurrentStreams: 1,
+      timeoutMs: 5000,
       request: async () => new Response(seeded.torrentFile),
       createClient: async options => {
+        const discover = clients.length === 0;
         const client = new WebTorrent({ ...options, ...localOptions }); clients.push(client);
-        client.on('torrent', torrent => torrent.addPeer(`127.0.0.1:${seeder.torrentPort}`));
+        client.on('torrent', torrent => { if (discover) void discoveryReady.then(() => { if (!torrent.destroyed) torrent.addPeer(`127.0.0.1:${seeder.torrentPort}`); }); });
         return client;
       }
     });
@@ -165,13 +170,29 @@ test('local TCP torrent streams exact ranges across cache windows and destroys e
     assert.equal(clients.length, 0, 'selection downloads no torrent payload');
     const source = await service.open(JSON.parse(JSON.stringify(descriptor)));
     try {
-      for (const [range, start, end] of [['bytes=0-0', 0, 0], ['bytes=-317', payload.length - 317, payload.length - 1], [`bytes=133-${payload.length - 1}`, 133, payload.length - 1]]) {
-        const response = await fetch(source.url, { headers: { range } });
+      // Both seek headers must arrive before a peer can supply any payload,
+      // even though the second request is waiting for the only reader slot.
+      const opening = await fetch(source.url, { headers: { range: 'bytes=0-0' }, signal: AbortSignal.timeout(5000) });
+      const seeking = await fetch(source.url, { headers: { range: 'bytes=-317' }, signal: AbortSignal.timeout(5000) });
+      discoverPeers();
+      for (const [response, start, end] of [[opening, 0, 0], [seeking, payload.length - 317, payload.length - 1]]) {
+        assert.equal(response.status, 206);
+        assert.equal(response.headers.get('content-range'), `bytes ${start}-${end}/${payload.length}`);
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(start, end + 1));
+      }
+      {
+        const start = 133, end = payload.length - 1;
+        const response = await fetch(source.url, { headers: { range: `bytes=${start}-${end}` } });
         assert.equal(response.status, 206);
         assert.equal(response.headers.get('content-range'), `bytes ${start}-${end}/${payload.length}`);
         assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(start, end + 1));
       }
       assert.ok(clients.length >= 5, 'large ranges rotate stores instead of retaining the whole torrent');
+      await Promise.all([0, 1024, 32768].map(async start => {
+        const response = await fetch(source.url, { headers: { range: `bytes=${start}-${start + 65535}` } });
+        assert.equal(response.status, 206, 'concurrent probes wait for the bounded reader slot');
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(start, start + 65536));
+      }));
       const interrupted = await fetch(source.url, { headers: { range: 'bytes=0-1048575' } });
       await interrupted.body.cancel();
     } finally { await source.close(); }
