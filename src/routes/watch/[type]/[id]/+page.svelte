@@ -4,7 +4,7 @@
   import { frameTiming } from '$lib/frame-timing.js';
   import { playbackSource } from '$lib/hls-playback.js';
   import { playbackSetupProgress, readPlaybackSetup } from '$lib/playback-setup.js';
-  import { playbackDownloadProgress, playbackPreparationStage } from '$lib/playback-download.js';
+  import { playbackDownloadProgress, playbackPreparationProgress, playbackPreparationStage } from '$lib/playback-download.js';
   import { goto, replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
@@ -14,6 +14,7 @@
   import BufferedSeekBar from '$lib/BufferedSeekBar.svelte';
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import { createPlaybackTrace, playbackTraceSample } from '$lib/playback-trace.js';
+  import { createBufferingReporter, bufferingReportPayload } from '$lib/buffering-reports.js';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
   import { shouldPrewarmResume } from '$lib/poster-preparation.js';
@@ -25,7 +26,7 @@
   let releasePicker = $state(), guideOpen = $state(false), diagnosticsOpen = $state(false);
   let heroLaunching = $state(false), playerRevealing = $state(false);
   let titleDetails = $state({ backdrop: page.url.searchParams.get('backdrop') || '', overview: '' });
-  let currentMedia = $state(null), nextMedia = $state(null), nextJob = $state(null), showUpNext = $state(false), autoPlayNextEpisode = $state(true), downloadNextEpisode = $state(false), autoPlayNext = $state(true), smartAutoplay = $state(false), upNextSeconds = $state(30), upNextReason = $state('');
+  let currentMedia = $state(null), nextMedia = $state(null), nextJob = $state(null), showUpNext = $state(false), autoPlayNextEpisode = $state(true), autoPlayNext = $state(true), smartAutoplay = $state(false), upNextSeconds = $state(30), upNextReason = $state('');
   let library = $state([]), progressEntries = $state([]);
   let offlineMode = $state(false), offlineDownloads = $state([]), offlineJobs = $state([]), downloadError = $state('');
   let cacheClearing = $state(false), cacheMessage = $state(''), cacheError = $state('');
@@ -46,6 +47,13 @@
   let setupProgress = $state(null);
   let sourceDuration = $state(0);
   const playbackTrace = createPlaybackTrace();
+  const bufferingReports = createBufferingReporter({
+    capture: () => playbackDiagnostics && playback?.id ? bufferingReportPayload({ ...diagnosticReport(), snapshot: traceSample(), browser: navigator.userAgent }, playback.id) : null,
+    send: report => fetch('/api/playback-diagnostics', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(report), keepalive: true, signal: AbortSignal.timeout(10000)
+    })
+  });
   const progressWriter = createProgressWriter(snapshot => api.put('/api/state/progress', snapshot, { keepalive: true, signal: AbortSignal.timeout(10000) }), {
     onSaved: (state, key) => {
       const entry = state.progress.find(item => itemKey(item.media) === key);
@@ -53,7 +61,7 @@
     },
     onError: () => { playerControlError = 'Could not save your position. Playback can continue.'; }
   });
-  let backgroundTimer, backgroundReporting = false, backgroundTarget = null, backgroundTargetKey = "", backgroundDownloadKey = "";
+  let backgroundTimer, backgroundReporting = false;
   let readinessController;
   let pollTimer, nextPollTimer, diagnosticPollTimer, downloadPollTimer, startupStableTimer, startupFallbackTimer, interruptionTimer, controlHideTimer, upNextTimer, playerRevealTimer, lastProgressSave = 0, progressWritePending = false, restoredMediaKey = '', autoMarkedMediaKey = '', recoveryPosition = 0, currentPlaybackRequestToken = 0, continuePlaybackOnReady = false, videoFrameSample = null, audioFrameSample = null, automaticStreamRetries = 0, measuredFrameStats = null, upNextStartedAt = 0, lastCreditSampleAt = 0, likelyCreditFrames = 0, creditSampleCount = 0, creditEvidence = [], lastCreditSample = null, creditSamplingError = '', creditCanvas = null;
   let playbackUi = $derived(playbackPresentation({ ready: playback?.status === 'ready', warming: resumeStarting, restarting: streamRestarting, revealing: playerRevealing }));
@@ -82,7 +90,7 @@
     }
     backgroundTimer = setInterval(() => void reportBackgroundPlayback(), 3000);
     void initialise();
-    return () => { window.removeEventListener('offline', onOffline); window.removeEventListener('online', onOnline); clearBufferedSourceRecovery(); clearInterval(backgroundTimer); clearTimeout(seekTimer); stopBackgroundPlayback(); playbackRequests.cancel(); readinessController?.abort(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
+    return () => { bufferingReports.finish('source-changed'); window.removeEventListener('offline', onOffline); window.removeEventListener('online', onOnline); clearBufferedSourceRecovery(); clearInterval(backgroundTimer); clearTimeout(seekTimer); stopBackgroundPlayback(); playbackRequests.cancel(); readinessController?.abort(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
   });
 
   async function initialise() {
@@ -95,7 +103,7 @@
       void episodesForSeason(requestedSeason).catch(() => {});
     }
     const [settingsResult, stateResult, offlineResult] = await Promise.allSettled([api.get('/api/settings'), api.get('/api/state'), api.get('/api/offline')]);
-    try { if (settingsResult.status === 'rejected') throw settingsResult.reason; const settings = settingsResult.value; manualReleaseSelection = Boolean(settings.manualReleaseSelection); autoPlayNextEpisode = settings.autoPlayNextEpisode !== false; downloadNextEpisode = Boolean(settings.downloadNextEpisode); autoPlayNext = autoPlayNextEpisode; smartAutoplay = Boolean(settings.smartAutoplay); detailedPlaybackProgress = Boolean(settings.detailedPlaybackProgress); playbackDiagnostics = Boolean(settings.playbackDiagnostics); } catch { manualReleaseSelection = false; autoPlayNextEpisode = true; autoPlayNext = true; smartAutoplay = false; detailedPlaybackProgress = false; playbackDiagnostics = false; }
+    try { if (settingsResult.status === 'rejected') throw settingsResult.reason; const settings = settingsResult.value; manualReleaseSelection = Boolean(settings.manualReleaseSelection); autoPlayNextEpisode = settings.autoPlayNextEpisode !== false; autoPlayNext = autoPlayNextEpisode; smartAutoplay = Boolean(settings.smartAutoplay); detailedPlaybackProgress = Boolean(settings.detailedPlaybackProgress); playbackDiagnostics = Boolean(settings.playbackDiagnostics); } catch { manualReleaseSelection = false; autoPlayNextEpisode = true; autoPlayNext = true; smartAutoplay = false; detailedPlaybackProgress = false; playbackDiagnostics = false; }
     if (stateResult.status === 'fulfilled') { library = stateResult.value.library; progressEntries = stateResult.value.progress; }
     if (offlineResult.status === 'fulfilled') { offlineDownloads = offlineResult.value.downloads; offlineJobs = offlineResult.value.jobs; scheduleDownloadPoll(); }
     // An explicitly requested play can begin source selection while the catalogue
@@ -227,7 +235,7 @@
   async function startPlayback(selectedMedia, preparedJob = null, resume = false, autoAdvance = false) {
     if (manualReleaseSelection && !offlineMode && !selectedMedia.releaseId && !preparedJob) return chooseRelease(selectedMedia, resume);
     guideOpen = false;
-    stopBackgroundPlayback(); backgroundTarget = null; backgroundTargetKey = ""; backgroundDownloadKey = "";
+    stopBackgroundPlayback();
     readinessController?.abort();
     const requestToken = playbackRequests.begin();
     playbackTrace.event('play-request', { media: selectedMedia.title, resume });
@@ -355,11 +363,11 @@
   }
 
   function stopBackgroundPlayback() {
-    if (playback?.id && downloadNextEpisode) void fetch(`/api/play/${playback.id}/background`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playing: false }), keepalive: true }).catch(() => {});
+    if (playback?.id) void fetch(`/api/play/${playback.id}/background`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ playing: false }), keepalive: true }).catch(() => {});
   }
   async function reportBackgroundPlayback() {
-    if (!downloadNextEpisode || !playback?.id || offlineMode || backgroundReporting) return;
-    const id = playback.id, selected = currentMedia, key = itemKey(selected);
+    if (!playback?.id || offlineMode || backgroundReporting) return;
+    const id = playback.id;
     backgroundReporting = true;
     try {
       const time = player?.currentTime || 0;
@@ -367,15 +375,6 @@
       const sample = { playing: playing && !player?.paused, seeking: Boolean(player?.seeking || streamRestarting || resumeStarting), readyState: player?.readyState || 0, bufferedAhead: range ? range.end - time : 0 };
       // Report health even without a next episode: another viewer may be downloading.
       await api.post(`/api/play/${id}/background`, sample);
-      if (sample.playing && sample.bufferedAhead >= 25 && selected?.type === 'tv' && !manualReleaseSelection) {
-        if (backgroundTargetKey !== key) { backgroundTarget = await adjacentEpisodeMedia(selected, 1); backgroundTargetKey = key; }
-        if (playback?.id !== id || !backgroundTarget || backgroundDownloadKey) return;
-        const result = await api.post(`/api/play/${id}/background`, { ...sample, next: backgroundTarget });
-        if (Object.hasOwn(result, "job")) backgroundDownloadKey = itemKey(backgroundTarget);
-        if (result.job) {
-          offlineJobs = [...offlineJobs.filter(job => job.id !== result.job.id), result.job]; scheduleDownloadPoll();
-        }
-      }
     } catch {} finally { backgroundReporting = false; }
   }
 
@@ -384,7 +383,7 @@
     const isCurrent = () => playbackRequests.isCurrent(requestToken) && itemKey(currentMedia) === itemKey(selectedMedia);
     const result = await nextEpisodePreparation.attempt({
       resolveCandidate: () => adjacentEpisodeMedia(selectedMedia, 1),
-      prepareCandidate: candidate => api.post('/api/play', { ...candidate, prepareAhead: true, ...(downloadNextEpisode ? { backgroundFor: playback?.id } : {}) }),
+      prepareCandidate: candidate => api.post('/api/play', { ...candidate, prepareAhead: true, backgroundFor: playback?.id }),
       isCurrent
     });
     if (!isCurrent()) return;
@@ -558,6 +557,7 @@
   function playbackStreamUrl() { return resumeStreamUrl(playback?.streamUrl, playback?.mode, resumeStreamOffset); }
 
   function beginPlaybackWarmup(restarting = false) {
+    bufferingReports.finish('source-changed');
     clearTimeout(interruptionTimer); interruptionTimer = null;
     clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(playerRevealTimer);
     setupProgress = null; buffering = false; lastAdvancedPosition = 0;
@@ -585,6 +585,7 @@
     if (setupProgress) setupProgress = playbackSetupProgress(4);
     clearTimeout(interruptionTimer); buffering = false; interruptionTimer = null; playing = true; continuePlaybackOnReady = false; playbackNeedsAction = false; playbackRecovery = null;
     captureVideoDiagnostics('playing');
+    bufferingReports.finish('recovered');
     clearTimeout(interruptionTimer); showPlayerControls();
     if (!playbackSettled) settlePlaybackWarmup();
     clearTimeout(startupStableTimer); startupStableTimer = setTimeout(() => { automaticStreamRetries = 0; }, 30000);
@@ -601,6 +602,7 @@
     // Network stalls can arrive after pause; a stationary paused playhead is expected.
     if (!player || player.paused || seekPaused) return;
     if (!buffering) playbackTrace.event('buffering-start', { source: traceSource(), startup: !playbackSettled });
+    bufferingReports.start(event?.type || 'buffering');
     buffering = true;
     clearTimeout(startupStableTimer);
     if (!playbackSettled) resumeStarting = true;
@@ -619,6 +621,7 @@
     }, playbackSettled ? 10000 : 45000);
   }
   function handlePause() {
+    bufferingReports.finish('paused');
     stopBackgroundPlayback();
     buffering = false; playing = false; clearTimeout(interruptionTimer); interruptionTimer = null; clearTimeout(startupStableTimer); clearTimeout(controlHideTimer); controlsVisible = true;
     captureVideoDiagnostics('paused');
@@ -750,6 +753,7 @@
     if (fallbackPending && playbackRequests.isCurrent(fallbackPending)) return;
     if (playback?.status !== 'ready') return;
     if (pendingBufferedRecovery) return;
+    bufferingReports.finish('interrupted', { reason, message, evidence });
     if (connectionLost && playback?.mode !== 'cached' && (reason === 'buffering-timeout' || reason === 'media-error')) {
       interruptedWhileOffline ||= reason === 'media-error' && !playback?.hlsUrl;
       buffering = true;
@@ -837,7 +841,7 @@
     const selectedMedia = nextMedia, job = action === 'retry' ? null : nextJob;
     clearTimeout(upNextTimer); autoPlayNext = false;
     void setWatched(currentMedia, true);
-    void startPlayback(selectedMedia, downloadNextEpisode ? null : job, false, true);
+    void startPlayback(selectedMedia, job, false, true);
   }
   function sampleForEndCredits(timeline) {
     const detectionInput = () => ({ enabled: smartAutoplay, autoPlayNext, playing, hasNextEpisode: Boolean(nextMedia), position: timeline.position, duration: timeline.duration, sample: lastCreditSample, consecutiveMatches: likelyCreditFrames, sampleCount: creditSampleCount, detected: showUpNext && upNextReason === 'End credits detected', error: creditSamplingError });
@@ -882,6 +886,7 @@
     const advancedPosition = currentPlaybackPosition();
     if (advancedPosition > lastAdvancedPosition + 0.1) {
       if (buffering) playbackTrace.event('buffering-end', { source: traceSource() });
+      bufferingReports.finish('recovered');
       if (firstAdvancedSource !== traceSource()) { firstAdvancedSource = traceSource(); playbackTrace.event('advancing-frame', { source: traceSource(), position: advancedPosition }); }
       clearTimeout(interruptionTimer); interruptionTimer = null; buffering = false; lastAdvancedPosition = advancedPosition; }
     playerPosition = Number.isFinite(player?.currentTime) ? player.currentTime : 0;
@@ -917,12 +922,6 @@
     // the end of the episode. Preserve this episode and use bounded recovery.
     if (hasGrowingStreamDuration(playback?.mode) && timeline.duration > 0 && timeline.duration - timeline.position > 30) {
       handlePlaybackInterruption('premature-end', 'The stream ended before the episode was complete.', { position: timeline.position, duration: timeline.duration });
-      return;
-    }
-    if (downloadNextEpisode && autoPlayNext && currentMedia?.type === 'tv') {
-      void setWatched(currentMedia, true);
-      if (nextMedia) void startPlayback(nextMedia, null, false, true);
-      else void playAdjacentEpisode(1, true);
       return;
     }
     const endAction = currentMedia?.type === 'tv' ? nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob) : 'none';
@@ -1144,8 +1143,8 @@
   {@const downloading = status === 'downloading'}
   {@const stage = playbackPreparationStage(status)}
   {@const transfer = playbackDownloadProgress(playback?.download)}
-  {@const shownProgress = downloading ? transfer.percent : setup ? setup.percent : progress}
-  {@const unknown = downloading ? transfer.percent === null : indeterminate && !setup}
+  {@const shownProgress = setup ? setup.percent : playbackPreparationProgress(status, progress, playback?.download)}
+  {@const unknown = shownProgress === null || indeterminate && !setup}
   <div class="hero-preparation" class:hero-preparation-error={status === 'error'} aria-live="polite">
     <div class="hero-preparation-heading">
       <span class="hero-preparation-mark" aria-hidden="true">{status === 'error' ? '!' : '▶'}</span>

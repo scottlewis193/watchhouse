@@ -7,7 +7,7 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 export const playbackScope = settings => digest(JSON.stringify([
   2, settings.usenetHost, Number(settings.usenetPort || 563), settings.usenetUser, settings.usenetPass,
   settings.indexerUrl, settings.indexerKey, `${settings.manualReleaseSelection ? 'manual:' : ''}${settings.playbackQuality || 'balanced'}`, settings.targetResolution || 'auto', Number(settings.untaggedAudioTrack) || 2,
-  Boolean(settings.repairVideoTimeline), Boolean(settings.frameInterpolation)
+  Boolean(settings.repairVideoTimeline), Boolean(settings.frameInterpolation), settings.torrentIndexerUrl, settings.torrentIndexerKey
 ]));
 export const playbackRetention = settings => Math.min(168, Math.max(1, Number(settings.cacheRetentionHours) || 24)) * 3600000;
 const sourceIds = new WeakMap();
@@ -22,39 +22,39 @@ export function playbackSourceKey(file, settings) {
 }
 const scopedPlaybackSourceKey = (file, scope) => digest(JSON.stringify([scope, file.subject, file.segments.map(s => [s.id, s.decodedBytes])]));
 
-// Small metadata is written atomically. No credentials or NZB URLs are stored.
-export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 1024, maximumRecords = 100, now = Date.now } = {}) {
+// Verified metadata has no age/count eviction; video bytes remain bounded.
+// Torrent metadata may contain private tracker URLs. Records are owner-only.
+export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 1024, now = Date.now } = {}) {
   const recordsPath = join(root, 'records.json'), bytesRoot = join(root, 'articles');
   let records, initialized, bytesInitialized, recordWrites = Promise.resolve(), byteWrites = Promise.resolve(), queuedBytes = 0, size = 0;
   const articles = new Map(), pending = new Map();
   const initialize = () => initialized ||= (async () => {
     const data = await readFile(recordsPath, 'utf8').then(JSON.parse).catch(() => ({}));
-    records = new Map(data.version === 1 && Array.isArray(data.records) ? data.records : []);
-    for (const [key, entry] of records) if (!entry?.expires || entry.expires <= now()) records.delete(key);
-    while (records.size > maximumRecords) records.delete(records.keys().next().value);
+    records = new Map([1, 2].includes(data.version) && Array.isArray(data.records) ? data.records : []);
+    for (const [key, entry] of records) {
+      if (!entry?.value || typeof entry.value !== 'object') records.delete(key);
+      else records.set(key, { value: entry.value });
+    }
   })();
   const flush = () => {
     recordWrites = recordWrites.catch(() => {}).then(async () => {
       await mkdir(root, { recursive: true });
       const temporary = `${recordsPath}.${randomUUID()}.pending`;
       try {
-        await writeFile(temporary, JSON.stringify({ version: 1, records: [...records] }), { mode: 0o600 });
+        await writeFile(temporary, JSON.stringify({ version: 2, records: [...records] }), { mode: 0o600 });
         await rename(temporary, recordsPath);
       } finally { await rm(temporary, { force: true }).catch(() => {}); }
     });
     return recordWrites;
   };
-  async function getRecord(key, ttl) {
+  async function getRecord(key) {
     await initialize();
     const entry = records.get(key);
-    if (!entry || entry.expires <= now() || entry.created + ttl <= now()) return null;
-    records.delete(key); records.set(key, entry);
-    return structuredClone(entry.value);
+    return entry ? structuredClone(entry.value) : null;
   }
-  async function setRecord(key, value, ttl) {
+  async function setRecord(key, value) {
     await initialize();
-    records.delete(key); records.set(key, { value, created: now(), expires: now() + ttl });
-    while (records.size > maximumRecords) records.delete(records.keys().next().value);
+    records.set(key, { value });
     await flush();
   }
   async function removeArticle(key) {
@@ -81,10 +81,11 @@ export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 10
   })();
   const articleKey = (file, index, settings) => digest(`${playbackSourceKey(file, settings)}:${index}`);
   return {
-    getPlan: (media, settings) => getRecord(`plan:${offlineMediaKey(media)}:${playbackScope(settings)}`, playbackRetention(settings)),
+    getPlan: (media, settings) => getRecord(`plan:${offlineMediaKey(media)}:${playbackScope(settings)}`),
     setPlan(media, settings, plan) {
-      const { file, release, releaseKey, strategy } = plan;
-      return setRecord(`plan:${offlineMediaKey(media)}:${playbackScope(settings)}`, { file, release, ...(releaseKey ? { releaseKey } : {}), strategy }, playbackRetention(settings));
+      const { file, release, releaseKey, strategy, torrentSource } = plan;
+      const value = torrentSource ? { torrentSource } : { file, release, ...(releaseKey ? { releaseKey } : {}), strategy };
+      return setRecord(`plan:${offlineMediaKey(media)}:${playbackScope(settings)}`, value);
     },
     async deletePlan(media) {
       await initialize();
@@ -98,8 +99,10 @@ export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 10
       await byteWrites.catch(() => {});
       const prefix = `plan:${offlineMediaKey(media)}:`;
       const sources = [];
+      let removed = 0;
       for (const [key, entry] of [...records]) {
         if (!key.startsWith(prefix)) continue;
+        removed++;
         const file = entry?.value?.file;
         if (file?.segments?.length) sources.push({ file, id: scopedPlaybackSourceKey(file, key.slice(prefix.length)) });
         records.delete(key);
@@ -109,10 +112,10 @@ export function createPlaybackPersistence(root, { maximumBytes = 512 * 1024 * 10
         for (let index = 0; index < source.file.segments.length; index++) await removeArticle(digest(`${source.id}:${index}`));
       }
       await flush();
-      return { sources: sources.length };
+      return { sources: removed };
     },
-    getProbe: (file, settings) => getRecord(`probe:${playbackSourceKey(file, settings)}`, playbackRetention(settings)),
-    setProbe: (file, settings, metadata) => setRecord(`probe:${playbackSourceKey(file, settings)}`, metadata, playbackRetention(settings)),
+    getProbe: (file, settings) => getRecord(`probe:${playbackSourceKey(file, settings)}`),
+    setProbe: (file, settings, metadata) => setRecord(`probe:${playbackSourceKey(file, settings)}`, metadata),
     async getSegment(file, index, settings) {
       const key = articleKey(file, index, settings);
       await initializeBytes(); await pending.get(key);

@@ -6,3 +6,8 @@ data/cache/
 data/offline/
 data/offline-downloads.json
 node_modules/
+.env
+.env.*
+vpn/
+data/jackett/
+data/bundled-torznab.json

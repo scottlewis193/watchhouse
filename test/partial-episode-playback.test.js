@@ -16,7 +16,7 @@ function partialEpisode(sourceDuration = 71) {
     playback: { status: 'ready', mode: 'direct' }, player: { currentTime: 71 },
     currentMedia: { type: 'tv', season: 2, episode: 5, durationHint: 22 * 60 },
     progressFor: () => ({ duration: 71 }), captureVideoDiagnostics() {},
-    downloadNextEpisode: false, autoPlayNext: true,
+    autoPlayNext: true,
     nextMedia: { type: 'tv', season: 2, episode: 6 }, nextJob: { status: 'ready' },
     recovered: 0, advanced: 0, marked: 0,
     handlePlaybackInterruption() { state.recovered++; },

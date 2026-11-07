@@ -4,13 +4,22 @@
   let currentCandidate = $derived(selection?.candidates?.find(candidate => candidate.status === 'checking'));
   let selectedCandidate = $derived(selection?.candidates?.find(candidate => candidate.status === 'selected'));
 
-  function downloadTrace() {
-    const blob = new Blob([JSON.stringify(report || { version: 1, interruptions }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url; link.download = 'watchhouse-playback-diagnostics.json';
-    link.click();
+  let savedReportError = $state('');
+  async function downloadSavedReports() {
+    savedReportError = '';
+    try {
+      const response = await fetch('/api/playback-diagnostics', { signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error('Could not load saved buffering reports.');
+      downloadReport(await response.json(), 'watchhouse-saved-buffering-reports.json');
+    } catch { savedReportError = 'Could not download saved buffering reports. Try again.'; }
+  }
+  function downloadReport(report, filename) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function downloadTrace() {
+    downloadReport(report || { version: 1, interruptions }, 'watchhouse-playback-diagnostics.json');
   }
   const interruptionLabels = { 'buffering-timeout': 'Buffering timeout', 'audio-stall': 'Audio-stall check', 'media-error': 'Browser media error' };
 
@@ -103,9 +112,11 @@
       </dl>
     </section>
     <section class="lg:col-span-2">
+      <p class="text-xs text-base-content/55">With Playback diagnostics enabled, buffering lasting three seconds is saved automatically. The latest 20 reports survive refreshes and clearing playback cache.</p>
+      {#if savedReportError}<p class="text-xs text-error" role="alert">{savedReportError}</p>{/if}
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Playback interruptions</h3>
-        <button class="btn btn-xs" disabled={!report && !interruptions.length} onclick={downloadTrace}>Download diagnostic report</button>
+        <div class="flex flex-wrap gap-2"><button class="btn btn-xs" onclick={downloadSavedReports}>Download saved buffering reports</button><button class="btn btn-xs" disabled={!report && !interruptions.length} onclick={downloadTrace}>Download diagnostic report</button></div>
       </div>
       <p class="mt-2 text-base-content/55">Keeps the last 20 interruptions while this page is open, including player samples leading up to each one. Reports include startup, buffering events and recent frame timing. Presentation times are browser estimates; callback gaps and delays do not prove dropped frames. Download before reloading or leaving the page.</p>
       {#if interruptions.length}

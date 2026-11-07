@@ -72,9 +72,9 @@ test('a preconnected socket survives discovery even when normal background-frien
   let opened = 0;
   const pool = createNntpPool(async () => { opened++; return { body: async () => {}, close() {} }; }, { idleMs: 1500 });
   try {
-    await pool.warm({ ...settings, downloadNextEpisode: true });
+    await pool.warm(settings);
     await new Promise(resolve => setTimeout(resolve, 1100));
-    await pool.client({ ...settings, downloadNextEpisode: true }).body('one', () => {});
+    await pool.client(settings).body('one', () => {});
     assert.equal(opened, 1, 'keep the connection available while the NZB lookup finishes');
   } finally { pool.clearIdle(); }
 });

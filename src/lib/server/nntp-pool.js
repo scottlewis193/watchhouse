@@ -48,7 +48,7 @@ export function createNntpPool(connect, { acquire = async () => () => {}, idleMs
       });
     }
   }
-  function client(settings, idleTimeout = settings.downloadNextEpisode ? 1000 : idleMs) {
+  function client(settings, idleTimeout = Math.min(idleMs, 1000)) {
     const controller = new AbortController();
     const signal = settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal;
     let active = null, previous;

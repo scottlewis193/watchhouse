@@ -19,6 +19,14 @@ export function playbackDownloadProgress(download) {
   return { percent, detail: details.join(' · ') };
 }
 
+// Release checks and post-download work have no measurable completion total.
+// Keep their stage markers off the transfer bar, which starts at zero.
+export function playbackPreparationProgress(status, progress, download) {
+  if (status === 'downloading') return playbackDownloadProgress(download).percent;
+  if (['selecting', 'extracting', 'optimizing'].includes(status)) return null;
+  return progress;
+}
+
 export function playbackPreparationStage(status) {
   if (status === 'downloading') return { title: 'Downloading video', message: 'A full download is needed before playback can start.' };
   if (status === 'extracting') return { title: 'Unpacking video', message: 'Download complete. Unpacking the video before playback…' };

@@ -30,6 +30,20 @@ RUN curl -fsSL --retry 3 -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${
     && make -j "$(nproc)" \
     && make install
 
+FROM node:24-bookworm-slim AS jackett-download
+ARG TARGETARCH
+ARG JACKETT_VERSION=0.24.3025
+ARG JACKETT_SHA256=c91fafb614a1619c3fe1bc1c9019df857591f7f75d2598dd2a70f76c2252cec6
+RUN test "${TARGETARCH:-amd64}" = amd64 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL --retry 3 -o /tmp/jackett.tar.gz "https://github.com/Jackett/Jackett/releases/download/v${JACKETT_VERSION}/Jackett.Binaries.LinuxAMDx64.tar.gz" \
+    && echo "${JACKETT_SHA256}  /tmp/jackett.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/jackett \
+    && tar -xzf /tmp/jackett.tar.gz -C /opt/jackett --strip-components=1 \
+    && rm /tmp/jackett.tar.gz
+
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
 
@@ -51,25 +65,30 @@ WORKDIR /app
 # Debian's non-free component provides unrar for multi-volume RAR releases.
 RUN sed -i 's/Components: main/Components: main non-free/' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libx264-164 libzimg2 libva2 libva-drm2 libdrm2 libgnutls30 gosu intel-media-va-driver mesa-va-drivers passwd unrar p7zip-full python3 libarchive13 \
+    && apt-get install -y --no-install-recommends ca-certificates libx264-164 libzimg2 libva2 libva-drm2 libdrm2 libgnutls30 gosu intel-media-va-driver mesa-va-drivers passwd unrar p7zip-full python3 libarchive13 tini libgssapi-krb5-2 libicu72 libssl3 libstdc++6 tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir /app/data \
     && chown node:node /app/data
 COPY --from=ffmpeg-build /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/local/bin/
+COPY --from=jackett-download /opt/jackett /opt/jackett
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    WATCHHOUSE_BUNDLED_INDEXER=true \
+    WATCHHOUSE_BUNDLED_TORZNAB_FILE=/app/data/bundled-torznab.json \
+    WATCHHOUSE_PUBLIC_INDEXERS=limetorrents,torrentdownloads
 
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/build ./build
 
 COPY --from=build --chown=node:node /app/scripts/progressive-archive.py ./scripts/progressive-archive.py
+COPY --from=build --chown=node:node /app/scripts/bundled-indexer.mjs ./scripts/bundled-indexer.mjs
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 VOLUME ["/app/data"]
 EXPOSE 3000
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
 CMD ["node", "build"]

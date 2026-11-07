@@ -1,5 +1,74 @@
 # Watchhouse
 
+## Discovery and proactive streaming
+
+Home includes movies released from January 1 through today in the current UTC
+year. Discovery shelves load additional TMDB pages as you approach their right
+edge, with retry controls on failures; Continue watching remains your saved list.
+
+Browsing Home queues background release selection for its movies and the first
+aired episode of its shows. Newly loaded shelf pages join the same queue. Selection
+uses the active playback preference, target resolution and provider configuration;
+changing settings cancels pending work and prevents reuse of incompatible choices.
+Manual release selection disables automatic preparation.
+
+Preparation saves source metadata and performs bounded Usenet availability
+probes, not full-video downloads, archive extraction or speculative conversion.
+Usenet and torrent release selections, plus validated media metadata, survive
+restarts without age or record-count eviction. They remain until the user clears
+that movie/episode's cache or a failed playback check invalidates the source.
+Selections stay isolated by provider and playback settings; changing settings
+does not delete older selections. Existing saved metadata is retained on upgrade.
+Temporary video/article buffers still use their size and retention limits.
+Playback still checks the selected source when opening it: a prepared choice is
+not a guarantee that articles or peers will remain available. Saved torrent
+metadata can contain private tracker URLs and is written with owner-only access.
+
+**Prepare stream selections for the rest of the series** is enabled by default and queues stream choices
+for every remaining aired episode, including later seasons. Unknown/future air
+dates are skipped. The queue advances serially and Usenet probes yield to active
+playback when its buffer needs priority. This replaces automatic next-episode
+offline downloads; explicit Downloads remain available separately.
+
+### Local torrent fallback
+
+The Docker image bundles [Jackett](https://github.com/Jackett/Jackett) and automatically connects Watchhouse to its
+local Torznab endpoint. Public sources include **LimeTorrents** and
+**TorrentDownloads**; no separate indexer service or API-key setup is needed.
+Usenet remains preferred, with torrent fallback when no suitable Usenet stream
+is found. Torrent-only configuration also works with automatic selection.
+
+The bundled indexer listens only on `127.0.0.1:9117`; its admin interface is not
+published. Its configuration and API key persist under `/app/data`. Set
+`WATCHHOUSE_PUBLIC_INDEXERS` to a comma-separated list of Jackett indexer IDs to
+choose public sources, or `WATCHHOUSE_BUNDLED_INDEXER=false` to disable it.
+An explicit **Torznab indexer URL** and API key in Settings override the bundled
+indexer. Source/dev runs without the bundled runtime still need an external
+Torznab endpoint.
+
+Public indexers can be unavailable, blocked, or require CAPTCHA; site connections
+can also fail with TLS handshake errors or connection resets. Startup logs report
+these failures without stopping Watchhouse. There is no bundled CAPTCHA bypass,
+and preconfiguration does not guarantee search results or playable peers. Use the
+VPN deployment below to protect server-side traffic; a standalone `docker run`
+does **not** automatically provide a VPN.
+
+Only torrent metadata is fetched proactively; magnet metadata lookup may contact
+peers but does not fetch video pieces. Actual playback reads pieces into memory
+and feeds the existing FFmpeg remux/transcode pipeline. Archives, wrong episodes
+and ambiguous video collections are rejected. Stored pieces are capped at 64 MiB
+per HTTP reader, with at most two simultaneous readers (128 MiB total stored
+pieces, plus metadata/protocol buffers). No torrent video files are saved to disk.
+Completed windows discard their clients and caches, so seeking or crossing a
+window can require reconnecting to peers and downloading pieces again.
+
+Torrent activity exposes the server's peer IP address and depends on peer
+availability; it is not debrid-backed streaming. Use sources you are entitled to
+access and configure your network policy accordingly. Native `node-datachannel`
+support is required by WebTorrent; its install script is explicitly allowed in
+`package.json`. A scoped `uint8-util` override keeps WebTorrent's string-hash
+handling compatible with its byte utility.
+
 ## Docker Hub publishing
 
 Every push to `main` builds and tests the application, then publishes a Linux
@@ -92,6 +161,64 @@ docker build -t watchhouse:local .
 Local settings, downloads, credentials and generated build output are excluded
 from the Docker build context.
 
+### VPN deployment with Docker Compose
+
+`compose.yaml` runs Watchhouse (including Jackett) in
+[Gluetun's shared network namespace](https://github.com/qdm12/gluetun-wiki/blob/main/setup/connect-a-container-to-gluetun.md).
+All outbound traffic goes through the VPN: torrent peers, indexer searches,
+Usenet, and metadata requests. Gluetun's firewall stays enabled as the kill
+switch, and Watchhouse starts only after Gluetun is healthy.
+
+1. Install Docker Engine and Docker Compose v2.20 or later on a Linux host with
+   `/dev/net/tun`.
+2. Download a **WireGuard configuration** from your VPN provider. Use a provider
+   and plan that permit peer-to-peer traffic. Put the file at `vpn/wg0.conf`
+   beneath this checkout; create `vpn/` with mode `700` and protect the file
+   with mode `600`. The file contains your private VPN key: do not commit or
+   share it. `vpn/` is excluded from Git and Docker builds.
+3. The peer's `Endpoint` must contain an IP address, not a hostname, as required
+   by Gluetun's
+   [custom WireGuard provider](https://github.com/qdm12/gluetun-wiki/blob/main/setup/providers/custom.md).
+   Use a full-tunnel configuration. Provider-specific extensions or login-only
+   VPN apps are not substitutes for a WireGuard configuration.
+4. Start the deployment:
+
+   ```sh
+   docker compose up -d --build
+   ```
+
+Open `http://localhost:3000`. The default bind is loopback-only. For LAN access,
+put these non-secret values in a local `.env`, using your host's real address:
+
+```dotenv
+WATCHHOUSE_BIND_ADDRESS=0.0.0.0
+WATCHHOUSE_ORIGIN=http://your-server:3000
+```
+
+Only Watchhouse port 3000 is published, on Gluetun—not on Watchhouse. Jackett,
+Gluetun's control API, and torrent listening ports are not published. No VPN
+provider-side port forwarding is configured; peer availability can be lower
+without it. Do not expose Watchhouse to the Internet without separate access
+controls.
+
+`WATCHHOUSE_PORT` changes the published port; update `WATCHHOUSE_ORIGIN` to
+match. `WATCHHOUSE_WIREGUARD_CONFIG` selects a different host config-file path.
+A missing config file prevents startup rather than falling back to direct
+networking. `WATCHHOUSE_PUBLIC_INDEXERS` selects bundled public indexers.
+Gluetun is pinned to a release and image digest.
+
+Compose uses its own named volumes for Watchhouse data and Gluetun state.
+An existing standalone container's data volume is not automatically migrated;
+stop that container and configure the Compose volume to reuse it before
+switching. `docker compose down` retains volumes; `down -v` deletes them.
+Recreating Gluetun also requires recreating Watchhouse's shared network
+namespace; use `docker compose up -d --force-recreate` for a VPN-container
+replacement.
+
+Inspect startup and source errors with `docker compose logs gluetun watchhouse`.
+Never paste your WireGuard file or the bundled indexer's API key into reports.
+
+
 
 ## Playback logs
 
@@ -115,6 +242,21 @@ configured retention policy. Browser-only seeks, buffering and player state
 still require the watch page's **Download diagnostic report**; enable Playback
 diagnostics before starting playback and download the report before refreshing.
 
+With **Playback diagnostics** enabled, browser buffering lasting at least three
+seconds is saved automatically to `data/playback-diagnostics.json`. Reports include
+player samples before the stall, the stalled state, source/job identity, and recent
+server events. Recovery, pause, and retry update the same incident. The most recent
+20 incidents are retained (at most 128 KiB each), outside the playback cache, so
+refreshing or clearing an episode cache does not remove them. Failed reporting is
+best effort and does not affect playback. URLs and credential-shaped fields are
+redacted on both sides. The file is written with owner-only permissions.
+
+Use **Download saved buffering reports** in the watch page's diagnostics panel to
+retrieve the saved history, or GET `/api/playback-diagnostics`. Container logs also
+include `browser-buffering` entries with the job, incident, position, buffer headroom,
+and duration. This feature needs the updated server and browser build deployed;
+existing images do not record these reports.
+
 ## Progressive archive playback
 
 Foreground playback tries supported archives progressively after exhausting
@@ -131,8 +273,9 @@ higher-ranked archive that requires full download, as with direct video selectio
 Seeking into video that has not been extracted can take longer. Whole-file CRC
 failures can only be reported when the relevant data has been processed; they
 stop the progressive source rather than reporting successful completion.
-Offline and next-episode downloads still use the complete download/extraction
-path. An unclaimed source expires after 30 seconds; after its last active player
+Explicit offline downloads still use the complete download/extraction path.
+Automatic series preparation selects stream sources only. An unclaimed source
+expires after 30 seconds; after its last active player
 releases it, extraction stops and its temporary video is removed after 5 seconds.
 
 For local development, install `python3` and the system `libarchive` shared

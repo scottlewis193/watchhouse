@@ -35,12 +35,18 @@ import { createArchiveResumeCache } from './archive-resume-cache.js';
 import { createProgressiveArchiveSource } from './progressive-archive.js';
 import { tryCreateStoredRarSource } from './stored-rar-source.js';
 import { logPlaybackEvent } from './playback-log.js';
+import { createBufferingReportStore, readBufferingReport } from './buffering-reports.js';
+import { fetchDiscoveryShelves, fetchDiscoveryShelfPage } from './discovery.js';
+import { createProactivePreparation, remainingAiredEpisodes } from './proactive-preparation.js';
+import { createTorrentStreaming } from './torrent-streaming.js';
+import { createSettingsStore } from './settings-store.js';
 
 const ROOT = process.cwd();
 const SETTINGS_PATH = join(ROOT, 'data', 'settings.json');
+const settingsStore = createSettingsStore(SETTINGS_PATH);
 const MEDIA_STATE_PATH = join(ROOT, 'data', 'media-state.json');
 const PLAYBACK_CACHE_ROOT = process.env.WATCHHOUSE_PLAYBACK_CACHE_ROOT || join(ROOT, 'data', 'cache');
-const DISCOVERY_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, 'tmdb-discovery-v4.json');
+const DISCOVERY_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, `tmdb-discovery-v5-${new Date().getUTCFullYear()}.json`);
 const RUNTIME_CACHE_PATH = join(PLAYBACK_CACHE_ROOT, 'tmdb-runtime-v1.json');
 const OFFLINE_ROOT = join(ROOT, 'data', 'offline');
 const OFFLINE_STATE_PATH = join(ROOT, 'data', 'offline-downloads.json');
@@ -54,7 +60,7 @@ const posterPreparation = createPosterPreparation({ budgetMs: 30000 });
 const offlineJobs = new Map();
 const offlineSeriesJobs = new Map();
 const offlineFinalizations = new Map();
-const playbackPlans = createPlaybackPlanCache();
+const playbackPlans = createPlaybackPlanCache({ maximum: 1200 });
 const archiveResumePlans = createArchiveResumeCache();
 const playbackPersistence = createPlaybackPersistence(join(PLAYBACK_CACHE_ROOT, 'resume-v1'));
 const resumeSegments = createSegmentCache();
@@ -62,6 +68,62 @@ const transfers = createTransferCoordinator();
 const nntpPool = createNntpPool(openNntp, { acquire: settings => transfers.acquire(settings) });
 const releaseHealth = createReleaseHealthStore(join(ROOT, 'data', 'release-health.json'));
 const mediaState = createMediaStateStore(MEDIA_STATE_PATH);
+const bufferingReports = createBufferingReportStore(join(ROOT, 'data', 'playback-diagnostics.json'));
+const torrentStreaming = createTorrentStreaming();
+const torrentPlans = createPlaybackPlanCache({ maximum: 1200 });
+async function prepareTorrentPlayback(job, settings, persistence = playbackPersistence) {
+  if (!settings.torrentIndexerUrl || job.manualRelease || job.offlineDownload || settings.manualReleaseSelection) return false;
+  settings.signal?.throwIfAborted();
+  const scope = playbackScope(settings);
+  const excluded = [...(job.rejectedReleases || [])].filter(key => key.startsWith('torrent:')).map(key => key.slice(8));
+  let source = torrentPlans.get(job.media, scope);
+  if (source && excluded.includes(source.infoHash)) {
+    torrentPlans.delete(job.media); source = null;
+    await persistence?.deletePlan(job.media).catch(() => {});
+  }
+  if (!source) {
+    source = await torrentStreaming.select(job.media, settings, { signal: settings.signal, excludeInfoHashes: excluded });
+    if (!source) return false;
+    settings.signal?.throwIfAborted();
+    if (persistence) await persistence.setPlan(job.media, settings, { torrentSource: source }).catch(() => {});
+  }
+  torrentPlans.set(job.media, source, scope);
+  delete job.progressiveArchive; delete job.archives; delete job.preparedSession;
+  Object.assign(job, { torrentSource: source, file: { subject: source.name, segments: [] }, release: source.title || source.name,
+    releaseKey: `torrent:${source.infoHash}`, strategy: source.strategy || playbackStrategy(source.name, source.title),
+    mode: 'direct', status: 'ready', progress: 100, message: 'Torrent stream selected. Pieces load only during playback.' });
+  return true;
+}
+const proactive = createProactivePreparation({
+  key: (media, settings) => `${offlineMediaKey(media)}:${playbackScope(settings)}`,
+  prepare: async (media, settings, signal) => {
+    const job = { id: randomUUID(), media, speculative: true, prepareAhead: true, status: 'selecting', events: [], created: Date.now() };
+    await preparePlayback(job, { ...settings, signal, backgroundJob: job });
+    return job.status === 'ready';
+  }
+});
+function enqueueDiscovery(shelves, settings) {
+  if (settings.manualReleaseSelection || !(settings.indexerKey && settings.usenetHost || settings.torrentIndexerUrl)) return;
+  const items = [...new Map(shelves.flatMap(shelf => shelf.items).map(item => [offlineMediaKey(item), item])).values()];
+  async function* candidates() {
+    for (const item of items) {
+      if (item.type === 'movie') yield item;
+      else {
+        try {
+          const episodes = remainingAiredEpisodes(item, id => catalogueSeasons(settings, id), (id, season) => catalogueEpisodes(settings, id, season));
+          const first = await episodes.next();
+          if (!first.done) yield first.value;
+        } catch { /* One unavailable series must not stop the remaining shelves. */ }
+      }
+    }
+  }
+  proactive.enqueue(`discovery:${shelves.map(shelf => `${shelf.id}:${shelf.page || 1}`).join(',')}`, candidates(), settings, playbackScope(settings));
+}
+function enqueueSeries(media, settings) {
+  if (settings.prepareSeries === false || settings.manualReleaseSelection || media.type !== 'tv') return;
+  proactive.enqueue(`series:${offlineMediaKey(media)}`, remainingAiredEpisodes(media,
+    id => catalogueSeasons(settings, id), (id, season) => catalogueEpisodes(settings, id, season)), settings, playbackScope(settings));
+}
 let discoveryCache = null;
 let runtimeCache = null;
 let offlineRecords = null;
@@ -77,14 +139,7 @@ export function indexerEndpoint(value) {
   return url;
 }
 
-async function readSettings() {
-  if (!existsSync(SETTINGS_PATH)) return {};
-  return JSON.parse(await readFile(SETTINGS_PATH, 'utf8'));
-}
-async function saveSettings(next) {
-  await mkdir(join(ROOT, 'data'), { recursive: true });
-  await writeFile(SETTINGS_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
-}
+async function readSettings() { return settingsStore.read(); }
 async function readOfflineRecords() {
   if (offlineRecords) return offlineRecords;
   const stored = await readFile(OFFLINE_STATE_PATH, 'utf8').then(JSON.parse).catch(() => ({ downloads: [] }));
@@ -133,6 +188,7 @@ export async function clearPlaybackCacheForMedia(media, {
   }
   poster.cancel();
   plans.delete(media);
+  torrentPlans.delete(media);
   archivePlans.delete(media);
   const matched = [...jobs].filter(([, job]) => offlineMediaKey(job.media) === key);
   const ids = new Set(matched.map(([id]) => id));
@@ -170,8 +226,9 @@ export function shouldClearPlaybackWarmth(update = {}) {
 const cacheSweep = setInterval(() => clearExpiredPlaybackCache().catch(() => {}), CACHE_SWEEP_MS);
 cacheSweep.unref();
 export function publicSettings(settings) {
-  const { indexerKey, usenetPass, tmdbToken, omdbKey, watchmodeKey, ...safe } = settings;
-  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, repairVideoTimeline: false, frameInterpolation: false, targetResolution: 'auto', ...safe, hasIndexerKey: Boolean(indexerKey), hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
+  const { indexerKey, torrentIndexerKey, usenetPass, tmdbToken, omdbKey, watchmodeKey, downloadNextEpisode, ...safe } = settings;
+  if (settings.bundledTorrent?.active) safe.torrentIndexerUrl = '';
+  return { autoPlayNextEpisode: settings.autoPlayNextEpisode !== false, prepareSeries: settings.prepareSeries !== false, repairVideoTimeline: false, frameInterpolation: false, targetResolution: 'auto', ...safe, hasIndexerKey: Boolean(indexerKey), hasTorrentIndexer: Boolean(settings.torrentIndexerUrl), hasTorrentIndexerKey: Boolean(torrentIndexerKey) && !settings.bundledTorrent?.active, hasUsenetPass: Boolean(usenetPass), hasTmdbToken: Boolean(tmdbToken) };
 }
 export function connectionTestSettings(saved, entered = {}) {
   return { ...saved, ...Object.fromEntries(Object.entries(entered).filter(([, value]) => value !== '')) };
@@ -749,7 +806,7 @@ export function createPostedSegmentLoader(posted, settings, prefetchedSegments =
           }
           remember(index, decoded);
           try { settings.onProviderArticleLoaded?.(decoded.length); } catch { /* diagnostics cannot invalidate a good article */ }
-          if (settings.downloadNextEpisode) {
+          if (settings.prepareSeries !== false) {
             lane.idleTimer = setTimeout(() => { lane.client?.close(); lane.client = null; }, 1000);
             lane.idleTimer.unref();
           }
@@ -897,6 +954,7 @@ async function progressiveSource(job, settings) {
 }
 
 export async function openPostedRangeServer(job, settings, connect = connectNntp, options = {}) {
+  if (job.torrentSource) return torrentStreaming.open(job.torrentSource, { signal: settings.signal });
   if (job.progressiveArchive) return (await progressiveSource(job, settings)).retain(options);
   const posted = job.file, release = job.release, releaseKey = job.releaseKey || release;
   const layout = postedFileByteLayout(posted);
@@ -974,6 +1032,7 @@ function rejectPlaybackSource(job, settings, release, releaseKey, error) {
   job.rejectedReleases.add(releaseKey);
   if (settings.usenetHost) void releaseHealth.reject(settings, job.media, releaseKey).catch(() => {});
   playbackPlans.delete(job.media);
+  torrentPlans.delete(job.media);
   archiveResumePlans.delete(job.media);
   void playbackPersistence.deletePlan(job.media).catch(() => {});
   jobEvent(job, 'source-rejected', error.code === 'INVALID_MEDIA_TIMELINE'
@@ -1098,7 +1157,7 @@ function playbackInspection(job, settings, input) {
   const source = ['cached-convert', 'cached'].includes(job.mode) ? job : job.file;
   const scope = playbackScope(settings);
   return playbackInspections.get(source, scope, async publish => {
-      const persistent = job.mode !== 'cached-convert' && !job.progressiveArchive && settings.usenetHost;
+      const persistent = job.mode !== 'cached-convert' && !job.progressiveArchive && !job.torrentSource && settings.usenetHost;
       const saved = persistent && await playbackPersistence.getProbe(source, settings).catch(() => null);
       if (saved && Array.isArray(saved.tracks) && (saved.audioIndex === null || Number.isInteger(saved.audioIndex) && saved.audioIndex >= 0) && Number.isFinite(saved.duration) && saved.duration >= 0) { publish(saved); return saved; }
       jobEvent(job, 'metadata-start', 'Reading source audio and duration metadata.');
@@ -1225,6 +1284,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
       job.rejectedReleases.add(job.releaseKey || job.release);
       await releaseHealth.reject(settings, job.media, job.releaseKey || job.release);
       playbackPlans.delete(job.media);
+      torrentPlans.delete(job.media);
       await playbackPersistence.deletePlan(job.media).catch(() => {});
       jobEvent(job, 'source-rejected', error.message, { release: job.release });
       await recoverPlaybackSource(job, settings);
@@ -1393,7 +1453,7 @@ async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal,
 }
 
 async function streamConverted(req, res, job, settings, start = 0, strategyOverride = '') {
-  const rangeSource = start > 0 || job.progressiveArchive ? await openPostedRangeServer(job, settings) : null;
+  const rangeSource = start > 0 || job.progressiveArchive || job.torrentSource ? await openPostedRangeServer(job, settings) : null;
   const strategy = settings.frameInterpolation ? 'transcode' : seekPlaybackStrategy(strategyOverride || playbackStrategy(job.file.subject, job.release), start);
   const toneMap = playbackNeedsToneMapping(job);
   const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap, Boolean(settings.frameInterpolation));
@@ -1449,51 +1509,20 @@ async function tmdbRequest(settings, path, params = {}) {
 async function catalogueSearch(settings, query) {
   return mapTmdbTitles(await tmdbRequest(settings, 'search/multi', { query, include_adult: false, language: 'en-GB' }));
 }
-export async function fetchDiscoveryShelves(request) {
-  const movieGenres = (await request('genre/movie/list', { language: 'en-GB' })).genres || [];
-  const tvGenres = (await request('genre/tv/list', { language: 'en-GB' })).genres || [];
-  const genreId = (genres, name) => genres.find(genre => genre.name.toLowerCase() === name.toLowerCase())?.id;
-  const shelves = [
-    { id: 'popular-movies', title: 'Popular movies', path: 'movie/popular', type: 'movie' },
-    { id: 'popular-shows', title: 'Popular shows', path: 'tv/popular', type: 'tv' },
-    { id: 'netflix-shows', title: 'Popular on Netflix', path: 'discover/tv', type: 'tv', network: 213 },
-    { id: 'prime-video-shows', title: 'Popular on Prime Video', path: 'discover/tv', type: 'tv', network: 1024 },
-    { id: 'disney-plus-shows', title: 'Popular on Disney+', path: 'discover/tv', type: 'tv', network: 2739 },
-    { id: 'apple-tv-shows', title: 'Popular on Apple TV+', path: 'discover/tv', type: 'tv', network: 2552 },
-    { id: 'hbo-shows', title: 'Popular on HBO', path: 'discover/tv', type: 'tv', network: 49 },
-    { id: 'bbc-one-shows', title: 'Popular on BBC One', path: 'discover/tv', type: 'tv', network: 4 },
-    { id: 'itv1-shows', title: 'Popular on ITV1', path: 'discover/tv', type: 'tv', network: 9 },
-    { id: 'channel-4-shows', title: 'Popular on Channel 4', path: 'discover/tv', type: 'tv', network: 26 },
-    { id: 'sky-atlantic-shows', title: 'Popular on Sky Atlantic', path: 'discover/tv', type: 'tv', network: 1063 },
-    { id: 'action-movies', title: 'Action movies', path: 'discover/movie', type: 'movie', genre: genreId(movieGenres, 'Action') },
-    { id: 'comedy-movies', title: 'Comedy movies', path: 'discover/movie', type: 'movie', genre: genreId(movieGenres, 'Comedy') },
-    { id: 'crime-movies', title: 'Crime movies', path: 'discover/movie', type: 'movie', genre: genreId(movieGenres, 'Crime') },
-    { id: 'science-fiction-movies', title: 'Science fiction movies', path: 'discover/movie', type: 'movie', genre: genreId(movieGenres, 'Science Fiction') },
-    { id: 'action-shows', title: 'Action & adventure shows', path: 'discover/tv', type: 'tv', genre: genreId(tvGenres, 'Action & Adventure') },
-    { id: 'comedy-shows', title: 'Comedy shows', path: 'discover/tv', type: 'tv', genre: genreId(tvGenres, 'Comedy') },
-    { id: 'crime-shows', title: 'Crime shows', path: 'discover/tv', type: 'tv', genre: genreId(tvGenres, 'Crime') },
-    { id: 'science-fiction-shows', title: 'Sci-fi & fantasy shows', path: 'discover/tv', type: 'tv', genre: genreId(tvGenres, 'Sci-Fi & Fantasy') }
-  ].filter(shelf => shelf.id.startsWith('popular-') || shelf.genre || shelf.network);
-  const listed = [];
-  for (const shelf of shelves) {
-    const filtered = shelf.genre || shelf.network;
-    const payload = await request(shelf.path, { language: 'en-GB', page: 1, ...(filtered ? { ...(shelf.genre ? { with_genres: shelf.genre } : {}), ...(shelf.network ? { with_networks: shelf.network } : {}), include_adult: false, sort_by: 'popularity.desc', ...(shelf.type === 'movie' ? { include_video: false } : { include_null_first_air_dates: false }) } : {}) });
-    listed.push({ id: shelf.id, title: shelf.title, items: mapTmdbTitles(payload, shelf.type).slice(0, 12) });
-  }
-  return listed;
-}
 async function catalogueDiscovery(settings) {
-  if (discoveryCache?.expires > Date.now()) return discoveryCache.value;
+  const day = new Date().toISOString().slice(0, 10);
+  const midnight = Date.parse(`${day}T00:00:00Z`) + 86400000;
+  if (discoveryCache?.day === day && discoveryCache.expires > Date.now()) return discoveryCache.value;
   const stored = await readFile(DISCOVERY_CACHE_PATH, 'utf8').then(JSON.parse).catch(() => null);
-  if (stored?.value?.length && stored.expires > Date.now()) { discoveryCache = stored; return stored.value; }
+  if (stored?.day === day && stored?.value?.length && stored.expires > Date.now()) { discoveryCache = stored; return stored.value; }
   try {
     const value = await fetchDiscoveryShelves((path, params) => tmdbRequest(settings, path, params));
-    discoveryCache = { value, expires: Date.now() + DISCOVERY_CACHE_MS };
+    discoveryCache = { day, value, expires: Math.min(midnight, Date.now() + DISCOVERY_CACHE_MS) };
     await mkdir(PLAYBACK_CACHE_ROOT, { recursive: true });
     await writeFile(DISCOVERY_CACHE_PATH, JSON.stringify(discoveryCache), { mode: 0o600 });
     return value;
   } catch (error) {
-    if (stored?.value?.length) { discoveryCache = { value: stored.value, expires: Date.now() + 6 * 60 * 60 * 1000 }; return stored.value; }
+    if (stored?.day === day && stored?.value?.length) { discoveryCache = { day, value: stored.value, expires: Math.min(midnight, Date.now() + 6 * 60 * 60 * 1000) }; return stored.value; }
     throw error;
   }
 }
@@ -1753,7 +1782,7 @@ function matchesTargetResolution(release, settings) {
   const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[settings.targetResolution];
   return !target || releaseResolution({ title: release }) === target;
 }
-export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans && settings.usenetHost ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed } = {}) {
+export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed } = {}) {
   job.frameInterpolation = Boolean(settings.frameInterpolation);
   const recoveringSource = Boolean(job.rejectedReleases?.size);
   let failedPlanRelease = null;
@@ -1791,6 +1820,16 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
   };
   try {
+    const savedPlan = !job.manualRelease && persistence ? await persistence.getPlan(job.media, settings).catch(() => null) : null;
+    if (!job.offlineDownload && savedPlan?.torrentSource) torrentPlans.set(job.media, savedPlan.torrentSource, playbackScope(settings));
+    if (!job.offlineDownload && !job.manualRelease && torrentPlans.get(job.media, playbackScope(settings))) {
+      if (await prepareTorrentPlayback(job, settings, persistence)) return;
+    }
+    delete job.torrentSource;
+    if (search === findReleases && (!settings.usenetHost || !settings.indexerKey || !settings.indexerUrl)) {
+      if (await prepareTorrentPlayback(job, settings, persistence)) return;
+      throw new Error('No configured source has a suitable streamable release.');
+    }
     if (job.progressiveArchive && job.rejectedReleases?.has(job.releaseKey || job.release)) {
       await job.archiveSource?.close(); delete job.archiveSource; delete job.progressiveArchive; delete job.file;
     }
@@ -1813,7 +1852,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       if (plan && releaseDynamicRange(plan.release) !== 'sdr') plans.delete(job.media);
       if (plan && (!matchesTargetResolution(plan.release, settings) || releaseDynamicRange(plan.release) !== 'sdr')) plan = null;
       if (!plan && persistence) {
-        const saved = await persistence.getPlan(job.media, settings).catch(() => null);
+        const saved = savedPlan;
         if (saved?.file?.segments?.length && postedFileByteLayout(saved.file) && matchesTargetResolution(saved.release, settings)
           && releaseDynamicRange(saved.release) === 'sdr'
           && !job.rejectedReleases?.has(saved.releaseKey || saved.release) && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
@@ -1895,8 +1934,8 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     });
     // Keep three HTTP requests and two BODY checks active independently. The
     // six-candidate lookahead stays bounded and is consumed in ranking order.
-    const descriptionLimit = concurrencyLimit(job.backgroundFor ? 1 : 3);
-    const checkLimit = concurrencyLimit(job.backgroundFor || Number(settings.maxConnections) === 1 ? 1 : 2);
+    const descriptionLimit = concurrencyLimit(job.backgroundFor || job.speculative ? 1 : 3);
+    const checkLimit = concurrencyLimit(job.backgroundFor || job.speculative || Number(settings.maxConnections) === 1 ? 1 : 2);
     const sampleSettings = signal => ({ ...settings, signal, onProviderSpeedSample: (bytes, elapsedMs) => speedMeter.record(settings, bytes, elapsedMs) });
     const describe = async (release, signal) => {
       const combined = settings.signal ? AbortSignal.any([signal, settings.signal]) : signal;
@@ -1910,7 +1949,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     };
     // Exhaust the bounded search results before paying for a full archive download.
     let downloadChoice = savedDownloadChoice;
-    for await (const description of prefetchReleaseDescriptions(releases, describe, job.backgroundFor ? 1 : 6)) {
+    for await (const description of prefetchReleaseDescriptions(releases, describe, job.backgroundFor || job.speculative ? 1 : 6)) {
       const i = description.index;
       throwIfDownloadCancelled(job);
       settings.signal?.throwIfAborted();
@@ -1941,7 +1980,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           }
           const strategy = playbackStrategy(direct.subject, release.title);
           Object.assign(job, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, prefetchedSegments: new Map([[0, firstSegment]]) });
-          if (!job.backgroundFor) await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== 'sdr');
+          if (!job.backgroundFor && !job.speculative) await configurePlaybackAcceleration(job, strategy, releaseDynamicRange(release) !== 'sdr');
           if (!needsEnglishTrack && (shouldCacheDirectPlayback(job, settings) || job.downloadReplacement)) {
             markReleaseSelection(job, candidateIndex, 'checking', 'Downloading a playable copy.');
             await cache(job, settings);
@@ -2003,7 +2042,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
           }
           throwIfDownloadCancelled(job);
           if (matchesTargetResolution(release.title, settings)) {
-            plans.set(job.media, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map([[0, firstSegment]]) }, playbackScope(settings));
+            plans.set(job.media, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map(job.speculative ? [] : [[0, firstSegment]]) }, playbackScope(settings));
             if (persistence) await persistence.setPlan(job.media, settings, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy }).catch(() => {});
           }
           Object.assign(job, { status: 'ready', message: strategy === 'raw' ? 'Direct stream selected.' : strategy === 'remux' ? 'Live browser-compatible stream selected.' : 'Live converted stream selected.', progress: 100, mode: 'direct' });
@@ -2069,6 +2108,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         }
       } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); markReleaseSelection(job, candidateIndex, 'rejected', error.message || 'Release inspection failed.'); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
+    if (settings.torrentIndexerUrl && await prepareTorrentPlayback(job, settings, persistence)) return;
     if (downloadChoice && !job.speculative && !job.rejectedReleases?.size) {
       const { candidateIndex: fallbackIndex, ...sourceChoice } = downloadChoice;
       Object.assign(job, { ...sourceChoice, prefetchedSegments: downloadChoice.firstSegment ? new Map([[0, downloadChoice.firstSegment]]) : new Map() });
@@ -2089,7 +2129,12 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     if (progressive) job.progressiveArchiveDisabled = true;
     if (job.rejectedReleases?.size && !job.downloadReplacement && recoveringSource) throw new Error('No replacement streaming archive is available. Try preparing a downloaded copy.');
     let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; job.requireEnglishTrack = choice.needsEnglishTrack; markReleaseSelection(job, choice.candidateIndex, 'checking', 'Downloading and extracting archive.'); await archive(job, settings, choice.archives); finishReleaseSelection(job, choice.candidateIndex); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); markReleaseSelection(job, choice.candidateIndex, 'rejected', error.message || 'Archive preparation failed.'); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
-  } catch (error) { if (isDownloadCancelled(job, error)) { stopReleaseSelection(job, 'Playback preparation cancelled.'); job.status = 'cancelled'; job.message = 'Download cancelled.'; return; } stopReleaseSelection(job, error.message || 'Playback preparation failed.'); setJob(job, 'error', error.message || 'Playback preparation failed.', 0); }
+  } catch (error) {
+    if (isDownloadCancelled(job, error) || settings.signal?.aborted) { stopReleaseSelection(job, 'Playback preparation cancelled.'); job.status = 'cancelled'; job.message = 'Preparation cancelled.'; return; }
+    try { if (await prepareTorrentPlayback(job, settings, persistence)) return; }
+    catch (torrentError) { error = new Error(`${error.message} Torrent fallback: ${torrentError.message}`); }
+    stopReleaseSelection(job, error.message || 'Playback preparation failed.'); setJob(job, 'error', error.message || 'Playback preparation failed.', 0);
+  }
 }
 async function startOfflineMediaDownload(media, settings, backgroundFor = null) {
   const key = offlineMediaKey(media), records = await readOfflineRecords();
@@ -2216,7 +2261,7 @@ export function beginOfflineFinalization(job) {
 }
 
 function publicJob(job) {
-  const { archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, requireEnglishTrack, diagnosticsEnabled, events, releaseSelection, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job;
+  const { torrentSource, archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, requireEnglishTrack, diagnosticsEnabled, events, releaseSelection, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job;
   return {
     ...safe,
     mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode,
@@ -2270,17 +2315,38 @@ async function serveLocalVideo(req, res, job) {
 export async function handleRequest(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname === '/api/playback-diagnostics') {
+      if (req.method === 'GET') return json(res, 200, { version: 1, reports: await bufferingReports.list() });
+      if (req.method === 'POST') {
+        let input;
+        try { input = await readBufferingReport(req); }
+        catch (error) { return json(res, 400, { error: error.message }); }
+        const job = playbackJobs.get(input.jobId);
+        if (!job) return json(res, 404, { error: 'Playback job not found.' });
+        if (!job.diagnosticsEnabled) return json(res, 409, { error: 'Playback diagnostics are disabled.' });
+        // Use the server's current events and identity, never browser-supplied job metadata.
+        const report = await bufferingReports.save({ ...input, job: {
+          media: job.media, release: job.release, mode: job.mode, strategy: job.strategy,
+          acceleration: job.videoAcceleration, events: (job.events || []).slice(-40)
+        } });
+        logPlaybackEvent(job, 'browser-buffering', `Browser buffering report saved (${report.incident.outcome}).`, {
+          incidentId: report.incident.id, durationMs: report.incident.durationMs,
+          position: report.snapshot?.position, bufferedAhead: report.snapshot?.bufferedAhead,
+          reportFile: 'data/playback-diagnostics.json'
+        });
+        return json(res, 201, { saved: true });
+      }
+    }
     if (req.method === 'GET' && url.pathname === '/api/settings') return json(res, 200, publicSettings(await readSettings()));
     if (req.method === 'PUT' && url.pathname === '/api/settings') {
       const current = await readSettings(), incoming = await body(req);
-      const next = connectionTestSettings(current, incoming);
-      delete next.watchmodeKey; delete next.omdbKey;
-      posterPreparation.cancel(); nntpPool.clearIdle();
+      const next = await settingsStore.update(incoming);
+      posterPreparation.cancel(); proactive.cancel(); nntpPool.clearIdle();
       if (playbackScope(current) !== playbackScope(next)) archiveResumePlans.clear();
-      if (!next.downloadNextEpisode) transfers.pause(); else transfers.resume();
-      await saveSettings(next); return json(res, 200, publicSettings(next));
+      transfers.resume();
+      return json(res, 200, publicSettings(next));
     }
-    if (req.method === 'DELETE' && url.pathname === '/api/settings') { posterPreparation.cancel(); archiveResumePlans.clear(); nntpPool.clearIdle(); transfers.pause(); await saveSettings({}); return json(res, 204, {}); }
+    if (req.method === 'DELETE' && url.pathname === '/api/settings') { posterPreparation.cancel(); proactive.cancel(); archiveResumePlans.clear(); nntpPool.clearIdle(); transfers.resume(); await settingsStore.reset(); return json(res, 204, {}); }
     if (req.method === 'GET' && url.pathname === '/api/state') return json(res, 200, await mediaState.read());
     if (req.method === 'PUT' && url.pathname === '/api/state/library') { const input = await body(req); return json(res, 200, await mediaState.setLibrary(input.media, input.inLibrary)); }
     if (req.method === 'PUT' && url.pathname === '/api/state/media') { const input = await body(req); return json(res, 200, await mediaState.enrichMediaMany(input.media)); }
@@ -2360,7 +2426,23 @@ export async function handleRequest(req, res) {
       return json(res, 200, { message: 'Provider credentials accepted.' });
     }
     if (req.method === 'GET' && url.pathname === '/api/catalog/search') { const query = url.searchParams.get('q')?.trim(), settings = await readSettings(); if (!query) return json(res, 400, { error: 'A search query is required.' }); if (!settings.tmdbToken) return json(res, 400, { error: 'Add a TMDB read access token in settings before searching.' }); return json(res, 200, { results: await catalogueSearch(settings, query) }); }
-    if (req.method === 'GET' && url.pathname === '/api/catalog/discover') { const settings = await readSettings(); if (!settings.tmdbToken) return json(res, 400, { error: 'Add a TMDB read access token in settings before browsing.' }); return json(res, 200, { shelves: await catalogueDiscovery(settings) }); }
+    if (req.method === 'GET' && url.pathname === '/api/catalog/discover') {
+      const settings = await readSettings();
+      if (!settings.tmdbToken) return json(res, 400, { error: 'Add a TMDB read access token in settings before browsing.' });
+      const shelves = await catalogueDiscovery(settings);
+      enqueueDiscovery(shelves, settings);
+      return json(res, 200, { shelves });
+    }
+    const discoveryMatch = url.pathname.match(/^\/api\/catalog\/discover\/([a-z0-9-]+)$/);
+    if (req.method === 'GET' && discoveryMatch) {
+      const settings = await readSettings();
+      if (!settings.tmdbToken) return json(res, 400, { error: 'Add a TMDB read access token in settings before browsing.' });
+      try {
+        const shelf = await fetchDiscoveryShelfPage((path, params) => tmdbRequest(settings, path, params), discoveryMatch[1], url.searchParams.get('page') ?? 1);
+        enqueueDiscovery([shelf], settings);
+        return json(res, 200, { shelf });
+      } catch (error) { return json(res, error.status || 400, { error: error.message }); }
+    }
     const titleDetailsMatch = url.pathname.match(/^\/api\/catalog\/(movies|shows)\/(\d+)\/details$/);
     if (req.method === 'GET' && titleDetailsMatch) { const settings = await readSettings(); return json(res, 200, { details: await catalogueTitleDetails(settings, titleDetailsMatch[1] === 'movies' ? 'movie' : 'tv', titleDetailsMatch[2]) }); }
     const movieRuntimeMatch = url.pathname.match(/^\/api\/catalog\/movies\/(\d+)\/runtime$/);
@@ -2444,7 +2526,7 @@ export async function handleRequest(req, res) {
         const job = { id: randomUUID(), media: { ...media }, status: 'ready', frameInterpolation: Boolean(playbackSettings.frameInterpolation), message: 'Playing downloaded copy.', progress: 100, created: Date.now(), mode: local.mode, path: local.path, sourcePath: local.sourcePath, mime: local.mime, strategy: local.strategy, release: local.release || '', untaggedAudioTrack: Number(playbackSettings.untaggedAudioTrack) || 2 };
         playbackJobs.set(job.id, job); return json(res, 200, publicJob(job));
       }
-      const settings = playbackSettings || await readSettings(); if (!settings.indexerUrl || !settings.indexerKey || !settings.usenetHost) return json(res, 400, { error: 'Complete the indexer and provider settings first.' });
+      const settings = playbackSettings || await readSettings(); if (!(settings.indexerUrl && settings.indexerKey && settings.usenetHost) && !settings.torrentIndexerUrl) return json(res, 400, { error: 'Configure a Usenet provider and indexer or a torrent indexer first.' });
       const prepared = !media.releaseId && !media.prepareAhead && !settings.manualReleaseSelection
         ? posterPreparation.take(`${offlineMediaKey(media)}:${playbackScope(settings)}`) : null;
       if (prepared) {
@@ -2464,22 +2546,21 @@ export async function handleRequest(req, res) {
       posterPreparation.cancel();
       const choice = media.releaseId ? manualReleases.get(media.releaseId) : undefined;
       if (media.releaseId && (!choice || choice.expires < Date.now())) return json(res, 404, { error: 'That release selection expired. Search again.' });
-      const backgroundFor = media.prepareAhead && settings.downloadNextEpisode && playbackJobs.has(media.backgroundFor) ? media.backgroundFor : null;
-      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, selectionStart: Number.isFinite(Number(media.selectionStart)) ? Math.max(0, Number(media.selectionStart)) : 0, prepareAhead: Boolean(media.prepareAhead), ...(backgroundFor ? { backgroundFor } : {}), ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] }; jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job); const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref(); preparePlayback(job, backgroundFor ? { ...settings, backgroundJob: job } : settings); return json(res, 202, publicJob(job));
+      const backgroundFor = media.prepareAhead && playbackJobs.has(media.backgroundFor) ? media.backgroundFor : null;
+      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, selectionStart: Number.isFinite(Number(media.selectionStart)) ? Math.max(0, Number(media.selectionStart)) : 0, prepareAhead: Boolean(media.prepareAhead), speculative: Boolean(media.prepareAhead), ...(backgroundFor ? { backgroundFor } : {}), ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] };
+      jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job);
+      const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref();
+      void preparePlayback(job, media.prepareAhead ? { ...settings, backgroundJob: job } : settings);
+      return json(res, 202, publicJob(job));
     }
     const backgroundMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/background$/);
     if (req.method === 'POST' && backgroundMatch) {
       const parent = playbackJobs.get(backgroundMatch[1]);
       if (!parent) return json(res, 404, { error: 'Playback session not found.' });
       const input = await body(req), settings = await readSettings();
-      transfers.report(parent.id, settings.downloadNextEpisode ? input : {});
-      const next = input.next;
-      const adjacent = next?.type === 'tv' && parent.media.type === 'tv' && Number(next.id) === Number(parent.media.id)
-        && ((Number(next.season) === Number(parent.media.season) && Number(next.episode) === Number(parent.media.episode) + 1)
-          || (Number(next.season) === Number(parent.media.season) + 1 && Number(next.episode) === 1));
-      if (!settings.downloadNextEpisode || settings.manualReleaseSelection || !adjacent || !transfers.safe(parent.id)) return json(res, 200, {});
-      const job = await startOfflineMediaDownload({ ...next, title: parent.media.title }, settings, parent.id);
-      return json(res, 200, { job: job ? publicOfflineJob(job) : null });
+      transfers.report(parent.id, input);
+      if (input.playing === true) enqueueSeries(parent.media, settings);
+      return json(res, 200, { prepared: settings.prepareSeries !== false && !settings.manualReleaseSelection && parent.media.type === 'tv' });
     }
     const cancelMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/cancel$/);
     if (req.method === 'POST' && cancelMatch) {

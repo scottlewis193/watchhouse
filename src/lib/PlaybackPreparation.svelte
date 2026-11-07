@@ -1,11 +1,11 @@
 <script>
-  import { playbackDownloadProgress, playbackPreparationStage } from './playback-download.js';
+  import { playbackDownloadProgress, playbackPreparationProgress, playbackPreparationStage } from './playback-download.js';
   let { title, message = '', progress = 0, download = null, status = '', detailed = false, error = false, indeterminate = false, artwork = '' } = $props();
   const stage = $derived(playbackPreparationStage(status));
   const downloading = $derived(status === 'downloading');
   const transfer = $derived(playbackDownloadProgress(download));
-  const shownProgress = $derived(downloading ? transfer.percent : progress);
-  const unknown = $derived(indeterminate || downloading && transfer.percent === null);
+  const shownProgress = $derived(playbackPreparationProgress(status, progress, download));
+  const unknown = $derived(indeterminate || shownProgress === null);
 
   function formatBytes(bytes) {
     if (!bytes) return '';
@@ -29,7 +29,7 @@
     {#if !error}
       {#if unknown}
         <div class="preparation-progress" role="progressbar" aria-label={stage?.title || 'Preparing the video stream'}><div class="preparation-progress-indeterminate"></div></div>
-        <p class="preparation-detail">{downloading ? 'Starting download…' : 'Still working — this final stage can take a little longer.'}</p>
+        <p class="preparation-detail">{downloading ? 'Starting download…' : status === 'selecting' ? 'Checking available sources…' : 'Still working — this final stage can take a little longer.'}</p>
       {:else}
         <div class="preparation-progress" role="progressbar" aria-label={stage?.title || 'Preparing playback'} aria-valuenow={Math.round(shownProgress || 0)} aria-valuemin="0" aria-valuemax="100"><div class="preparation-progress-fill" style={`width: ${Math.min(100, Math.max(0, shownProgress || 0))}%`}></div></div>
         {#if downloading || detailed}<p class="preparation-detail tabular-nums">{Math.round(shownProgress || 0)}% {downloading ? 'downloaded' : 'complete'}</p>{/if}

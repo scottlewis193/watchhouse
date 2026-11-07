@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { page } from '$app/state';
   import { api } from '$lib/api';
   import MediaCard from '$lib/MediaCard.svelte';
@@ -15,6 +15,10 @@
   let catalogueError = $state('');
   let hasSearched = $state(false);
   let shelfPositions = $state({});
+  let shelfLoading = $state({});
+  let shelfErrors = $state({});
+  const loadingShelfIds = new Set();
+  let discoveryRequest;
   let library = $state([]);
   let continueWatching = $state([]);
   const prewarmedResumeKeys = new Set();
@@ -72,10 +76,37 @@
   }
 
   async function loadDiscovery() {
+    if (discoveryRequest) return discoveryRequest;
     catalogueLoading = true; catalogueError = '';
-    try { shelves = (await api.get('/api/catalog/discover')).shelves; }
-    catch (e) { catalogueError = e.message; }
-    finally { catalogueLoading = false; }
+    discoveryRequest = (async () => {
+      try {
+        shelves = (await api.get('/api/catalog/discover')).shelves.map(shelf => ({ ...shelf, items: uniqueItems(shelf.items) }));
+        shelfPositions = {}; shelfErrors = {};
+      } catch (e) { catalogueError = e.message; }
+      finally { catalogueLoading = false; discoveryRequest = undefined; }
+    })();
+    return discoveryRequest;
+  }
+
+  function uniqueItems(items) {
+    return [...new Map(items.map(item => [`${item.type}:${item.id}`, item])).values()];
+  }
+
+  async function loadMoreShelf(id, retry = false) {
+    const shelf = shelves.find(shelf => shelf.id === id);
+    if (!shelf?.hasMore || !shelf.nextPage || loadingShelfIds.has(id) || (shelfErrors[id] && !retry)) return;
+    loadingShelfIds.add(id);
+    shelfLoading[id] = true; shelfErrors[id] = '';
+    try {
+      const next = (await api.get(`/api/catalog/discover/${encodeURIComponent(id)}?page=${shelf.nextPage}`)).shelf;
+      shelves = shelves.map(current => current.id === id ? { ...next, items: uniqueItems([...current.items, ...next.items]) } : current);
+    } catch (e) { shelfErrors[id] = e.message; }
+    finally {
+      loadingShelfIds.delete(id); shelfLoading[id] = false;
+    }
+    await tick();
+    const element = document.getElementById(`shelf-row-${id}`);
+    if (element) updateShelfPosition(id, element);
   }
 
   async function search() {
@@ -112,13 +143,23 @@
 
   function updateShelfPosition(id, element) {
     const maximum = Math.max(0, element.scrollWidth - element.clientWidth);
-    shelfPositions[id] = { atStart: element.scrollLeft <= 2, atEnd: element.scrollLeft >= maximum - 2 };
+    const remaining = maximum - element.scrollLeft;
+    shelfPositions[id] = { atStart: element.scrollLeft <= 2, atEnd: remaining <= 2 };
+    if (remaining <= element.clientWidth) void loadMoreShelf(id);
   }
 
-  function scrollShelf(id, direction) {
+  function trackShelf(element, id) {
+    const observer = new ResizeObserver(() => updateShelfPosition(id, element));
+    observer.observe(element);
+    updateShelfPosition(id, element);
+    return { destroy() { observer.disconnect(); } };
+  }
+
+  async function scrollShelf(id, direction) {
     const element = document.getElementById(`shelf-row-${id}`);
     const card = element?.querySelector(':scope > article');
     if (!element || !card) return;
+    if (direction > 0 && shelfPositions[id]?.atEnd) await loadMoreShelf(id, true);
     const gap = Number.parseFloat(getComputedStyle(element).columnGap) || 0;
     element.scrollBy({ left: direction * (card.getBoundingClientRect().width + gap) * 6, behavior: 'smooth' });
   }
@@ -146,7 +187,7 @@
         <div class="catalogue-skeleton"><div class="mb-4 h-6 w-40 animate-pulse bg-base-300"></div><div class="grid auto-cols-[8.75rem] grid-flow-col gap-4 overflow-hidden sm:auto-cols-[10.5rem]">{#each Array(6) as _}<div><div class="aspect-[2/3] animate-pulse bg-base-300"></div><div class="mt-3 h-4 w-3/4 animate-pulse bg-base-300"></div></div>{/each}</div></div>
       {/each}
     {:else}
-      {#each visibleShelves as shelf}
+      {#each visibleShelves as shelf (shelf.id)}
         <section class="media-shelf" aria-labelledby={`shelf-${shelf.id}`}>
           <div class="shelf-heading"><h2 id={`shelf-${shelf.id}`}>{shelf.title}</h2><span>{shelf.items.length} titles</span></div>
           <div class="group/shelf relative">
@@ -159,19 +200,26 @@
             ><span class="grid size-9 place-items-center rounded-full border border-base-content/30 bg-base-200/90 text-2xl shadow-xl">‹</span></button>
             <div
               id={`shelf-row-${shelf.id}`}
+              use:trackShelf={shelf.id}
+              aria-busy={shelfLoading[shelf.id] || false}
               class="shelf-scroll grid snap-x snap-mandatory auto-cols-[8.75rem] grid-flow-col gap-4 overflow-x-auto pb-3 sm:auto-cols-[10.5rem] sm:gap-5 md:auto-cols-[calc((100%_-_6.25rem)/6)] md:snap-none"
               onscroll={(event) => updateShelfPosition(shelf.id, event.currentTarget)}
             >
-              {#each shelf.items as item}<MediaCard item={item} prepareAhead={shelf.id === 'continue-watching'} href={watchHref(item)} inLibrary={inLibrary(item)} onLibraryChange={setLibrary} onWatched={shelf.id === 'continue-watching' ? setWatched : undefined} onClearProgress={shelf.id === 'continue-watching' ? clearProgress : undefined} />{/each}
+              {#each shelf.items as item (`${item.type}:${item.id}:${item.season || ''}:${item.episode || ''}`)}<MediaCard item={item} prepareAhead={shelf.id === 'continue-watching'} href={watchHref(item)} inLibrary={inLibrary(item)} onLibraryChange={setLibrary} onWatched={shelf.id === 'continue-watching' ? setWatched : undefined} onClearProgress={shelf.id === 'continue-watching' ? clearProgress : undefined} />{/each}
             </div>
             <button
               class="absolute inset-y-0 right-0 z-10 hidden w-11 place-items-center bg-gradient-to-l from-base-200 via-base-200/90 to-transparent text-base-content transition hover:text-primary disabled:pointer-events-none disabled:opacity-0 md:grid"
               aria-label={`Next ${shelf.title}`}
               data-spatial-ignore
-              disabled={shelfPositions[shelf.id]?.atEnd ?? false}
+              disabled={(shelfPositions[shelf.id]?.atEnd ?? false) && !shelf.hasMore}
               onclick={() => scrollShelf(shelf.id, 1)}
             ><span class="grid size-9 place-items-center rounded-full border border-base-content/30 bg-base-200/90 text-2xl shadow-xl">›</span></button>
           </div>
+          {#if shelfLoading[shelf.id]}
+            <p class="mt-2 text-sm text-base-content/60" role="status">Loading more titles…</p>
+          {:else if shelfErrors[shelf.id]}
+            <div class="mt-2 flex items-center gap-3 text-sm" role="alert"><span>{shelfErrors[shelf.id]}</span><button class="btn btn-sm" onclick={() => loadMoreShelf(shelf.id, true)}>Try again</button></div>
+          {/if}
         </section>
       {/each}
     {/if}

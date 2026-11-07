@@ -22,7 +22,17 @@ if [ "$(id -u)" = "0" ]; then
   if [ -n "$device_groups" ]; then
     usermod -aG "$device_groups" node
   fi
-  exec gosu node "$@"
+  exec gosu node /usr/local/bin/docker-entrypoint.sh "$@"
 fi
+
+# Only the image's application command needs the bundled service. Custom Docker
+# commands retain their normal exec behavior, including when bundling is disabled.
+if [ "${WATCHHOUSE_BUNDLED_INDEXER:-true}" != "false" ] \
+  && [ "$#" -eq 2 ] && [ "$1" = "node" ] && [ "$2" = "build" ]; then
+  exec node /app/scripts/bundled-indexer.mjs "$@"
+fi
+
+# Never leave credentials from a previous bundled run available to the app.
+rm -f "${WATCHHOUSE_BUNDLED_TORZNAB_FILE:-/app/data/bundled-torznab.json}"
 
 exec "$@"

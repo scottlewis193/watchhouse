@@ -2,12 +2,13 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
 
-  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
+  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', torrentIndexerUrl: '', torrentIndexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, prepareSeries: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
   let loading = $state(true);
   let saving = $state(false);
   let notice = $state('');
   let noticeType = $state('success');
   let configured = $state(false);
+  let bundledTorrent = $state(null);
   let theme = $state('watchhouse');
   const themes = [
     { id: 'watchhouse', name: 'Watchhouse', description: 'Gallery black and ivory', colours: ['#08090a', '#262729', '#ded8cd'] },
@@ -18,14 +19,20 @@
 
   onMount(async () => {
     theme = themes.some(option => option.id === document.documentElement.dataset.theme) ? document.documentElement.dataset.theme : 'watchhouse';
-    try { const config = await api.get('/api/settings'); form = { ...form, ...Object.fromEntries(Object.entries(config).filter(([key]) => key in form)) }; configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); }
+    try { applyConfig(await api.get('/api/settings')); }
     catch (e) { show(e.message, 'error'); }
     finally { loading = false; }
   });
   function show(message, type = 'success') { notice = message; noticeType = type; }
-  async function save() { saving = true; try { const config = await api.put('/api/settings', form); configured = Boolean(config.indexerUrl && config.usenetHost && config.hasTmdbToken); form.indexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
+  function setupComplete(config) { return Boolean(config.hasTmdbToken && (config.hasTorrentIndexer || config.torrentIndexerUrl || config.indexerUrl && config.usenetHost)); }
+  function applyConfig(config) {
+    form = { ...form, ...Object.fromEntries(Object.entries(config).filter(([key]) => key in form)) };
+    bundledTorrent = config.bundledTorrent || null;
+    configured = setupComplete(config);
+  }
+  async function save() { saving = true; try { applyConfig(await api.put('/api/settings', form)); form.indexerKey = ''; form.torrentIndexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
   async function testConnection() { try { show('Testing Usenet connection…'); show((await api.post('/api/usenet/test', form)).message); } catch (e) { show(e.message, 'error'); } }
-  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, downloadNextEpisode: false, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; configured = false; show('Settings cleared.'); } catch (e) { show(e.message, 'error'); } }
+  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', torrentIndexerUrl: '', torrentIndexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, prepareSeries: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; applyConfig(await api.get('/api/settings')); show('Settings cleared. Bundled indexers remain active when enabled.'); } catch (e) { show(e.message, 'error'); } }
   function selectTheme(nextTheme) {
     theme = nextTheme;
     document.documentElement.dataset.theme = nextTheme;
@@ -36,7 +43,7 @@
 <svelte:head><title>Settings · Watchhouse</title></svelte:head>
 
 <div class="settings-page mx-auto max-w-5xl">
-  <div class="page-tools"><span class="page-eyebrow">Private configuration</span><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : 'SETUP REQUIRED'}</span></div>
+  <div class="page-tools"><span class="page-eyebrow">Private configuration</span><span class="text-xs font-semibold tracking-wide {configured ? 'text-success' : 'text-warning'}">{configured ? 'CONFIGURED' : bundledTorrent?.active ? 'TMDB TOKEN REQUIRED' : 'SETUP REQUIRED'}</span></div>
   {#if notice}<div class="alert alert-{noticeType} mb-6"><span>{notice}</span></div>{/if}
   {#if loading}
     <div class="editorial-loading grid place-items-center p-20"><span class="loading loading-spinner loading-lg"></span><p>Loading private settings</p></div>
@@ -81,7 +88,7 @@
       <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body gap-0 p-5 sm:p-7">
           <h2 class="card-title">NZB indexer</h2>
-          <p class="mt-2 text-sm leading-relaxed text-base-content/65">A Newznab-compatible indexer used to find releases.</p>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">A Newznab-compatible indexer used to find Usenet releases. Optional when using local torrent streaming only. Playback quality and resolution preferences below apply to both sources.</p>
 
           <div class="mt-6 grid gap-5 md:grid-cols-2">
             <label class="grid gap-2">
@@ -121,6 +128,36 @@
 
       <section class="card border border-base-300 bg-base-100 shadow-sm">
         <div class="card-body gap-0 p-5 sm:p-7">
+          <h2 class="card-title">Local torrent streaming</h2>
+          <p class="mt-2 text-sm leading-relaxed text-base-content/65">Watchhouse tries local peer-to-peer streaming when a streamable Usenet release is unavailable. No debrid service or debrid account is used. An external Jackett or Prowlarr Torznab feed is an optional override. Leave its URL empty to use bundled public indexers when enabled; otherwise torrent fallback is disabled.</p>
+          {#if bundledTorrent?.active}
+            <div class="mt-5 border border-success/30 bg-success/5 p-4 text-sm leading-relaxed">
+              <p class="font-medium text-success">Bundled public indexers active</p>
+              <p class="mt-1 text-base-content/65">Sources: {bundledTorrent.indexers.map(id => ({ limetorrents: 'LimeTorrents', torrentdownloads: 'TorrentDownloads' })[id] || id).join(', ')}. No external URL or API key is required. Public sites may be blocked or temporarily unavailable.</p>
+            </div>
+          {:else if bundledTorrent?.available}
+            <p class="mt-5 text-sm leading-relaxed text-base-content/65">An external Torznab override is active. Clear its URL and save to restore the bundled public indexers: {bundledTorrent.indexers.join(', ')}.</p>
+          {:else if bundledTorrent?.enabled}
+            <p class="mt-5 text-sm leading-relaxed text-warning">Bundled indexer configuration is not ready. Check the server startup logs; public sources may be temporarily unavailable. You can also configure an external Torznab override below.</p>
+          {/if}
+          <div class="mt-6 grid gap-5 md:grid-cols-2">
+            <label class="grid gap-2">
+              <span class="text-sm font-medium">External Torznab URL (optional)</span>
+              <input class="input input-bordered w-full" bind:value={form.torrentIndexerUrl} type="url" placeholder="http://localhost:9117/api/v2.0/indexers/all/results/torznab/api" />
+              <span class="text-xs leading-relaxed text-base-content/55">Use the full Torznab API URL supplied by your external indexer. Clearing this URL also clears its saved API key. In containers, localhost refers to the Watchhouse server container.</span>
+            </label>
+            <label class="grid gap-2">
+              <span class="text-sm font-medium">External Torznab API key (optional)</span>
+              <input class="input input-bordered w-full" bind:value={form.torrentIndexerKey} type="password" placeholder="Blank keeps the key only for an unchanged URL" autocomplete="off" />
+            </label>
+          </div>
+          <p class="mt-5 border-t border-base-300 pt-5 text-sm leading-relaxed text-warning">Peers and trackers can see this server's public IP address, including during magnet metadata lookups. Your browser's connection does not hide the server's peer traffic. Use only sources you are authorised to access and configure any required VPN or network policy on the server itself.</p>
+          <p class="mt-3 text-xs leading-relaxed text-base-content/55">Background selection saves release and file metadata only, not full videos. Playback fetches requested video ranges into a bounded temporary memory piece cache. Archives and ambiguous episode files are rejected; supported containers are remuxed or transcoded for browser playback. Availability and start time depend on reachable peers.</p>
+        </div>
+      </section>
+
+      <section class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body gap-0 p-5 sm:p-7">
           <h2 class="card-title">Playback experience</h2>
           <p class="mt-2 text-sm leading-relaxed text-base-content/65">Choose how playback continues and how much preparation detail Watchhouse shows.</p>
 
@@ -130,8 +167,8 @@
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
-            <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.downloadNextEpisode} />
-            <span><span class="block text-sm font-medium">Download the next episode while watching</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Uses a spare connection when playback has at least 30 seconds buffered. Pauses when playback needs priority. Prepares a browser-ready copy before marking the episode ready. Keeps completed episodes in Downloads until you delete them; archive-only releases and manual release selection are skipped.</span></span>
+            <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.prepareSeries} />
+            <span><span class="block text-sm font-medium">Prepare stream selections for the rest of the series</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Enabled by default. After playback starts, select streamable releases for the remaining aired episodes using your saved quality and resolution preferences. Saves release metadata only: no speculative video downloads, archive extraction, or saved Downloads. Each episode begins streaming only when played.</span></span>
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
@@ -168,7 +205,7 @@
           <label class="mt-6 grid max-w-sm gap-2">
             <span class="text-sm font-medium">Clear inactive files after</span>
             <input class="input input-bordered w-full" bind:value={form.cacheRetentionHours} type="number" min="1" max="168" />
-            <span class="text-xs leading-relaxed text-base-content/55">Hours; inactive temporary playback files are cleared automatically. Saved Downloads are kept until you delete them.</span>
+            <span class="text-xs leading-relaxed text-base-content/55">Hours; inactive temporary playback files are cleared automatically. Verified release selections and media metadata are kept until you clear the movie or episode cache. Saved Downloads are kept until you delete them.</span>
           </label>
         </div>
       </section>

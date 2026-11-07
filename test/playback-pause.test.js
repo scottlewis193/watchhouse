@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { parse } from 'svelte/compiler';
+import { createBufferingReporter } from '../src/lib/buffering-reports.js';
 
 // Run the actual page handlers with controlled media events and timers.
 const source = await readFile(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
@@ -24,7 +25,7 @@ function playerState() {
     setTimeout: callback => { timers.set(++next, callback); return next; },
     clearTimeout: id => timers.delete(id)
   };
-  Object.assign(state, { seekPaused: false, seekTimer: null, buffering: false, connectionLost: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} }, traceSource: () => 'fixture', firstAdvancedSource: '' });
+  Object.assign(state, { bufferingReports: { start() {}, finish() {} }, seekPaused: false, seekTimer: null, buffering: false, connectionLost: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} }, traceSource: () => 'fixture', firstAdvancedSource: '' });
   runInNewContext(handlers, state);
   return { state, timers };
 }
@@ -158,4 +159,22 @@ test('a downloaded copy that stops advancing gets a buffering watchdog', () => {
   assert.equal(timers.size, 1);
   for (const callback of timers.values()) callback();
   assert.equal(state.interruptions, 1);
+});
+
+
+test('real waiting and pause handlers persist sustained buffering independently of recovery', () => {
+  const { state } = playerState(); const sent = []; let timer, at = 0;
+  state.bufferingReports = createBufferingReporter({
+    capture: () => ({ jobId: 'silo', source: 'silo:0', snapshot: { position: 111 }, samples: [{ position: 110 }] }),
+    send: value => sent.push(value), now: () => at,
+    schedule: callback => { timer = callback; return 1; }, cancel() {}
+  });
+  state.handleStartupBuffering({ type: 'waiting' });
+  at = 3000; timer();
+  assert.equal(sent[0].incident.outcome, 'buffering');
+  assert.equal(sent[0].incident.trigger, 'waiting');
+  state.player.paused = true; at = 5000; state.handlePause();
+  assert.equal(sent[1].incident.outcome, 'paused');
+  assert.equal(sent[1].incident.durationMs, 5000);
+  assert.equal(state.interruptions, 0, 'diagnostic persistence must not invoke recovery');
 });

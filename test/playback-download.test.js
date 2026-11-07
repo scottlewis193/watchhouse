@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { playbackDownloadProgress, playbackPreparationStage } from '../src/lib/playback-download.js';
+import { playbackDownloadProgress, playbackPreparationProgress, playbackPreparationStage } from '../src/lib/playback-download.js';
+
+test('watch-page preparation separates stage markers from measured transfer progress', () => {
+  const samples = [
+    ['selecting', 5], ['selecting', 45], ['selecting', 12],
+    ['downloading', 0, { completedSegments: 0, totalSegments: 10 }],
+    ['downloading', 45, { completedSegments: 5, totalSegments: 10 }],
+    ['downloading', 90, { completedSegments: 10, totalSegments: 10 }],
+    ['extracting', 90], ['optimizing', 95]
+  ];
+  assert.deepEqual(samples.map(sample => playbackPreparationProgress(...sample)),
+    [null, null, null, 0, 50, 100, null, null]);
+  assert.equal(playbackPreparationProgress('downloading', 0, null), null);
+  assert.equal(playbackPreparationProgress('ready', 100), 100);
+});
 
 test('full-download percentage measures the transfer rather than overall preparation', () => {
   assert.deepEqual(playbackDownloadProgress({ completedSegments: 50, totalSegments: 100,

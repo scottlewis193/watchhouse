@@ -40,7 +40,7 @@ function recoveryState(retries = 0) {
     restartStream: position => { state.restartedAt = position; },
     prepareBufferedSourceRecovery: () => { state.preparingReplacement = true; }, clearBufferedSourceRecovery() {}
   };
-  Object.assign(state, { seekPaused: false, seekTimer: null, buffering: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} } });
+  Object.assign(state, { bufferingReports: { start() {}, finish() {} }, seekPaused: false, seekTimer: null, buffering: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} } });
   runInNewContext(handlers, state);
   return { state, requests, polls };
 }

@@ -23,6 +23,16 @@
     "node": ">=18"
   },
   "dependencies": {
-    "hls.js": "^1.7.2"
+    "hls.js": "^1.7.2",
+    "parse-torrent": "^11.0.18",
+    "webtorrent": "^2.8.5"
+  },
+  "overrides": {
+    "webtorrent": {
+      "uint8-util": "2.2.5"
+    }
+  },
+  "allowScripts": {
+    "node-datachannel@0.32.3": true
   }
 }

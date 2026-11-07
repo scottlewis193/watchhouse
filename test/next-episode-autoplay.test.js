@@ -18,7 +18,7 @@ function episodeState(status = 'preparing') {
     ...controls, AbortSignal, Date: { now: () => 40000 },
     nextMedia: { type: 'tv', id: 1, season: 1, episode: 2 },
     currentMedia: { type: 'tv', id: 1, season: 1, episode: 1 },
-    nextJob: { id: 'next', status }, downloadNextEpisode: false,
+    nextJob: { id: 'next', status },
     autoPlayNext: true, showUpNext: true, upNextStartedAt: 10000,
     upNextSeconds: 0, upNextReason: 'Episode finished',
     upNextTimer: null, nextPollTimer: null,
@@ -84,15 +84,6 @@ for (const status of ['ready', 'cancelled']) test(`an elapsed countdown advances
   assert.equal(state.starts[0][1], status === 'ready' ? state.nextJob : null);
 });
 
-test('next-episode download handoff selects the saved copy and keeps autoplay', () => {
-  const { state } = episodeState('ready');
-  state.downloadNextEpisode = true;
-  state.tickUpNextCountdown();
-  assert.equal(state.starts.length, 1);
-  assert.equal(state.starts[0][0], state.nextMedia);
-  assert.equal(state.starts[0][1], null);
-  assert.equal(state.starts[0][3], true);
-});
 
 test('cancelling the countdown prevents a later ready poll from advancing', async () => {
   const { state } = episodeState();

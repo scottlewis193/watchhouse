@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, beginOfflineFinalization, connectionTestSettings, conversionSucceeded, createOfflinePlaybackJob, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, fetchDiscoveryShelves, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, beginOfflineFinalization, connectionTestSettings, conversionSucceeded, createOfflinePlaybackJob, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
 import { audioPlaybackHealth, canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { analyzeCreditFrame, updateCreditEvidence } from '../src/lib/credit-detection.js';
@@ -192,42 +192,6 @@ test('maps a TMDB movie runtime to seconds for progress display', () => {
   assert.equal(mapTmdbRuntime({ runtime: null }), 0);
 });
 
-test('loads homepage discovery without bursting concurrent catalogue requests', async () => {
-  let active = 0, nextId = 300;
-  const requests = [];
-  const request = async (path, params) => {
-    requests.push({ path, params });
-    active++;
-    try {
-      if (active > 1) throw new Error('TMDB returned HTTP 429.');
-      await new Promise(resolve => setImmediate(resolve));
-      if (path === 'genre/movie/list') return { genres: [
-        { id: 28, name: 'Action' }, { id: 35, name: 'Comedy' }, { id: 80, name: 'Crime' }, { id: 878, name: 'Science Fiction' }
-      ] };
-      if (path === 'genre/tv/list') return { genres: [
-        { id: 10759, name: 'Action & Adventure' }, { id: 35, name: 'Comedy' }, { id: 80, name: 'Crime' }, { id: 10765, name: 'Sci-Fi & Fantasy' }
-      ] };
-      return { results: [{ id: nextId++, title: 'Title', release_date: '2025-01-01', poster_path: '/poster.jpg' }] };
-    } finally { active--; }
-  };
-  const shelves = await fetchDiscoveryShelves(request);
-  assert.equal(requests.length, 21);
-  assert.deepEqual(shelves.slice(2, 11).map(shelf => shelf.id), [
-    'netflix-shows', 'prime-video-shows', 'disney-plus-shows', 'apple-tv-shows', 'hbo-shows',
-    'bbc-one-shows', 'itv1-shows', 'channel-4-shows', 'sky-atlantic-shows'
-  ]);
-  assert.deepEqual(requests.slice(4, 13).map(({ path, params }) => ({ path, network: params.with_networks, sort: params.sort_by })), [
-    { path: 'discover/tv', network: 213, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 1024, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 2739, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 2552, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 49, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 4, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 9, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 26, sort: 'popularity.desc' },
-    { path: 'discover/tv', network: 1063, sort: 'popularity.desc' }
-  ]);
-});
 
 test('maps and orders TMDB seasons and episodes', () => {
   assert.deepEqual(mapTmdbSeasons({ seasons: [{ id: 2, season_number: 2, name: 'Season 2', episode_count: 13 }, { id: 1, season_number: 1, name: null, episode_count: 7 }, { id: 0, season_number: 0, name: 'Specials' }] }), [

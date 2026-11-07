@@ -381,7 +381,7 @@ since this application has neither archive passwords nor parity repair. The
 existing extractor is also invoked without an interactive password prompt.
 Full-file CRC failures detected after playback begins fail the progressive source;
 progressive playback cannot promise whole-file verification before the first frame.
-Offline and next-episode downloads retain complete-file preparation.
+Explicit offline downloads retain complete-file preparation. Automatic remaining-series preparation now caches stream choices without full-video downloads.
 
 Validation uses real archives and FFmpeg:
 
