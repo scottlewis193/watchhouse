@@ -207,20 +207,21 @@ export function createTorrentStreaming({
   const maxQueuedReaders = 16;
   const admission = createConversionAdmission({ limit: maxConcurrentStreams, maxQueued: maxQueuedReaders });
   let metadataActive = 0; let server; let starting; let closed = false;
+  const metadataConnections = new WeakMap();
   function ensureOpen() { if (closed) throw new Error('Torrent streaming service is closed.'); }
   async function clientTorrent(id, signal, metadataOnly = false, parsed, peers) {
     check(signal);
     const client = await createClient({ maxConns: 8, webSeeds: false, utp: false, lsd: false, natUpnp: false, natPmp: false });
     const onAbort = () => { void destroyClient(client); };
     signal?.addEventListener('abort', onAbort, { once: true });
-    let abort;
+    let abort; let store;
     try {
       check(signal);
       const torrent = await new Promise((resolve, reject) => {
         abort = () => reject(signal.reason || abortError());
         client.on('error', reject);
         signal?.addEventListener('abort', abort, { once: true });
-        const torrent = client.add(id, { deselect: true, uploads: false, store: BoundedTorrentStore, storeOpts: { maxBytes: metadataOnly ? 0 : cacheBytes }, storeCacheSlots: 0, destroyStoreOnDestroy: true, ...(parsed ? { bitfield: new Uint8Array(Math.ceil(parsed.pieces.length / 8)) } : {}) }, ready => {
+        const torrent = client.add(id, { deselect: true, uploads: false, store: function (length, options) { return store = new BoundedTorrentStore(length, options); }, storeOpts: { maxBytes: metadataOnly ? 0 : cacheBytes }, storeCacheSlots: 0, destroyStoreOnDestroy: true, ...(parsed ? { bitfield: new Uint8Array(Math.ceil(parsed.pieces.length / 8)) } : {}) }, ready => {
           signal?.removeEventListener('abort', abort); resolve(ready);
         });
         torrent.on('error', reject);
@@ -236,7 +237,16 @@ export function createTorrentStreaming({
       check(signal);
       torrent.files.forEach(file => file.deselect());
       torrent.pause();
-      return { client, torrent, async close() { signal?.removeEventListener('abort', onAbort); await destroyClient(client); } };
+      return {
+        client, torrent,
+        setSignal(next) {
+          signal?.removeEventListener('abort', onAbort); signal = next;
+          signal?.addEventListener('abort', onAbort, { once: true });
+          if (signal?.aborted) onAbort();
+        },
+        enableCache() { store.maxBytes = cacheBytes; },
+        async close() { signal?.removeEventListener('abort', onAbort); await destroyClient(client); }
+      };
     } catch (error) {
       signal?.removeEventListener('abort', onAbort);
       signal?.removeEventListener('abort', abort);
@@ -286,10 +296,20 @@ export function createTorrentStreaming({
         busy: true, operation: linkedController(source.controller.signal, 0)
       };
       windows.add(window);
-      window.ready = clientTorrent(source.bytes, window.operation.controller.signal, false, source.parsed, source.peers);
+      const pending = source.pendingConnection; source.pendingConnection = null;
+      const adopt = pending && !pending.connection.client.destroyed;
+      window.ready = adopt ? Promise.resolve(pending.connection)
+        : clientTorrent(source.bytes, window.operation.controller.signal, false, source.parsed, source.peers);
       try {
         window.connection = await abortable(() => window.ready, signal);
         check(signal);
+        if (adopt) {
+          // Metadata has a zero-byte piece store. Enable it only after a
+          // payload window is reserved, without disconnecting its live peer.
+          pending.claimed = true;
+          window.connection.setSignal(window.operation.controller.signal);
+          window.connection.enableCache();
+        }
         return window;
       } catch (error) { await discardWindow(window); throw error; }
     }
@@ -330,10 +350,11 @@ export function createTorrentStreaming({
     }
     return rankTorrentReleases([...releases.values()], media, settings);
   }
-  async function candidateMetadata(candidate, settings, indexerOrigin, attempted, signal) {
+  async function candidateMetadata(candidate, settings, indexerOrigin, attempted, signal, retainConnection = false) {
     const metadata = linkedController(signal, metadataTimeoutMs);
+    let connection;
     try {
-      return await abortable(async () => {
+      const result = await abortable(async () => {
         let bytes; let knownHash; let peers;
         let url = new URL(candidate.torrentUrl);
         for (let redirects = 0; ; redirects++) {
@@ -343,8 +364,9 @@ export function createTorrentStreaming({
             if (knownHash && attempted.has(knownHash)) return null;
             if (knownHash) attempted.add(knownHash);
             peers = new Set();
-            const connection = await clientTorrent(url.href, metadata.controller.signal, true, undefined, peers);
-            try { bytes = Buffer.from(connection.torrent.torrentFile); } finally { await connection.close(); }
+            connection = await clientTorrent(url.href, metadata.controller.signal, true, undefined, peers);
+            bytes = Buffer.from(connection.torrent.torrentFile);
+            if (!retainConnection) { await connection.close(); connection = null; }
             break;
           }
           if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Torrent metadata URL must use HTTP, HTTPS or magnet.');
@@ -368,9 +390,13 @@ export function createTorrentStreaming({
         const hash = String(parsed.infoHash).toLowerCase();
         if (hash !== knownHash && attempted.has(hash)) return null;
         attempted.add(hash);
-        return { bytes, parsed, peers };
+        return { bytes, parsed, peers, connection };
       }, metadata.controller.signal);
-    } finally { metadata.dispose(); }
+      if (result?.connection) result.connection.setSignal(signal);
+      else await connection?.close();
+      return result;
+    } catch (error) { await connection?.close(); throw error; }
+    finally { metadata.dispose(); }
   }
   async function select(media, settings, { signal, release, excludeInfoHashes = [], validate } = {}) {
     ensureOpen(); check(signal);
@@ -384,20 +410,29 @@ export function createTorrentStreaming({
       let lastError;
       for (const candidate of candidates) {
         check(operation.controller.signal);
+        let retained; let descriptor;
         try {
-          const metadata = await candidateMetadata(candidate, settings, indexerOrigin, attempted, operation.controller.signal);
+          const metadata = await candidateMetadata(candidate, settings, indexerOrigin, attempted, operation.controller.signal, Boolean(validate));
           if (!metadata) continue;
-          const { bytes, parsed, peers } = metadata;
+          const { bytes, parsed, peers, connection } = metadata;
+          if (connection) retained = { connection, claimed: false };
           if (parsed.pieceLength > cacheBytes / 2) throw new Error('Torrent pieces exceed the bounded playback cache.');
           const file = torrentFileSelection(parsed, media, candidate);
-          const descriptor = { kind: 'torrent', version: 1, title: candidate.title, name: file.path, size: file.size, strategy: file.strategy, infoHash: parsed.infoHash, torrent: bytes.toString('base64'), media: { type: media.type, title: media.title, alternativeTitles: media.alternativeTitles, year: media.year, season: media.season, episode: media.episode }, file, selectedAt: Date.now() };
+          descriptor = { kind: 'torrent', version: 1, title: candidate.title, name: file.path, size: file.size, strategy: file.strategy, infoHash: parsed.infoHash, torrent: bytes.toString('base64'), media: { type: media.type, title: media.title, alternativeTitles: media.alternativeTitles, year: media.year, season: media.season, episode: media.episode }, file, selectedAt: Date.now() };
           if (peers?.size) metadataPeers.set(descriptor, peers);
+          if (retained) metadataConnections.set(descriptor, retained);
           if (validate) {
             await abortable(() => validate(descriptor, { signal: operation.controller.signal }), operation.controller.signal);
             check(operation.controller.signal);
           }
           return descriptor;
         } catch (error) { check(operation.controller.signal); lastError = error; }
+        finally {
+          if (retained && !retained.claimed) {
+            metadataConnections.delete(descriptor);
+            await retained.connection.close();
+          }
+        }
       }
       if (lastError) throw lastError;
       return null;
@@ -479,7 +514,7 @@ export function createTorrentStreaming({
     const source = sources.get(id); if (!source) return;
     source.controller.abort(abortError()); sources.delete(id);
     source.signal?.removeEventListener('abort', source.cancel);
-    return Promise.all([...source.completions, ...[...windows].filter(window => window.source === source).map(discardWindow)]);
+    return Promise.all([...source.completions, source.pendingConnection?.connection.close(), ...[...windows].filter(window => window.source === source).map(discardWindow)]);
   }
   async function open(descriptor, { signal } = {}) {
     ensureOpen(); check(signal);
@@ -493,7 +528,8 @@ export function createTorrentStreaming({
     if (sources.size >= maxSources) throw new Error('Too many active torrent playback sources.');
     const id = randomUUID(); const controller = new AbortController();
     const cancel = () => disposeSource(id);
-    sources.set(id, { bytes, parsed, file, peers: metadataPeers.get(descriptor) || new Set(), controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel });
+    const pendingConnection = metadataConnections.get(descriptor); metadataConnections.delete(descriptor);
+    sources.set(id, { bytes, parsed, file, peers: metadataPeers.get(descriptor) || new Set(), pendingConnection, controller, readers: new Set(), completions: new Set(), touched: Date.now(), signal, cancel });
     signal?.addEventListener('abort', cancel, { once: true });
     return { url: `http://127.0.0.1:${port}/${id}/video`, size: file.size, mime: file.mime, filename: file.path, strategy: file.strategy, close: async () => disposeSource(id) };
   }

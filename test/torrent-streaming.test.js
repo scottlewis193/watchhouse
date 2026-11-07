@@ -456,6 +456,66 @@ test('playback can reconnect to a metadata peer without another discovery servic
   }
 });
 
+test('foreground playback keeps its metadata connection when new connections become unavailable', { timeout: 10000 }, async () => {
+  const { default: WebTorrent } = await import('webtorrent');
+  const { createServer: tcpServer, connect } = await import('node:net');
+  const options = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };
+  const seeder = new WebTorrent(options);
+  const sockets = new Set();
+  let service, source, proxy, proxyClosed, discover = true;
+  try {
+    const payload = Buffer.alloc(128 * 1024, 91);
+    const seeded = await new Promise(resolve => seeder.seed(payload, {
+      name: 'Silo.S01E02.x264.mkv', announce: [], pieceLength: 16384,
+      store: BoundedTorrentStore, storeOpts: { maxBytes: 1024 ** 2 }
+    }, resolve));
+    proxy = tcpServer(socket => {
+      const upstream = connect(seeder.torrentPort, '127.0.0.1');
+      for (const active of [socket, upstream]) {
+        sockets.add(active);
+        active.on('error', () => { socket.destroy(); upstream.destroy(); });
+        active.on('close', () => { sockets.delete(active); socket.destroy(); upstream.destroy(); });
+      }
+      socket.pipe(upstream); upstream.pipe(socket);
+    });
+    await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+    const peer = `127.0.0.1:${proxy.address().port}`;
+    service = createTorrentStreaming({
+      cacheBytes: 1024 ** 2, maxConcurrentStreams: 1, timeoutMs: 5000,
+      createClient: async settings => {
+        const client = new WebTorrent({ ...settings, ...options });
+        if (discover) {
+          discover = false;
+          const add = client.add.bind(client);
+          client.add = (...args) => {
+            const torrent = add(...args);
+            torrent.once('infoHash', () => torrent.addPeer(peer));
+            return torrent;
+          };
+        }
+        return client;
+      }
+    });
+    await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.x264', torrentUrl: `magnet:?xt=urn:btih:${seeded.infoHash}` },
+      validate: async descriptor => {
+        proxyClosed = new Promise(resolve => proxy.once('close', resolve));
+        proxy.close();
+        source = await service.open(descriptor);
+        const response = await fetch(source.url, { headers: { range: 'bytes=0-65535' }, signal: AbortSignal.timeout(2000) });
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), payload.subarray(0, 65536));
+      }
+    });
+  } finally {
+    await source?.close();
+    await service?.close();
+    for (const socket of sockets) socket.destroy();
+    if (proxy?.listening) await new Promise(resolve => proxy.close(resolve));
+    await proxyClosed;
+    await new Promise(resolve => seeder.destroy(resolve));
+  }
+});
+
 test('local TCP torrent streams exact ranges across cache windows and destroys every download client', { timeout: 60000 }, async () => {
   const { default: WebTorrent } = await import('webtorrent');
   const localOptions = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };

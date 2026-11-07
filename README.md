@@ -89,8 +89,10 @@ index seeks; seeking to another playback position remains supported.
 Moving outside retained windows can evict an idle window and require fetching
 pieces again. Closing a source destroys its windows. A bounded, memory-only
 cache of connected peer addresses avoids repeating discovery after eviction.
-Peers learned while acquiring magnet metadata are handed directly to playback;
-peer addresses are not persisted.
+Foreground selection hands its live magnet metadata connection to the first
+playback window instead of reconnecting. Its initially zero-byte piece store is
+enabled only after a window slot is reserved; unused metadata connections are
+closed. Peer addresses are retained only in memory and are not persisted.
 The downloaded-copy fallback is NZB-only; an unavailable or too-slow torrent
 source requires another release rather than a torrent video download.
 
