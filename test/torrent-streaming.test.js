@@ -130,24 +130,6 @@ test('swarm health preserves explicit target resolution and fast versus quality 
   } finally { await service.close(); }
 });
 
-test('Start fastest with automatic resolution reaches lower-demand native torrents before large high-seed releases', async () => {
-  const releases = [
-    ['Silo.S01E02.1080p.WEB.H264.SuccessfulCrab', 517, 2813e6],
-    ['Silo.S01E02.720p.WEB.H264.SYLiX', 55, 948e6],
-    ['Silo.S01E02.WEB.x264.TORRENTGALAXY', 59, 225e6]
-  ];
-  const service = createTorrentStreaming({
-    request: async () => new Response(`<rss>${releases.map(([title, seeders, size], index) => `<item><title>${title}</title><torznab:attr name="seeders" value="${seeders}"/><enclosure url="https://indexer.example/${index}" length="${size}"/></item>`).join('')}</rss>`)
-  });
-  try {
-    const automatic = { ...settings, targetResolution: 'auto' };
-    assert.deepEqual((await service.search(media, automatic)).map(release => release.size), [225e6, 948e6, 2813e6]);
-    assert.equal((await service.search(media, settings))[0].title, releases[0][0]);
-    for (const playbackQuality of ['balanced', 'quality']) {
-      assert.equal((await service.search(media, { ...automatic, playbackQuality }))[0].title, releases[0][0]);
-    }
-  } finally { await service.close(); }
-});
 
 test('metadata selection persists a validated source without opening video streams or embedding indexer credentials', async () => {
   const parsed = { ...metadata([video('Silo.S01E02.x264.mp4')]), infoHash: 'a'.repeat(40), pieces: ['a'] };
@@ -214,6 +196,31 @@ test('a stalled metadata result does not consume the deadline for a later playab
     assert.equal(selected.title, 'Silo.S01E02.1080p.x264.Second');
   } finally { await service.close(); }
 });
+test('well-seeded playback remains reachable before tiny unavailable swarms exhaust selection', async () => {
+  const releases = [
+    ...['a', 'b', 'c', 'd'].map((hash, index) => ({ hash, size: 200e6 + index, seeds: 1 })),
+    { hash: 'e', size: 2800e6, seeds: 69 }
+  ];
+  const service = createTorrentStreaming({
+    timeoutMs: 120, metadataTimeoutMs: 50,
+    request: async (url, { signal }) => {
+      if (url.pathname === '/api') return new Response(`<rss>${releases.map(({ hash, size, seeds }) =>
+        `<item><title>Silo.S01E02.1080p.x264.${hash}</title><torznab:attr name="seeders" value="${seeds}"/><enclosure url="https://indexer.example/${hash}" length="${size}"/></item>`
+      ).join('')}</rss>`);
+      if (url.pathname === '/e') return new Response('healthy torrent metadata');
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Metadata request was not cancelled.')), 1000);
+        signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+      });
+    },
+    parse: async () => ({ ...metadata([video('Silo.S01E02.x264.mkv')]), infoHash: 'e'.repeat(40), pieces: ['a'] })
+  });
+  try {
+    const selected = await service.select(media, { ...settings, targetResolution: 'auto' });
+    assert.equal(selected.infoHash, 'e'.repeat(40));
+  } finally { await service.close(); }
+});
+
 
 test('playable torrents remain reachable after more than three playback rejections', async () => {
   const validated = [];

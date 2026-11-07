@@ -34,7 +34,7 @@ offline downloads; explicit Downloads remain available separately.
 
 The Docker image bundles [Jackett](https://github.com/Jackett/Jackett) and automatically connects Watchhouse to its
 local Torznab endpoint. Public sources include **LimeTorrents** and
-**TorrentDownloads**; no separate indexer service or API-key setup is needed.
+**The Pirate Bay**; no separate indexer service or API-key setup is needed.
 Usenet remains preferred, with torrent fallback when no suitable Usenet stream
 is found. Torrent-only configuration also works with automatic selection.
 
@@ -48,8 +48,9 @@ Torznab endpoint.
 
 Public indexers can be unavailable, blocked, or require CAPTCHA; site connections
 can also fail with TLS handshake errors or connection resets. Startup logs report
-these failures without stopping Watchhouse. There is no bundled CAPTCHA bypass,
-and preconfiguration does not guarantee search results or playable peers. Use the
+these failures without stopping Watchhouse. There is no bundled CAPTCHA bypass;
+challenge-dependent sources such as TorrentDownloads are not enabled by default.
+Preconfiguration does not guarantee search results or playable peers. Use the
 VPN deployment below to protect server-side traffic; a standalone `docker run`
 does **not** automatically provide a VPN.
 
@@ -71,12 +72,14 @@ Successful checks retain their playable segments as the initial buffer.
 This rejects observed stalls, but cannot
 guarantee that peer speeds will remain sufficient throughout playback.
 
-With **Start fastest** and **Auto resolution**, smaller browser-compatible
-torrents are tried before larger ones. Explicit resolution and other quality
-preferences retain their existing priority; advertised seeders rank equivalent
-candidates, but do not substitute for playback validation. Repeated episode
-tags in a folder and filename are accepted when they all identify the requested
-episode; conflicting episodes and multi-episode files remain rejected.
+Advertised seeders rank torrents within compatible quality tiers before file
+size, so tiny unavailable swarms do not consume the deadline ahead of healthier
+releases. **Start fastest** with **Auto resolution** prefers smaller files when
+seed counts tie. Explicit resolution and quality preferences retain their
+priority; advertised availability never substitutes for the live playback check.
+Repeated episode tags in a folder and filename are accepted when they all
+identify the requested episode; conflicting episodes and multi-episode files
+remain rejected.
 
 Actual playback reads pieces into memory and feeds the existing FFmpeg
 remux/transcode pipeline. Archives, wrong episodes and ambiguous video

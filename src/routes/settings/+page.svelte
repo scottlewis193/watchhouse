@@ -133,7 +133,7 @@
           {#if bundledTorrent?.active}
             <div class="mt-5 border border-success/30 bg-success/5 p-4 text-sm leading-relaxed">
               <p class="font-medium text-success">Bundled public indexers active</p>
-              <p class="mt-1 text-base-content/65">Sources: {bundledTorrent.indexers.map(id => ({ limetorrents: 'LimeTorrents', torrentdownloads: 'TorrentDownloads' })[id] || id).join(', ')}. No external URL or API key is required. Public sites may be blocked or temporarily unavailable.</p>
+              <p class="mt-1 text-base-content/65">Sources: {bundledTorrent.indexers.map(id => ({ limetorrents: 'LimeTorrents', thepiratebay: 'The Pirate Bay', torrentdownloads: 'TorrentDownloads' })[id] || id).join(', ')}. No external URL or API key is required. Public sites may be blocked or temporarily unavailable.</p>
             </div>
           {:else if bundledTorrent?.available}
             <p class="mt-5 text-sm leading-relaxed text-base-content/65">An external Torznab override is active. Clear its URL and save to restore the bundled public indexers: {bundledTorrent.indexers.join(', ')}.</p>

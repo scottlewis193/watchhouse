@@ -93,12 +93,13 @@ function rankTorrentReleases(releases, media, settings) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(index);
   }
-  // Keep explicit quality/compatibility tiers. Automatic Start fastest instead
-  // prefers lower transfer demand; advertised seeders only break equal-cost ties.
+  // Preserve explicit quality/compatibility tiers. Availability comes before
+  // transfer size: tiny, poorly seeded swarms must not hide healthy releases
+  // behind repeated metadata timeouts. The live playback gate remains decisive.
   for (const indices of groups.values()) {
     const candidates = indices.map(index => ranked[index]).sort((a, b) =>
-      (fastest ? (a.size > 0 ? a.size : Infinity) - (b.size > 0 ? b.size : Infinity) : 0)
-      || (b.seeders || 0) - (a.seeders || 0));
+      (b.seeders || 0) - (a.seeders || 0)
+      || (fastest ? (a.size > 0 ? a.size : Infinity) - (b.size > 0 ? b.size : Infinity) : 0));
     indices.forEach((slot, index) => { ranked[slot] = candidates[index]; });
   }
   return ranked;

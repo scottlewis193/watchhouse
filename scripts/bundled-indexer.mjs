@@ -159,7 +159,7 @@ async function confirmSources(indexers) {
 
 async function main() {
   await rm(runtimeFile, { force: true });
-  const indexers = [...new Set((process.env.WATCHHOUSE_PUBLIC_INDEXERS ?? 'limetorrents,torrentdownloads')
+  const indexers = [...new Set((process.env.WATCHHOUSE_PUBLIC_INDEXERS ?? 'limetorrents,thepiratebay')
     .split(',').map((id) => id.trim()).filter(Boolean))];
   if (!indexers.length || indexers.some((id) => !/^[a-z0-9][a-z0-9-]*$/.test(id))) {
     throw new Error('WATCHHOUSE_PUBLIC_INDEXERS must contain comma-separated public Jackett indexer IDs.');

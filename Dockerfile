@@ -77,7 +77,7 @@ ENV NODE_ENV=production \
     PORT=3000 \
     WATCHHOUSE_BUNDLED_INDEXER=true \
     WATCHHOUSE_BUNDLED_TORZNAB_FILE=/app/data/bundled-torznab.json \
-    WATCHHOUSE_PUBLIC_INDEXERS=limetorrents,torrentdownloads
+    WATCHHOUSE_PUBLIC_INDEXERS=limetorrents,thepiratebay
 
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
