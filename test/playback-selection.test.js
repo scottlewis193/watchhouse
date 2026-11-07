@@ -1,13 +1,108 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
 import { NntpClient, preparePlayback, createPlaybackPlanCache } from '../src/lib/server/streamer.js';
 import { rankReleases } from '../media.js';
 import { waitForPlayback } from '../src/lib/server/playback-notifications.js';
+import { cancelDownloadJob } from '../src/lib/server/download-cancellation.js';
 
 const media = { type: 'tv', id: 95480, title: 'Slow Horses', season: 1, episode: 2 };
 const nzb = extension => `<nzb><file subject="episode.${extension}"><segments><segment number="1">article</segment></segments></file></nzb>`;
 const job = () => ({ media, events: [], status: 'selecting' });
+
+async function withTorrentIndexer(run) {
+  const { default: WebTorrent } = await import('webtorrent');
+  const seeder = new WebTorrent({ dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false });
+  let server;
+  try {
+    const torrents = [];
+    for (const name of ['First', 'Second']) {
+      torrents.push(await new Promise(resolve => seeder.seed(Buffer.alloc(16384, torrents.length + 1), {
+        name: `Slow.Horses.S01E02.${name}.mkv`, announce: []
+      }, resolve)));
+    }
+    server = createServer((req, res) => {
+      const url = new URL(req.url, 'http://localhost');
+      if (url.pathname === '/api') {
+        res.end(`<rss>${['First', 'Second'].map((name, index) => `<item><title>Slow.Horses.S01E02.1080p.x264.${name}</title><enclosure url="http://127.0.0.1:${server.address().port}/${index}"/></item>`).join('')}</rss>`);
+      } else res.end(torrents[Number(url.pathname.slice(1))].torrentFile);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    await run({ torrentIndexerUrl: `http://127.0.0.1:${server.address().port}/api` });
+  } finally {
+    server?.closeAllConnections();
+    if (server) await new Promise(resolve => server.close(resolve));
+    await new Promise(resolve => seeder.destroy(resolve));
+  }
+}
+
+test('torrent fallback rejects a slow source before exposing playback and selects the next release', async () => {
+  await withTorrentIndexer(async settings => {
+    const playback = job();
+    await preparePlayback(playback, settings, {
+      search: async () => [], plans: createPlaybackPlanCache(), persistence: null,
+      preflight: async candidate => {
+        assert.equal(candidate.status, 'selecting', 'torrent must not be ready before its speed check');
+        if (candidate.release.endsWith('.First')) throw Object.assign(new Error('Too slow for playback.'), { code: 'PLAYBACK_TOO_SLOW' });
+        return { sessionUrl: '/prepared/torrent' };
+      }
+    });
+    assert.equal(playback.status, 'ready');
+    assert.equal(playback.release, 'Slow.Horses.S01E02.1080p.x264.Second');
+  });
+});
+
+test('torrent fallback remains unavailable when every source fails its speed check', async () => {
+  await withTorrentIndexer(async settings => {
+    const playback = job();
+    await preparePlayback(playback, settings, {
+      search: async () => [], plans: createPlaybackPlanCache(), persistence: null,
+      preflight: async () => { throw Object.assign(new Error('Too slow for playback.'), { code: 'PLAYBACK_TOO_SLOW' }); }
+    });
+    assert.equal(playback.status, 'error');
+    assert.equal(playback.preparedSession, undefined);
+  });
+});
+
+test('metadata-only torrent preparation is rechecked before foreground reuse', async () => {
+  await withTorrentIndexer(async settings => {
+    const options = { search: async () => [], plans: createPlaybackPlanCache(), persistence: null };
+    const background = { ...job(), speculative: true, prepareAhead: true };
+    await preparePlayback(background, settings, {
+      ...options, preflight: async () => { assert.fail('Background metadata lookup must not stream torrent payload.'); }
+    });
+    assert.equal(background.release, 'Slow.Horses.S01E02.1080p.x264.First');
+    const foreground = job();
+    await preparePlayback(foreground, settings, {
+      ...options,
+      preflight: async candidate => {
+        if (candidate.release.endsWith('.First')) throw Object.assign(new Error('Cached torrent has become too slow.'), { code: 'PLAYBACK_TOO_SLOW' });
+        return { sessionUrl: '/prepared/replacement' };
+      }
+    });
+    assert.equal(foreground.status, 'ready');
+    assert.equal(foreground.release, 'Slow.Horses.S01E02.1080p.x264.Second');
+  });
+});
+
+test('cancelling torrent admission stops selection without trying another swarm', async () => {
+  await withTorrentIndexer(async settings => {
+    const playback = job();
+    const attempted = [];
+    await preparePlayback(playback, settings, {
+      search: async () => [], plans: createPlaybackPlanCache(), persistence: null,
+      preflight: async (candidate, { signal }) => {
+        attempted.push(candidate.release);
+        cancelDownloadJob(playback);
+        signal.throwIfAborted();
+      }
+    });
+    assert.equal(playback.status, 'cancelled');
+    assert.deepEqual(attempted, ['Slow.Horses.S01E02.1080p.x264.First']);
+    assert.equal(playback.preparedSession, undefined);
+  });
+});
 
 test('archive readiness notifications do not expose playback before preflight completes', async () => {
   const playback = job();

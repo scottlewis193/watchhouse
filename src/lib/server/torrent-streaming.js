@@ -229,7 +229,7 @@ export function createTorrentStreaming({
     }
     return rankReleases([...releases.values()], media, settings);
   }
-  async function select(media, settings, { signal, release, excludeInfoHashes = [] } = {}) {
+  async function select(media, settings, { signal, release, excludeInfoHashes = [], validate } = {}) {
     ensureOpen(); check(signal);
     const excluded = new Set([...excludeInfoHashes].map(value => String(value).toLowerCase()));
     if (metadataActive >= maxConcurrentStreams) throw new Error('Torrent metadata selection is busy.');
@@ -239,7 +239,9 @@ export function createTorrentStreaming({
       const candidates = release ? rankReleases([release], media, settings) : await search(media, settings, { signal: operation.controller.signal });
       const indexerOrigin = settings.torrentIndexerKey ? new URL(settings.torrentIndexerUrl).origin : null;
       let lastError;
+      let validationAttempts = 0;
       for (const candidate of candidates) {
+        if (validate && validationAttempts >= 3) break;
         check(operation.controller.signal);
         try {
           let bytes;
@@ -269,7 +271,14 @@ export function createTorrentStreaming({
           if (excluded.has(String(parsed.infoHash).toLowerCase())) continue;
           if (parsed.pieceLength > cacheBytes / 2) throw new Error('Torrent pieces exceed the bounded playback cache.');
           const file = torrentFileSelection(parsed, media, candidate);
-          return { kind: 'torrent', version: 1, title: candidate.title, name: file.path, size: file.size, strategy: file.strategy, infoHash: parsed.infoHash, torrent: bytes.toString('base64'), media: { type: media.type, title: media.title, alternativeTitles: media.alternativeTitles, year: media.year, season: media.season, episode: media.episode }, file, selectedAt: Date.now() };
+          const descriptor = { kind: 'torrent', version: 1, title: candidate.title, name: file.path, size: file.size, strategy: file.strategy, infoHash: parsed.infoHash, torrent: bytes.toString('base64'), media: { type: media.type, title: media.title, alternativeTitles: media.alternativeTitles, year: media.year, season: media.season, episode: media.episode }, file, selectedAt: Date.now() };
+          if (validate) {
+            validationAttempts++;
+            try { await validate(descriptor, { signal: operation.controller.signal }); }
+            catch (error) { excluded.add(String(parsed.infoHash).toLowerCase()); throw error; }
+            check(operation.controller.signal);
+          }
+          return descriptor;
         } catch (error) { check(operation.controller.signal); lastError = error; }
       }
       if (lastError) throw lastError;

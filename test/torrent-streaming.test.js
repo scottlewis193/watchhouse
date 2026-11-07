@@ -96,6 +96,23 @@ test('metadata selection persists a validated source without opening video strea
   } finally { await service.close(); }
 });
 
+test('torrent selection skips a metadata-compatible release that fails playback admission', async () => {
+  const service = createTorrentStreaming({
+    request: async url => new Response(url.pathname === '/api'
+      ? '<rss><item><title>Silo.S01E02.1080p.x264.First</title><enclosure url="https://indexer.example/slow"/></item><item><title>Silo.S01E02.1080p.x264.Second</title><enclosure url="https://indexer.example/fast"/></item></rss>'
+      : url.pathname.slice(1)),
+    parse: async bytes => ({ ...metadata([video('Silo.S01E02.x264.mkv')]), infoHash: (bytes.toString() === 'slow' ? 'a' : 'b').repeat(40), pieces: ['a'] })
+  });
+  try {
+    const selected = await service.select(media, settings, {
+      validate: async source => {
+        if (source.infoHash === 'a'.repeat(40)) throw Object.assign(new Error('Torrent is too slow.'), { code: 'PLAYBACK_TOO_SLOW' });
+      }
+    });
+    assert.equal(selected.infoHash, 'b'.repeat(40));
+  } finally { await service.close(); }
+});
+
 test('metadata selection follows HTTP redirects to a magnet without treating it as an HTTP resource', { timeout: 30000 }, async () => {
   const { default: WebTorrent } = await import('webtorrent');
   const localOptions = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };

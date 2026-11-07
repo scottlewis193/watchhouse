@@ -7,6 +7,7 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { englishAudioRelease, episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseDynamicRange, releaseReadiness, releaseResolution, titleVariants, unverifiedAnimeAudioRelease } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownloadCancelled } from './download-cancellation.js';
@@ -71,28 +72,83 @@ const mediaState = createMediaStateStore(MEDIA_STATE_PATH);
 const bufferingReports = createBufferingReportStore(join(ROOT, 'data', 'playback-diagnostics.json'));
 const torrentStreaming = createTorrentStreaming();
 const torrentPlans = createPlaybackPlanCache({ maximum: 1200 });
-async function prepareTorrentPlayback(job, settings, persistence = playbackPersistence) {
+async function prepareTorrentPlayback(job, settings, persistence = playbackPersistence, {
+  preflight = preflightLiveCandidate, foreground, start = job.selectionStart || 0
+} = {}) {
   if (!settings.torrentIndexerUrl || job.manualRelease || job.offlineDownload || settings.manualReleaseSelection) return false;
-  settings.signal?.throwIfAborted();
-  const scope = playbackScope(settings);
-  const excluded = [...(job.rejectedReleases || [])].filter(key => key.startsWith('torrent:')).map(key => key.slice(8));
-  let source = torrentPlans.get(job.media, scope);
-  if (source && excluded.includes(source.infoHash)) {
-    torrentPlans.delete(job.media); source = null;
-    await persistence?.deletePlan(job.media).catch(() => {});
-  }
-  if (!source) {
-    source = await torrentStreaming.select(job.media, settings, { signal: settings.signal, excludeInfoHashes: excluded });
-    if (!source) return false;
-    settings.signal?.throwIfAborted();
-    if (persistence) await persistence.setPlan(job.media, settings, { torrentSource: source }).catch(() => {});
-  }
-  torrentPlans.set(job.media, source, scope);
-  delete job.progressiveArchive; delete job.archives; delete job.preparedSession;
-  Object.assign(job, { torrentSource: source, file: { subject: source.name, segments: [] }, release: source.title || source.name,
-    releaseKey: `torrent:${source.infoHash}`, strategy: source.strategy || playbackStrategy(source.name, source.title),
-    mode: 'direct', status: 'ready', progress: 100, message: 'Torrent stream selected. Pieces load only during playback.' });
-  return true;
+  const controller = new AbortController();
+  const removeCancel = onDownloadCancel(job, () => controller.abort(new Error('Torrent selection cancelled.')));
+  settings = { ...settings, signal: settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal };
+  try {
+    settings.signal.throwIfAborted();
+    const scope = playbackScope(settings);
+    const excluded = new Set([...(job.rejectedReleases || [])].filter(key => key.startsWith('torrent:')).map(key => key.slice(8)));
+    const reject = async (source, error) => {
+      if (isDownloadCancelled(job, error) || settings.signal.aborted) throw error;
+      excluded.add(source.infoHash);
+      job.rejectedReleases ||= new Set();
+      job.rejectedReleases.add(`torrent:${source.infoHash}`);
+      torrentPlans.delete(job.media);
+      await persistence?.deletePlan(job.media).catch(() => {});
+      delete job.preparedSession;
+      delete job.torrentPreflightInfoHash;
+      jobEvent(job, 'release-rejected', `Torrent playback check failed: ${error.message}`, { release: source.title });
+    };
+    const validate = async (source, { signal = settings.signal } = {}) => {
+      signal.throwIfAborted();
+      if (job.torrentSource?.infoHash !== source.infoHash) {
+        delete job.preparedSession;
+        delete job.torrentPreflightInfoHash;
+      }
+      delete job.progressiveArchive; delete job.archives;
+      Object.assign(job, { torrentSource: source, file: { subject: source.name, segments: [] },
+        release: source.title || source.name, releaseKey: `torrent:${source.infoHash}`,
+        strategy: source.strategy || playbackStrategy(source.name, source.title), mode: 'direct' });
+      const checking = foreground ?? (!job.speculative && !job.prepareAhead && !job.backgroundFor);
+      if (checking && job.torrentPreflightInfoHash !== source.infoHash) {
+        setJob(job, 'selecting', 'Checking torrent playback speed…', 45);
+        const prepared = await preflight(job, { ...settings, signal }, start, { observationMs: 10000, minimumRate: 1.25, sustained: true });
+        if (signal.aborted) {
+          await hlsSessions.get(prepared.sessionUrl.split('/').pop())?.session.close();
+          signal.throwIfAborted();
+        }
+        job.preparedSession = prepared;
+        job.torrentPreflightInfoHash = source.infoHash;
+      }
+    };
+    let source = torrentPlans.get(job.media, scope) || job.torrentSource;
+    if (source && excluded.has(source.infoHash)) {
+      torrentPlans.delete(job.media); source = null;
+      await persistence?.deletePlan(job.media).catch(() => {});
+    }
+    if (source) {
+      try { await validate(source); }
+      catch (error) { await reject(source, error); source = null; }
+    }
+    if (!source) {
+      source = await torrentStreaming.select(job.media, settings, {
+        signal: settings.signal, excludeInfoHashes: excluded,
+        validate: async (candidate, options) => {
+          try { await validate(candidate, options); }
+          catch (error) { await reject(candidate, error); throw error; }
+        }
+      });
+      if (!source && foreground) throw new Error('No torrent passed the playback speed check.');
+      if (!source) return false;
+      settings.signal.throwIfAborted();
+      if (persistence) await persistence.setPlan(job.media, settings, { torrentSource: source }).catch(() => {});
+    }
+    torrentPlans.set(job.media, source, scope);
+    setJob(job, 'ready', job.torrentPreflightInfoHash === source.infoHash
+      ? 'Torrent playback speed verified.' : 'Torrent metadata selected. Playback speed will be checked before viewing.', 100);
+    return true;
+  } catch (error) {
+    if (foreground && !job.cancelled) {
+      if (settings.signal.aborted) setJob(job, 'ready', 'Torrent playback check cancelled. Retry playback to check again.', 100);
+      else setJob(job, 'error', error.message || 'Torrent playback check failed.', 0);
+    }
+    throw error;
+  } finally { removeCancel(); }
 }
 const proactive = createProactivePreparation({
   key: (media, settings) => `${offlineMediaKey(media)}:${playbackScope(settings)}`,
@@ -1322,7 +1378,7 @@ export function assertPlayableHlsOpening(streams = []) {
   }
 }
 
-export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = ms => new Promise(resolve => setTimeout(resolve, ms)), now = () => performance.now(), firstSegmentMs = 8000 } = {}) {
+export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = (ms, signal) => delay(ms, undefined, { signal }), now = () => performance.now(), firstSegmentMs = 8000, observationMs = 2000, minimumRate, sustained = false } = {}) {
   const id = randomUUID();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error('Playback speed check timed out.')), 45000);
@@ -1359,51 +1415,61 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
       jobEvent(job, 'playback-speed', `No first segment after ${(waitBudgetMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs: waitBudgetMs });
       throw Object.assign(new Error('No playable segment arrived during the playback speed check.'), { code: 'NO_PLAYABLE_SEGMENT' });
     }
-    const first = session.health().position;
-    const observationStarted = now();
+    let first = session.health().position;
+    let observationStarted = now();
     jobEvent(job, 'first-segment-ready', 'First playback segment was produced.', { position: first });
     // Probe the first segment while the converter produces the sample used by
     // the speed check. Both checks still finish before exposing the session.
-    const observation = wait(2000);
+    const sampleMs = sustained ? observationMs / 2 : observationMs;
+    const observation = (async () => {
+      if (sustained) {
+        // Discard the startup burst before measuring steady delivery.
+        await wait(sampleMs, signal);
+        first = session.health().position;
+        observationStarted = now();
+      }
+      await wait(sampleMs, signal);
+    })();
     // A growing playlist may expose its video stream before FFprobe can see
     // an audio packet. Recheck briefly rather than banning that upload for a
     // day based on incomplete stream metadata.
-    for (let attempt = 0; ; attempt++) {
-      signal.throwIfAborted();
-      const streams = await inspect(session.directory, signal) || [];
-      try { assertPlayableHlsOpening(streams); break; }
-      catch (error) {
-        if (error.code !== 'PLAYBACK_SEGMENT_PROBE_FAILED' || attempt >= 15) throw error;
-        const state = session.health?.();
-        if (state?.failed || state?.closed) throw new Error('The playback converter stopped while checking its opening segment.');
-        await wait(500);
+    await Promise.all([observation, (async () => {
+      for (let attempt = 0; ; attempt++) {
+        signal.throwIfAborted();
+        const streams = await inspect(session.directory, signal) || [];
+        try { assertPlayableHlsOpening(streams); break; }
+        catch (error) {
+          if (error.code !== 'PLAYBACK_SEGMENT_PROBE_FAILED' || attempt >= 15) throw error;
+          const state = session.health?.();
+          if (state?.failed || state?.closed) throw new Error('The playback converter stopped while checking its opening segment.');
+          await wait(500, signal);
+        }
       }
-    }
-    jobEvent(job, 'opening-segment-probed', 'Opening video and audio timestamps validated.');
-    // A healthy source need not sit through the whole observation window.
-    // Give a borderline startup four more seconds so FFmpeg's early progress
-    // reports or one delayed article do not reject an otherwise usable stream.
-    await observation;
+      jobEvent(job, 'opening-segment-probed', 'Opening video and audio timestamps validated.');
+    })()]);
+    // Give borderline startup four more seconds so FFmpeg's early progress
+    // reports or one delayed read do not reject an otherwise usable stream.
     signal.throwIfAborted();
     let health = session.health();
     if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
-    let observedSeconds = Math.max(2, (now() - observationStarted) / 1000);
-    if (!health.completed && health.position - first < observedSeconds * 1.25) {
-      await wait(4000);
+    let observedSeconds = Math.max(sampleMs / 1000, (now() - observationStarted) / 1000);
+    if (!health.completed && health.position - first < observedSeconds * (minimumRate ?? 1.25)) {
+      await wait(4000, signal);
       signal.throwIfAborted();
       health = session.health();
       if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
-      observedSeconds = Math.max(6, (now() - observationStarted) / 1000);
+      observedSeconds = Math.max((sampleMs + 4000) / 1000, (now() - observationStarted) / 1000);
     }
     const producedSeconds = Number.isFinite(health.position - first) ? Math.max(0, health.position - first) : 0;
     jobEvent(job, 'playback-speed', `Playback output: ${producedSeconds.toFixed(1)}s of video in ${observedSeconds}s (${(producedSeconds / observedSeconds).toFixed(1)}× viewing speed).`, { producedSeconds, observedSeconds });
-    if (!health.completed && producedSeconds < observedSeconds * (observedSeconds <= 2 ? 1.25 : 1.1)) {
+    if (!health.completed && producedSeconds < observedSeconds * (minimumRate ?? (observedSeconds <= 2 ? 1.25 : 1.1))) {
       throw Object.assign(new Error('This release cannot produce playback segments faster than viewing speed.'), { code: 'PLAYBACK_TOO_SLOW' });
     }
     clearTimeout(timeout);
     hlsSessions.set(id, { jobId: job.id, session });
     return { playlistUrl: `/api/play/${job.id}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${job.id}/hls/${id}`, duration: job.sourceDuration || 0, tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: false, start };
   } catch (error) {
+    controller.abort(error);
     await session?.close();
     throw error;
   } finally { clearTimeout(timeout); removeCancelHandler(); }
@@ -1783,6 +1849,12 @@ function matchesTargetResolution(release, settings) {
   return !target || releaseResolution({ title: release }) === target;
 }
 export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed } = {}) {
+  let torrentAttempted = false;
+  const prepareTorrent = async () => {
+    if (torrentAttempted) return false;
+    torrentAttempted = true;
+    return prepareTorrentPlayback(job, settings, persistence, { preflight: preflight || preflightLiveCandidate });
+  };
   job.frameInterpolation = Boolean(settings.frameInterpolation);
   const recoveringSource = Boolean(job.rejectedReleases?.size);
   let failedPlanRelease = null;
@@ -1823,11 +1895,11 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     const savedPlan = !job.manualRelease && persistence ? await persistence.getPlan(job.media, settings).catch(() => null) : null;
     if (!job.offlineDownload && savedPlan?.torrentSource) torrentPlans.set(job.media, savedPlan.torrentSource, playbackScope(settings));
     if (!job.offlineDownload && !job.manualRelease && torrentPlans.get(job.media, playbackScope(settings))) {
-      if (await prepareTorrentPlayback(job, settings, persistence)) return;
+      if (await prepareTorrent()) return;
     }
     delete job.torrentSource;
     if (search === findReleases && (!settings.usenetHost || !settings.indexerKey || !settings.indexerUrl)) {
-      if (await prepareTorrentPlayback(job, settings, persistence)) return;
+      if (await prepareTorrent()) return;
       throw new Error('No configured source has a suitable streamable release.');
     }
     if (job.progressiveArchive && job.rejectedReleases?.has(job.releaseKey || job.release)) {
@@ -2108,7 +2180,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         }
       } catch (error) { if (isDownloadCancelled(job, error)) throw error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, releaseIdentity(release)); markReleaseSelection(job, candidateIndex, 'rejected', error.message || 'Release inspection failed.'); jobEvent(job, 'release-rejected', error.message || 'Release inspection failed.', { release: release.title }); }
     }
-    if (settings.torrentIndexerUrl && await prepareTorrentPlayback(job, settings, persistence)) return;
+    if (settings.torrentIndexerUrl && await prepareTorrent()) return;
     if (downloadChoice && !job.speculative && !job.rejectedReleases?.size) {
       const { candidateIndex: fallbackIndex, ...sourceChoice } = downloadChoice;
       Object.assign(job, { ...sourceChoice, prefetchedSegments: downloadChoice.firstSegment ? new Map([[0, downloadChoice.firstSegment]]) : new Map() });
@@ -2131,8 +2203,9 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     let lastError; for (const choice of archiveChoices) { if (choice.unavailable) { lastError = choice.unavailable; continue; } try { throwIfDownloadCancelled(job); job.release = choice.release; job.releaseKey = choice.releaseKey; job.archives = choice.archives; job.requireEnglishTrack = choice.needsEnglishTrack; markReleaseSelection(job, choice.candidateIndex, 'checking', 'Downloading and extracting archive.'); await archive(job, settings, choice.archives); finishReleaseSelection(job, choice.candidateIndex); return; } catch (error) { if (isDownloadCancelled(job, error)) throw error; lastError = error; if (['INVALID_USENET_ARTICLE', 'USENET_ARTICLE_MISSING', 'INVALID_MEDIA_DURATION', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DECODE'].includes(error.code)) await health.reject(settings, job.media, choice.releaseKey); markReleaseSelection(job, choice.candidateIndex, 'rejected', error.message || 'Archive preparation failed.'); jobEvent(job, 'release-rejected', error.message || 'Archive preparation failed.', { release: choice.release }); setJob(job, 'selecting', 'That release failed. Trying another…', 5); } } throw lastError || new Error('No release could be prepared.');
   } catch (error) {
     if (isDownloadCancelled(job, error) || settings.signal?.aborted) { stopReleaseSelection(job, 'Playback preparation cancelled.'); job.status = 'cancelled'; job.message = 'Preparation cancelled.'; return; }
-    try { if (await prepareTorrentPlayback(job, settings, persistence)) return; }
-    catch (torrentError) { error = new Error(`${error.message} Torrent fallback: ${torrentError.message}`); }
+    try { if (await prepareTorrent()) return; }
+    catch (torrentError) { error = isDownloadCancelled(job, torrentError) || settings.signal?.aborted ? torrentError : new Error(`${error.message} Torrent fallback: ${torrentError.message}`); }
+    if (isDownloadCancelled(job, error) || settings.signal?.aborted) { stopReleaseSelection(job, 'Playback preparation cancelled.'); job.status = 'cancelled'; job.message = 'Preparation cancelled.'; return; }
     stopReleaseSelection(job, error.message || 'Playback preparation failed.'); setJob(job, 'error', error.message || 'Playback preparation failed.', 0);
   }
 }
@@ -2261,7 +2334,7 @@ export function beginOfflineFinalization(job) {
 }
 
 function publicJob(job) {
-  const { torrentSource, archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, requireEnglishTrack, diagnosticsEnabled, events, releaseSelection, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job;
+  const { torrentSource, torrentPreflightInfoHash, archiveResume, archiveNeedsCheck, archiveSource, archiveSourcePromise, progressiveArchive, progressiveArchiveDisabled, speculative, file, path, sourcePath, directory, media, release, releaseKey, archives, manualRelease, requireEnglishTrack, diagnosticsEnabled, events, releaseSelection, completion, offlineDownload, offlineKey, prepareAhead, prefetchedSegments, rejectedReleases, sourceRecovery, sourceRecoveryError, downloadReplacement, startOfflineFinalization, ...safe } = job;
   return {
     ...safe,
     mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode,
@@ -2531,13 +2604,14 @@ export async function handleRequest(req, res) {
         ? posterPreparation.take(`${offlineMediaKey(media)}:${playbackScope(settings)}`) : null;
       if (prepared) {
         delete prepared.speculative;
+        delete prepared.prepareAhead; delete prepared.backgroundFor;
         if (Number.isFinite(Number(media.selectionStart))) prepared.selectionStart = Math.max(0, Number(media.selectionStart));
         playbackJobs.set(prepared.id, prepared);
         const cleanup = setTimeout(() => playbackJobs.delete(prepared.id), 6 * 3600000); cleanup.unref();
         jobEvent(prepared, 'poster-preparation-hit', 'Continuing preparation started from the poster.');
-        if (prepared.status === 'ready' && prepared.progressiveArchive) {
-          prepared.archiveNeedsCheck = true;
-          setJob(prepared, 'selecting', 'Checking archive playback speed…', 45);
+        if (prepared.status === 'ready' && (prepared.progressiveArchive || prepared.torrentSource && prepared.torrentPreflightInfoHash !== prepared.torrentSource.infoHash)) {
+          if (prepared.progressiveArchive) prepared.archiveNeedsCheck = true;
+          setJob(prepared, 'selecting', 'Checking playback speed…', 45);
           void preparePlayback(prepared, settings);
           return json(res, 202, publicJob(prepared));
         }
@@ -2631,6 +2705,18 @@ export async function handleRequest(req, res) {
           progressTimer.unref();
         }
         try {
+          if (job.torrentSource && job.torrentPreflightInfoHash !== job.torrentSource.infoHash) {
+            if (!await prepareTorrentPlayback(job, settings, playbackPersistence, { foreground: true, start })) throw new Error('No torrent passed the playback speed check.');
+            const prepared = job.preparedSession;
+            session = hlsSessions.get(prepared.sessionUrl.split('/').pop())?.session;
+            if (cancelled) { await session?.close(); return; }
+            if (input.audioTrack == null || Number(input.audioTrack) === job.selectedAudioTrack) {
+              delivered = true;
+              if (streaming) return res.end(JSON.stringify({ type: 'ready', session: prepared }) + '\n');
+              return json(res, 200, prepared);
+            }
+            await session?.close(); session = undefined;
+          }
           session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report, undefined, undefined, { audioTrack: input.audioTrack }), onClose: () => hlsSessions.delete(id), onMonitor: playbackOutputMonitor(job) });
           hlsSessions.set(id, { jobId, session });
           if (cancelled) { await session.close(); return; }
@@ -2698,13 +2784,20 @@ export async function handleRequest(req, res) {
         jobEvent(job, 'stream-request', start ? `Browser requested playback from ${Math.round(start)}s.` : 'Browser requested the video stream.');
         if (job.status !== 'ready') return json(res, 409, { error: 'Video is not ready yet.' });
         const settings = await readSettings();
+        if (job.torrentSource && job.torrentPreflightInfoHash !== job.torrentSource.infoHash) {
+          const controller = new AbortController();
+          req.on('close', () => controller.abort());
+          if (!await prepareTorrentPlayback(job, { ...settings, signal: controller.signal }, playbackPersistence, { foreground: true, start })) throw new Error('No torrent passed the playback speed check.');
+          const prepared = job.preparedSession;
+          await hlsSessions.get(prepared.sessionUrl.split('/').pop())?.session.close();
+        }
         if (job.mode === 'cached' && !settings.frameInterpolation) return await serveLocalVideo(req, res, job);
         if (req.method === 'HEAD') {
           res.writeHead(200, { 'content-type': settings.frameInterpolation || job.mode === 'cached-convert' || job.strategy !== 'raw' || start ? 'video/mp4' : videoType(job.file.subject), 'cache-control': 'no-store' });
           return res.end();
         }
         if (['cached', 'cached-convert'].includes(job.mode)) return await streamCachedConversion(req, res, job, settings, start);
-        if (settings.frameInterpolation || job.strategy !== 'raw' || start) return await streamConverted(req, res, job, settings, start, start && job.strategy === 'raw' ? 'remux' : '');
+        if (job.torrentSource || settings.frameInterpolation || job.strategy !== 'raw' || start) return await streamConverted(req, res, job, settings, start, start && job.strategy === 'raw' ? 'remux' : '');
         let closed = false; req.on('close', () => { closed = true; });
         res.writeHead(200, { 'content-type': videoType(job.file.subject), 'content-disposition': `inline; filename="${filename(job.file.subject, 'video')}"`, 'cache-control': 'no-store' });
         try { await streamPostedFile(job.file, await readSettings(), async chunk => { if (closed) throw new Error('Playback connection closed.'); if (res.write(chunk) === false && res.waitForDrain) await res.waitForDrain(); }, connectNntp, job.prefetchedSegments); }

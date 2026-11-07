@@ -56,6 +56,17 @@ does **not** automatically provide a VPN.
 Only torrent metadata is fetched proactively; magnet metadata lookup may contact
 peers but does not fetch video pieces. HTTP download links that redirect to magnets
 use the same metadata-only peer lookup rather than treating magnets as HTTP URLs.
+
+Foreground torrent playback must pass a live FFmpeg/HLS speed check, including
+cached and background-prepared selections. The ten-second check discards the
+first five seconds of startup output, then requires sustained output at least
+**1.25× viewing speed**. Borderline sources get four more seconds; each preflight
+has a 45-second timeout. Failed sources are closed and another release is tried.
+New-candidate selection checks at most three compatible torrents within its
+90-second timeout. Successful checks retain their playable segments as the
+initial buffer. This rejects observed stalls, but cannot guarantee that peer
+speeds will remain sufficient throughout playback.
+
 Actual playback reads pieces into memory
 and feeds the existing FFmpeg remux/transcode pipeline. Archives, wrong episodes
 and ambiguous video collections are rejected. Stored pieces are capped at 64 MiB

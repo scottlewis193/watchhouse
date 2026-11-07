@@ -163,6 +163,57 @@ test('rejects and closes a candidate that cannot keep producing segments', async
   assert.deepEqual(waits, [2000, 4000], 'a slow converter still gets the full observation window');
 });
 
+test('a torrent startup burst cannot substitute for sustained playback output', async () => {
+  let elapsed = 0, position = 2, burst = false, closed = false;
+  await assert.rejects(preflightLiveCandidate({ id: 'torrent-burst' }, {}, 0, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position, completed: false }),
+      close: async () => { closed = true; }
+    }),
+    inspect: async () => [{ codec_type: 'video', start_time: '0' }],
+    now: () => elapsed,
+    wait: async ms => { elapsed += ms; position += ms / 1000 * 0.6; if (!burst) { position += 8; burst = true; } },
+    observationMs: 10000, minimumRate: 1.25, sustained: true
+  }), { code: 'PLAYBACK_TOO_SLOW' });
+  assert.equal(closed, true);
+});
+
+for (const rate of [1.1, 1.3]) test(`torrent output at ${rate}x ${rate < 1.25 ? 'fails' : 'passes'} the playback headroom requirement`, async () => {
+  let elapsed = 0, position = 2;
+  const check = preflightLiveCandidate({ id: `torrent-rate-${rate}` }, {}, 0, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position, completed: false }),
+      close: async () => {}
+    }),
+    inspect: async () => [{ codec_type: 'video', start_time: '0' }],
+    now: () => elapsed,
+    wait: async ms => { elapsed += ms; position += ms / 1000 * rate; },
+    observationMs: 10000, minimumRate: 1.25, sustained: true
+  });
+  if (rate < 1.25) await assert.rejects(check, { code: 'PLAYBACK_TOO_SLOW' });
+  else assert.match((await check).playlistUrl, /index\.m3u8$/);
+});
+
+test('cancelling a sustained playback check closes its session promptly', { timeout: 1000 }, async () => {
+  const controller = new AbortController();
+  let closed = false;
+  await assert.rejects(preflightLiveCandidate({ id: 'torrent-cancel' }, { signal: controller.signal }, 0, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position: 2, completed: false }),
+      close: async () => { closed = true; }
+    }),
+    inspect: async () => {
+      controller.abort();
+      return [{ codec_type: 'video', start_time: '0' }];
+    },
+    observationMs: 10000, minimumRate: 1.25, sustained: true
+  }), { name: 'AbortError' });
+  assert.equal(closed, true);
+});
+
 test('a converter that recovers after a slow start can pass the longer check', async () => {
   let position = 2;
   const waits = [];
