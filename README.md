@@ -60,23 +60,36 @@ use the same metadata-only peer lookup rather than treating magnets as HTTP URLs
 Foreground torrent playback must pass a live FFmpeg/HLS speed check, including
 cached and background-prepared selections. The ten-second check discards the
 first five seconds of startup output, then requires sustained output at least
-**1.25× viewing speed**. Borderline sources get four more seconds; each preflight
-has a 45-second timeout. Failed sources are closed and another release is tried.
-New-candidate selection checks at most three compatible torrents within its
-90-second timeout. Successful checks retain their playable segments as the
-initial buffer. This rejects observed stalls, but cannot guarantee that peer
-speeds will remain sufficient throughout playback.
+**1.25× viewing speed**. Borderline sources get four more seconds. Each preflight
+is bounded to 40 seconds, with separate 20-second metadata and opening-timeline
+probe limits. Failed sources are closed before another release is tried.
+Each candidate gets at most ten seconds to acquire torrent metadata; selection
+continues through unique swarms within its overall 90-second deadline rather
+than stopping after three checks. Successful checks retain their playable
+segments as the initial buffer. This rejects observed stalls, but cannot
+guarantee that peer speeds will remain sufficient throughout playback.
 
-Actual playback reads pieces into memory
-and feeds the existing FFmpeg remux/transcode pipeline. Archives, wrong episodes
-and ambiguous video collections are rejected. Stored pieces are capped at 64 MiB
-per HTTP reader, with at most two simultaneous readers (128 MiB total stored
-pieces, plus metadata/protocol buffers). Additional seek/probe requests wait in a
-bounded queue for a reader. No torrent video files are saved to disk.
-Completed windows discard their clients and caches, so seeking or crossing a
-window can require reconnecting to peers and downloading pieces again. A bounded,
-memory-only cache of connected peer addresses avoids repeating discovery for
-every range; peer addresses are not persisted.
+With **Start fastest** and **Auto resolution**, smaller browser-compatible
+torrents are tried before larger ones. Explicit resolution and other quality
+preferences retain their existing priority; advertised seeders rank equivalent
+candidates, but do not substitute for playback validation. Repeated episode
+tags in a folder and filename are accepted when they all identify the requested
+episode; conflicting episodes and multi-episode files remain rejected.
+
+Actual playback reads pieces into memory and feeds the existing FFmpeg
+remux/transcode pipeline. Archives, wrong episodes and ambiguous video
+collections are rejected. At most two 64 MiB windows retain stored pieces
+(128 MiB total, plus metadata/protocol buffers), with at most two simultaneous
+HTTP readers. Additional seek/probe requests wait in a bounded queue.
+No torrent video files are saved to disk.
+Opening probes and playback reuse verified pieces and connections within a
+retained window instead of downloading the same opening data repeatedly.
+Matroska opening probes and playback from the beginning avoid unnecessary tail
+index seeks; seeking to another playback position remains supported.
+Moving outside retained windows can evict an idle window and require fetching
+pieces again. Closing a source destroys its windows. A bounded, memory-only
+cache of connected peer addresses avoids repeating discovery after eviction;
+peer addresses are not persisted.
 The downloaded-copy fallback is NZB-only; an unavailable or too-slow torrent
 source requires another release rather than a torrent video download.
 

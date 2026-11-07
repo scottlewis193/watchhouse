@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
-import { NntpClient, preparePlayback, createPlaybackPlanCache } from '../src/lib/server/streamer.js';
+import { NntpClient, preparePlayback, createPlaybackPlanCache, preflightLiveCandidate } from '../src/lib/server/streamer.js';
 import { rankReleases } from '../media.js';
 import { waitForPlayback } from '../src/lib/server/playback-notifications.js';
 import { cancelDownloadJob } from '../src/lib/server/download-cancellation.js';
@@ -50,6 +50,42 @@ test('torrent fallback rejects a slow source before exposing playback and select
     });
     assert.equal(playback.status, 'ready');
     assert.equal(playback.release, 'Slow.Horses.S01E02.1080p.x264.Second');
+  });
+});
+
+test('torrent preflight deadline frees the failed session before accepting the next candidate', async () => {
+  await withTorrentIndexer(async settings => {
+    const playback = { ...job(), media: { ...media, id: 95481 } }, attempted = [];
+    let failedClosed = false, failedSignal;
+    await preparePlayback(playback, settings, {
+      search: async () => [], plans: createPlaybackPlanCache(), persistence: null,
+      preflight: async (candidate, candidateSettings, start, options) => {
+        attempted.push(candidate.release);
+        const first = candidate.release.endsWith('.First');
+        if (!first) {
+          assert.equal(failedClosed, true);
+          assert.equal(failedSignal.aborted, true);
+        }
+        let elapsed = 0, position = 2;
+        return preflightLiveCandidate(candidate, candidateSettings, start, {
+          ...options, timeoutMs: first ? 20 : options.timeoutMs,
+          sessionFactory: async () => ({
+            read: async () => Buffer.from('#EXTINF:2.0,'),
+            health: () => ({ position, completed: false }),
+            close: async () => { if (first) failedClosed = true; }
+          }),
+          inspect: async (_directory, signal) => {
+            if (first) { failedSignal = signal; return new Promise(() => {}); }
+            return [{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '0' }];
+          },
+          now: () => elapsed,
+          wait: async ms => { elapsed += ms; position += ms / 1000 * 1.3; }
+        });
+      }
+    });
+    assert.equal(playback.status, 'ready');
+    assert.deepEqual(attempted, ['Slow.Horses.S01E02.1080p.x264.First', 'Slow.Horses.S01E02.1080p.x264.Second']);
+    assert.match(playback.preparedSession.playlistUrl, /index\.m3u8$/);
   });
 });
 

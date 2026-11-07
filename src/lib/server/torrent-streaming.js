@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { episodeTag, playbackStrategy, rankReleases, releaseTitleMatches, titleVariants } from '../../../media.js';
+import { englishAudioRelease, episodeTag, playbackStrategy, rankReleases, releaseResolution, releaseTitleMatches, titleVariants } from '../../../media.js';
 import { createConversionAdmission } from './conversion-admission.js';
 
 const METADATA_LIMIT = 4 * 1024 ** 2;
@@ -41,7 +41,7 @@ export function torrentFileSelection(parsed, media, release = {}) {
     if (!VIDEO_TYPES[path.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase()] || /(?:^|[. _/\\-])(?:sample|trailer|preview)(?:[. _/\\-]|$)/i.test(path)) return false;
     if (media.type !== 'tv') return true;
     const tags = [...path.replace(/_/g, '.').matchAll(/\bs(\d{1,2})[ ._-]*e(\d{1,3})(?!\d)|\b(\d{1,2})x(\d{1,3})(?!\d)/gi)];
-    if (tags.length) return tags.length === 1 && !/e\d{1,3}[ ._-]*e\d|e\d{1,3}-\d/i.test(path) && tags.some(tag => Number(tag[1] || tag[3]) === Number(media.season) && Number(tag[2] || tag[4]) === Number(media.episode));
+    if (tags.length) return !/e\d{1,3}[ ._-]*e\d|e\d{1,3}-\d/i.test(path) && tags.every(tag => Number(tag[1] || tag[3]) === Number(media.season) && Number(tag[2] || tag[4]) === Number(media.episode));
     // A single-file episode release may omit its tag from the actual filename.
     return parsed.files.filter(entry => /\.(?:mp4|m4v|mov|mkv|webm)$/i.test(entry.path || entry.name)).length === 1 && episodeMatches(release.title, media);
   });
@@ -63,6 +63,44 @@ export function torrentFileSelection(parsed, media, release = {}) {
 }
 function episodeMatches(title = '', media) {
   return [...title.replace(/_/g, '.').matchAll(/\bs(\d{1,2})[ ._-]*e(\d{1,3})(?!\d)|\b(\d{1,2})x(\d{1,3})(?!\d)/gi)].some(tag => Number(tag[1] || tag[3]) === Number(media.season) && Number(tag[2] || tag[4]) === Number(media.episode));
+}
+function magnetInfoHash(url) {
+  for (const topic of url.searchParams.getAll('xt')) {
+    const hash = /^urn:btih:([a-f0-9]{40}|[a-z2-7]{32})$/i.exec(topic)?.[1];
+    if (!hash) continue;
+    if (hash.length === 40) return hash.toLowerCase();
+    const bytes = Buffer.alloc(20);
+    let value = 0; let bits = 0; let index = 0;
+    for (const character of hash.toUpperCase()) {
+      value = (value << 5) | 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(character);
+      bits += 5;
+      if (bits >= 8) { bits -= 8; bytes[index++] = (value >>> bits) & 255; }
+    }
+    return bytes.toString('hex');
+  }
+  return null;
+}
+function rankTorrentReleases(releases, media, settings) {
+  const ranked = rankReleases(releases, media, settings);
+  const fastest = settings.playbackQuality === 'fast' && (!settings.targetResolution || settings.targetResolution === 'auto');
+  const groups = new Map();
+  for (const [index, release] of ranked.entries()) {
+    // Indexer titles often omit the container. H264 can still remux in an MKV;
+    // actual metadata and playback validation remain authoritative.
+    const subject = /\.(?:mkv|mp4|m4v|mov|webm)(?:"|\s|$)/i.test(release.title) ? release.title : 'candidate.mkv';
+    const key = `${fastest ? 'auto' : releaseResolution(release)}:${playbackStrategy(subject, release.title)}:${settings.allowUnverifiedAnimeAudio ? englishAudioRelease(release) : true}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(index);
+  }
+  // Keep explicit quality/compatibility tiers. Automatic Start fastest instead
+  // prefers lower transfer demand; advertised seeders only break equal-cost ties.
+  for (const indices of groups.values()) {
+    const candidates = indices.map(index => ranked[index]).sort((a, b) =>
+      (fastest ? (a.size > 0 ? a.size : Infinity) - (b.size > 0 ? b.size : Infinity) : 0)
+      || (b.seeders || 0) - (a.seeders || 0));
+    indices.forEach((slot, index) => { ranked[slot] = candidates[index]; });
+  }
+  return ranked;
 }
 
 // No eviction: a WebTorrent bitfield must never advertise evicted pieces. Each
@@ -142,28 +180,29 @@ function drain(response, signal) {
 }
 // WebTorrent's iterator can leave next() pending when its torrent is destroyed.
 // Race each read against cancellation rather than waiting for a stream wrapper.
-function nextPiece(iterator, signal) {
+function abortable(work, signal) {
   check(signal);
   return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason || abortError());
     const cleanup = () => signal.removeEventListener('abort', abort);
+    const abort = () => { cleanup(); reject(signal.reason || abortError()); };
+    const fail = error => { cleanup(); reject(error); };
     signal.addEventListener('abort', abort, { once: true });
-    Promise.resolve(iterator.next()).then(
-      result => { cleanup(); resolve(result); },
-      error => { cleanup(); reject(error); }
-    );
+    try { Promise.resolve(work()).then(result => { cleanup(); resolve(result); }, fail); }
+    catch (error) { fail(error); }
   });
 }
+function nextPiece(iterator, signal) { return abortable(() => iterator.next(), signal); }
 
 export function createTorrentStreaming({
   request = globalThis.fetch,
   createClient = async options => { const { default: WebTorrent } = await import('webtorrent'); return new WebTorrent(options); },
   parse = async value => { const { default: parseTorrent } = await import('parse-torrent'); return parseTorrent(value); },
   cacheBytes = 64 * 1024 ** 2, maxConcurrentStreams = 2, maxSources = 4,
-  idleMs = 2 * 60 * 1000, timeoutMs = 90 * 1000
+  idleMs = 2 * 60 * 1000, timeoutMs = 90 * 1000, metadataTimeoutMs = 10 * 1000
 } = {}) {
   if (!Number.isSafeInteger(cacheBytes) || cacheBytes < 1024 ** 2 || !Number.isInteger(maxConcurrentStreams) || maxConcurrentStreams < 1) throw new Error('Invalid torrent streaming limits.');
   const sources = new Map(); const operations = new Set();
+  const windows = new Set();
   const maxQueuedReaders = 16;
   const admission = createConversionAdmission({ limit: maxConcurrentStreams, maxQueued: maxQueuedReaders });
   let metadataActive = 0; let server; let starting; let closed = false;
@@ -204,6 +243,67 @@ export function createTorrentStreaming({
       throw error;
     }
   }
+  function discardWindow(window) {
+    if (window.closing) return window.closing;
+    window.closing = (async () => {
+      window.operation.controller.abort(abortError());
+      try {
+        const connection = await window.ready.catch(() => null);
+        await connection?.close();
+      } finally { window.operation.dispose(); windows.delete(window); }
+    })();
+    return window.closing;
+  }
+  async function acquireWindow(source, position, signal) {
+    const absolute = position + source.file.offset;
+    while (true) {
+      check(signal);
+      let idle;
+      for (const window of windows) {
+        if (window.busy || window.closing) continue;
+        if (window.source === source && !window.connection.client.destroyed
+          && absolute >= window.start && absolute <= window.end) {
+          window.busy = true;
+          return window;
+        }
+        idle ||= window;
+      }
+      if (windows.size >= maxConcurrentStreams) {
+        if (idle) await discardWindow(idle);
+        else {
+          const closing = [...windows].map(window => window.closing).filter(Boolean);
+          if (!closing.length) throw new Error('Torrent window cache is busy.');
+          await abortable(() => Promise.race(closing), signal);
+        }
+        continue;
+      }
+      const pieceLength = source.parsed.pieceLength;
+      const first = Math.floor(absolute / pieceLength);
+      const slots = Math.floor(cacheBytes / pieceLength);
+      const window = {
+        source, start: first * pieceLength, end: (first + slots) * pieceLength - 1,
+        busy: true, operation: linkedController(source.controller.signal, 0)
+      };
+      windows.add(window);
+      window.ready = clientTorrent(source.bytes, window.operation.controller.signal, false, source.parsed, source.peers);
+      try {
+        window.connection = await abortable(() => window.ready, signal);
+        check(signal);
+        return window;
+      } catch (error) { await discardWindow(window); throw error; }
+    }
+  }
+  function releaseWindow(window) {
+    if (!window) return;
+    const { torrent } = window.connection;
+    if (!torrent.destroyed) {
+      torrent.files[window.source.file.index]?.deselect();
+      torrent.pause();
+    }
+    window.busy = false;
+    if (window.source.controller.signal.aborted) void discardWindow(window);
+    else if (!window.closing) { windows.delete(window); windows.add(window); }
+  }
   async function search(media, settings, { signal } = {}) {
     ensureOpen(); check(signal);
     if (!settings.torrentIndexerUrl) return [];
@@ -227,55 +327,70 @@ export function createTorrentStreaming({
         if (releases.size) break;
       }
     }
-    return rankReleases([...releases.values()], media, settings);
+    return rankTorrentReleases([...releases.values()], media, settings);
+  }
+  async function candidateMetadata(candidate, settings, indexerOrigin, attempted, signal) {
+    const metadata = linkedController(signal, metadataTimeoutMs);
+    try {
+      return await abortable(async () => {
+        let bytes; let knownHash;
+        let url = new URL(candidate.torrentUrl);
+        for (let redirects = 0; ; redirects++) {
+          check(metadata.controller.signal);
+          if (url.protocol === 'magnet:') {
+            knownHash = magnetInfoHash(url);
+            if (knownHash && attempted.has(knownHash)) return null;
+            if (knownHash) attempted.add(knownHash);
+            const connection = await clientTorrent(url.href, metadata.controller.signal, true);
+            try { bytes = Buffer.from(connection.torrent.torrentFile); } finally { await connection.close(); }
+            break;
+          }
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Torrent metadata URL must use HTTP, HTTPS or magnet.');
+          if (indexerOrigin && url.origin === indexerOrigin && !url.searchParams.has('apikey')) url.searchParams.set('apikey', settings.torrentIndexerKey);
+          const response = await request(url, { signal: metadata.controller.signal, redirect: 'manual' });
+          check(metadata.controller.signal);
+          if ([301, 302, 303, 307, 308].includes(response.status)) {
+            const location = response.headers.get('location');
+            await response.body?.cancel();
+            if (!location) throw new Error('Torrent metadata redirect has no location.');
+            if (redirects >= 20) throw new Error('Too many torrent metadata redirects.');
+            url = new URL(location, url);
+            continue;
+          }
+          bytes = await boundedBody(response, METADATA_LIMIT);
+          break;
+        }
+        if (bytes.length > METADATA_LIMIT) throw new Error('Torrent metadata is too large.');
+        const parsed = await parse(bytes);
+        check(metadata.controller.signal);
+        const hash = String(parsed.infoHash).toLowerCase();
+        if (hash !== knownHash && attempted.has(hash)) return null;
+        attempted.add(hash);
+        return { bytes, parsed };
+      }, metadata.controller.signal);
+    } finally { metadata.dispose(); }
   }
   async function select(media, settings, { signal, release, excludeInfoHashes = [], validate } = {}) {
     ensureOpen(); check(signal);
-    const excluded = new Set([...excludeInfoHashes].map(value => String(value).toLowerCase()));
+    const attempted = new Set([...excludeInfoHashes].map(value => String(value).toLowerCase()));
     if (metadataActive >= maxConcurrentStreams) throw new Error('Torrent metadata selection is busy.');
     metadataActive++;
     const operation = linkedController(signal, timeoutMs); operations.add(operation.controller);
     try {
-      const candidates = release ? rankReleases([release], media, settings) : await search(media, settings, { signal: operation.controller.signal });
+      const candidates = release ? rankTorrentReleases([release], media, settings) : await abortable(() => search(media, settings, { signal: operation.controller.signal }), operation.controller.signal);
       const indexerOrigin = settings.torrentIndexerKey ? new URL(settings.torrentIndexerUrl).origin : null;
       let lastError;
-      let validationAttempts = 0;
       for (const candidate of candidates) {
-        if (validate && validationAttempts >= 3) break;
         check(operation.controller.signal);
         try {
-          let bytes;
-          let url = new URL(candidate.torrentUrl);
-          for (let redirects = 0; ; redirects++) {
-            if (url.protocol === 'magnet:') {
-              const connection = await clientTorrent(url.href, operation.controller.signal, true);
-              try { bytes = Buffer.from(connection.torrent.torrentFile); } finally { await connection.close(); }
-              break;
-            }
-            if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Torrent metadata URL must use HTTP, HTTPS or magnet.');
-            if (indexerOrigin && url.origin === indexerOrigin && !url.searchParams.has('apikey')) url.searchParams.set('apikey', settings.torrentIndexerKey);
-            const response = await request(url, { signal: operation.controller.signal, redirect: 'manual' });
-            if (response.status === 301 || response.status === 302 || response.status === 303 || response.status === 307 || response.status === 308) {
-              const location = response.headers.get('location');
-              await response.body?.cancel();
-              if (!location) throw new Error('Torrent metadata redirect has no location.');
-              if (redirects >= 20) throw new Error('Too many torrent metadata redirects.');
-              url = new URL(location, url);
-              continue;
-            }
-            bytes = await boundedBody(response, METADATA_LIMIT);
-            break;
-          }
-          if (bytes.length > METADATA_LIMIT) throw new Error('Torrent metadata is too large.');
-          const parsed = await parse(bytes);
-          if (excluded.has(String(parsed.infoHash).toLowerCase())) continue;
+          const metadata = await candidateMetadata(candidate, settings, indexerOrigin, attempted, operation.controller.signal);
+          if (!metadata) continue;
+          const { bytes, parsed } = metadata;
           if (parsed.pieceLength > cacheBytes / 2) throw new Error('Torrent pieces exceed the bounded playback cache.');
           const file = torrentFileSelection(parsed, media, candidate);
           const descriptor = { kind: 'torrent', version: 1, title: candidate.title, name: file.path, size: file.size, strategy: file.strategy, infoHash: parsed.infoHash, torrent: bytes.toString('base64'), media: { type: media.type, title: media.title, alternativeTitles: media.alternativeTitles, year: media.year, season: media.season, episode: media.episode }, file, selectedAt: Date.now() };
           if (validate) {
-            validationAttempts++;
-            try { await validate(descriptor, { signal: operation.controller.signal }); }
-            catch (error) { excluded.add(String(parsed.infoHash).toLowerCase()); throw error; }
+            await abortable(() => validate(descriptor, { signal: operation.controller.signal }), operation.controller.signal);
             check(operation.controller.signal);
           }
           return descriptor;
@@ -299,7 +414,7 @@ export function createTorrentStreaming({
     if (admission.stats().queued >= maxQueuedReaders) { res.writeHead(429, { 'retry-after': '1' }); res.end(); return; }
     const operation = linkedController(source.controller.signal, 0); operations.add(operation.controller); source.readers.add(operation.controller);
     let settled; const completion = new Promise(resolve => { settled = resolve; }); source.completions.add(completion);
-    let connection; let iterator; let timer; let release;
+    let window; let iterator; let timer; let release;
     const touch = () => { source.touched = Date.now(); clearTimeout(timer); timer = setTimeout(() => operation.controller.abort(new Error('Torrent playback stalled.')), timeoutMs); timer.unref?.(); };
     const cancel = () => operation.controller.abort(abortError());
     const onAbort = () => res.destroy(operation.controller.signal.reason);
@@ -314,13 +429,11 @@ export function createTorrentStreaming({
       let position = range.start;
       while (position <= range.end) {
         check(operation.controller.signal); touch();
-        connection = await clientTorrent(source.bytes, operation.controller.signal, false, source.parsed, source.peers);
-        const { torrent } = connection;
+        window = await acquireWindow(source, position, operation.controller.signal);
+        const { torrent } = window.connection;
         const file = torrent.files[source.file.index];
         if (!file || file.path !== source.file.path || file.length !== source.file.size) throw new Error('Torrent file changed since selection.');
-        const slots = Math.floor(cacheBytes / torrent.pieceLength);
-        const lastByte = (Math.floor((position + file.offset) / torrent.pieceLength) + slots) * torrent.pieceLength - 1 - file.offset;
-        const end = Math.min(range.end, lastByte);
+        const end = Math.min(range.end, window.end - file.offset);
         torrent.resume();
         // WebTorrent treats end:0 as unspecified. Read two bytes in that case
         // and trim the response, never expanding a one-byte HTTP range.
@@ -335,14 +448,17 @@ export function createTorrentStreaming({
           if (!res.write(output)) await drain(res, operation.controller.signal);
         }
         if (received !== end - position + 1) throw new Error('Torrent ended before the requested byte range was complete.');
-        file.deselect(); torrent.pause(); await iterator.return(); iterator = null;
-        await connection.close(); connection = null;
+        await iterator.return(); iterator = null;
+        releaseWindow(window); window = null;
         position = end + 1;
       }
       res.end();
-    } catch (error) { res.destroy(error); }
+    } catch (error) {
+      if (window && !operation.controller.signal.aborted) { await discardWindow(window); window = null; }
+      res.destroy(error);
+    }
     finally {
-      clearTimeout(timer); await iterator?.return(); await connection?.close();
+      clearTimeout(timer); await iterator?.return(); releaseWindow(window);
       res.removeListener('close', cancel); operation.controller.signal.removeEventListener('abort', onAbort);
       operation.dispose(); operations.delete(operation.controller); source.readers.delete(operation.controller); source.touched = Date.now(); release?.();
       source.completions.delete(completion); settled();
@@ -360,7 +476,7 @@ export function createTorrentStreaming({
     const source = sources.get(id); if (!source) return;
     source.controller.abort(abortError()); sources.delete(id);
     source.signal?.removeEventListener('abort', source.cancel);
-    return Promise.all([...source.completions]);
+    return Promise.all([...source.completions, ...[...windows].filter(window => window.source === source).map(discardWindow)]);
   }
   async function open(descriptor, { signal } = {}) {
     ensureOpen(); check(signal);

@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { createServer } from 'node:http';
 import { assertPlayableHlsOpening, preflightLiveCandidate } from '../src/lib/server/streamer.js';
+import { createHlsSession } from '../src/lib/server/hls-session.js';
 
 const run = promisify(execFile);
 
@@ -212,6 +214,149 @@ test('cancelling a sustained playback check closes its session promptly', { time
     observationMs: 10000, minimumRate: 1.25, sustained: true
   }), { name: 'AbortError' });
   assert.equal(closed, true);
+});
+
+test('the overall deadline cancels a stalled opening inspection and frees its session', { timeout: 1000 }, async () => {
+  let closed = false, inspectionSignal;
+  await assert.rejects(preflightLiveCandidate({ id: 'stalled-opening' }, {}, 0, {
+    timeoutMs: 20,
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position: 2, completed: false }),
+      close: async () => { closed = true; }
+    }),
+    inspect: async (_directory, signal) => {
+      inspectionSignal = signal;
+      return new Promise(() => {});
+    },
+    wait: async () => {}
+  }), { code: 'PLAYBACK_PREFLIGHT_TIMEOUT' });
+  assert.equal(inspectionSignal.aborted, true);
+  assert.equal(closed, true);
+});
+
+test('Usenet preflight retains its default overall deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let inspecting, closed = false, settled = false;
+  const started = new Promise(resolve => { inspecting = resolve; });
+  const pending = preflightLiveCandidate({ id: 'usenet-deadline' }, {}, 0, {
+    sessionFactory: async () => ({
+      read: async () => Buffer.from('#EXTINF:2.0,'),
+      health: () => ({ position: 2, completed: false }),
+      close: async () => { closed = true; }
+    }),
+    inspect: async () => { inspecting(); return new Promise(() => {}); },
+    wait: async () => {}
+  });
+  void pending.then(() => { settled = true; }, () => { settled = true; });
+  await started;
+  t.mock.timers.tick(44999);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  await assert.rejects(pending, { code: 'PLAYBACK_PREFLIGHT_TIMEOUT' });
+  assert.equal(closed, true);
+});
+
+test('parent cancellation also closes a session that finishes opening after cancellation', { timeout: 1000 }, async () => {
+  const controller = new AbortController();
+  let finishOpening, closed = false, conversionSignal;
+  const pending = preflightLiveCandidate({ id: 'stalled-session' }, { signal: controller.signal }, 0, {
+    sessionFactory: async ({ produce }) => {
+      await produce('/unused');
+      return new Promise(resolve => { finishOpening = () => resolve({ close: async () => { closed = true; } }); });
+    },
+    convert: async (_job, settings) => { conversionSignal = settings.signal; }
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(conversionSignal.aborted, true);
+  finishOpening();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closed, true);
+});
+
+for (const stage of ['metadata', 'timeline']) test(`torrent preflight kills a stalled ${stage} FFprobe within its own budget and allows a fresh inspection`, { timeout: 10000 }, async t => {
+  const { stdout: video } = await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-f', 'matroska', 'pipe:1'], { encoding: 'buffer' });
+  const job = { id: `stalled-${stage}`, mode: 'cached-convert', strategy: 'remux', torrentSource: {}, diagnosticsEnabled: true, events: [] };
+  let reachedStall, connectionClosed, stalledRequests = 0;
+  const server = createServer((_req, res) => {
+    const timeline = job.events.some(event => event.activity === 'metadata-ready');
+    if (stage === 'metadata' || timeline) {
+      stalledRequests++;
+      res.on('close', () => connectionClosed());
+      reachedStall();
+    } else {
+      res.writeHead(200, { 'content-type': 'video/x-matroska', 'content-length': video.length });
+      res.end(video);
+    }
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  job.sourcePath = `http://127.0.0.1:${server.address().port}/video.mkv`;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      job.events.length = 0;
+      const stalled = new Promise(resolve => { reachedStall = resolve; });
+      const disconnected = new Promise(resolve => { connectionClosed = resolve; });
+      let settled = false;
+      const pending = preflightLiveCandidate(job, { repairVideoTimeline: true }, 0, { timeoutMs: 30000 });
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await stalled;
+      t.mock.timers.tick(19999);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(settled, false, 'the source still has its stage budget before the deadline');
+      t.mock.timers.tick(1);
+      await assert.rejects(pending, { code: 'PLAYBACK_PROBE_TIMEOUT' });
+      await disconnected;
+      assert.equal(job.preparedSession, undefined);
+    }
+    assert.equal(stalledRequests, 2, 'a timed-out inspection must not be reused for the same source');
+  } finally {
+    t.mock.timers.reset();
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('torrent Matroska opening remains playable when tail ranges are unavailable', { timeout: 15000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'torrent-forward-opening-'));
+  let server, session;
+  try {
+    const input = join(directory, 'source.mkv');
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=25:duration=8',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=8', '-c:v', 'libx264', '-preset', 'ultrafast',
+      '-b:v', '4M', '-minrate', '4M', '-maxrate', '4M', '-bufsize', '4M', '-x264-params', 'nal-hrd=cbr', '-c:a', 'aac', input]);
+    const video = await readFile(input);
+    server = createServer((req, res) => {
+      if (Number(req.headers.range?.match(/^bytes=(\d+)-/)?.[1]) > 0) return;
+      const headers = { 'content-type': 'video/x-matroska', 'content-length': video.length, 'accept-ranges': 'bytes' };
+      if (req.headers.range) headers['content-range'] = `bytes 0-${video.length - 1}/${video.length}`;
+      res.writeHead(req.headers.range ? 206 : 200, headers); res.end(video);
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const job = { id: 'torrent-forward-opening', mode: 'cached-convert', strategy: 'remux',
+      sourcePath: `http://127.0.0.1:${server.address().port}/source.mkv`, torrentSource: {} };
+    await preflightLiveCandidate(job, { repairVideoTimeline: true }, 0, {
+      timeoutMs: 8000,
+      sessionFactory: async options => {
+        session = await createHlsSession({ ...options, root: directory });
+        return session;
+      }
+    });
+    const { stdout } = await run('ffmpeg', ['-v', 'error', '-nostats', '-progress', 'pipe:1',
+      '-i', join(session.directory, 'index.m3u8'), '-t', '2', '-f', 'null', '-']);
+    assert.ok([...stdout.matchAll(/^out_time_us=(\d+)/gm)].some(match => Number(match[1]) >= 1900000));
+    assert.ok([...stdout.matchAll(/^frame=(\d+)/gm)].some(match => Number(match[1]) > 0));
+    assert.ok(job.sourceDuration >= 8 && job.sourceDuration < 8.5);
+  } finally {
+    await session?.close();
+    server?.closeAllConnections();
+    if (server) await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('a converter that recovers after a slow start can pass the longer check', async () => {
