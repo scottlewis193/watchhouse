@@ -802,3 +802,76 @@ test('a verified opening window remains readable after its peer disconnects', { 
     if (!seederClosed) await new Promise(resolve => seeder.destroy(resolve));
   }
 });
+
+test('allowed-fast grants cannot fill playback windows with unrelated torrent pieces', { timeout: 15000 }, async () => {
+  const { default: WebTorrent } = await import('webtorrent');
+  const { default: Wire } = await import('bittorrent-protocol');
+  const { createServer: tcpServer } = await import('node:net');
+  const options = { dht: false, tracker: false, lsd: false, natUpnp: false, natPmp: false, utp: false, webSeeds: false };
+  const seeder = new WebTorrent(options);
+  const sockets = new Set(), timers = new Set();
+  const pieceLength = 400 * 1024;
+  const payload = Buffer.alloc(3 * 1024 ** 2 + 101);
+  for (let index = 0; index < payload.length; index++) payload[index] = index % 251;
+  let service, source, peerServer;
+  try {
+    const seeded = await new Promise(resolve => seeder.seed(payload, {
+      name: 'Silo.S01E02.x264.mkv', announce: [], pieceLength,
+      store: BoundedTorrentStore, storeOpts: { maxBytes: payload.length }
+    }, resolve));
+    peerServer = tcpServer(socket => {
+      sockets.add(socket);
+      const wire = new Wire();
+      socket.on('error', () => socket.destroy());
+      socket.once('close', () => { sockets.delete(socket); wire.destroy(); });
+      wire.on('error', () => socket.destroy());
+      wire.on('handshake', infoHash => {
+        wire.handshake(infoHash, Buffer.alloc(20, 31), { fast: true });
+        wire.haveAll();
+      });
+      wire.once('interested', () => {
+        // Grant after the client has installed its metadata-aware scheduler.
+        // BEP6 permits this piece while choked, outside the first window.
+        wire.allowedFast(6);
+        const timer = setTimeout(() => { timers.delete(timer); if (!wire.destroyed) wire.unchoke(); }, 100);
+        timers.add(timer);
+      });
+      wire.on('have', index => { if (index === 6) wire.unchoke(); });
+      wire.on('request', (index, offset, length, callback) => {
+        const start = index * pieceLength + offset;
+        callback(null, payload.subarray(start, start + length));
+      });
+      socket.pipe(wire).pipe(socket);
+    });
+    await new Promise(resolve => peerServer.listen(0, '127.0.0.1', resolve));
+    const peer = `127.0.0.1:${peerServer.address().port}`;
+    service = createTorrentStreaming({
+      cacheBytes: 1024 ** 2, maxConcurrentStreams: 2, timeoutMs: 3000,
+      request: async () => new Response(seeded.torrentFile),
+      createClient: async settings => {
+        const client = new WebTorrent({ ...settings, ...options });
+        const add = client.add.bind(client);
+        client.add = (...args) => {
+          const torrent = add(...args);
+          torrent.once('infoHash', () => torrent.addPeer(peer));
+          return torrent;
+        };
+        return client;
+      }
+    });
+    const descriptor = await service.select(media, settings, {
+      release: { title: 'Silo.S01E02.x264', torrentUrl: 'https://indexer.example/torrent' }
+    });
+    source = await service.open(descriptor);
+    const response = await fetch(source.url, { signal: AbortSignal.timeout(10000) });
+    const actual = Buffer.from(await response.arrayBuffer());
+    assert.deepEqual(actual, payload.subarray(0));
+  } finally {
+    await source?.close();
+    await service?.close();
+    for (const timer of timers) clearTimeout(timer);
+    for (const socket of sockets) socket.destroy();
+    if (peerServer?.listening) await new Promise(resolve => peerServer.close(resolve));
+    await new Promise(resolve => seeder.destroy(resolve));
+  }
+});

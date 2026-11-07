@@ -253,6 +253,14 @@ export function createTorrentStreaming({
         });
         torrent.on('error', fail);
         torrent.once('close', () => fail(new Error('Torrent connection closed before playback completed.')));
+        torrent.on('wire', wire => {
+          // WebTorrent schedules BEP6 grants outside file selections, which
+          // can overflow a bounded store. Keep fast-protocol support, but
+          // ignore these optional grants and use normal unchoked requests.
+          const ignoreFastGrants = () => { wire.peerAllowedFastSet.length = 0; };
+          ignoreFastGrants();
+          wire.prependListener('allowed-fast', ignoreFastGrants);
+        });
         if (peers) {
           torrent.once('infoHash', () => { for (const address of peers) torrent.addPeer(address); });
           torrent.on('wire', (_wire, address) => {

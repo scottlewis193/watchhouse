@@ -87,6 +87,9 @@ collections are rejected. At most two 64 MiB windows retain stored pieces
 (128 MiB total, plus metadata/protocol buffers), with at most two simultaneous
 HTTP readers. Additional seek/probe requests wait in a bounded queue.
 No torrent video files are saved to disk.
+Optional BEP6 allowed-fast grants are ignored because WebTorrent can request
+those pieces outside the active window, exhausting its cache. Ordinary unchoked
+downloads and other fast-extension messages remain supported.
 Opening probes and playback reuse verified pieces and connections within a
 retained window instead of downloading the same opening data repeatedly.
 Matroska opening probes and playback from the beginning avoid unnecessary tail
