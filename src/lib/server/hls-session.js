@@ -45,7 +45,7 @@ export async function createHlsSession({ root, produce, signal, idleMs = 180000,
     try { producer = await produce(directory); }
     catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
     if (signal?.aborted) { await producer.stop(); throw signal.reason; }
-    let failure = null, completed = false, closed = false, closing, timer, monitor, bytes = 0, paused = false, position = 0, checking = false;
+    let failure = null, completed = false, closed = false, closing, timer, monitor, bytes = 0, paused = false, detached = false, position = 0, checking = false;
     void producer.completion.then(() => { completed = true; }, error => { failure = error; });
     function touch() {
       if (closed) throw new Error('Playback session has closed.');
@@ -101,7 +101,29 @@ export async function createHlsSession({ root, produce, signal, idleMs = 180000,
       }
       throw Object.assign(new Error('Timed out preparing playback segments.'), { code: 'PLAYBACK_SEGMENT_TIMEOUT' });
     }
+    async function covers(requestedPosition) {
+      if (closed || failure || !Number.isFinite(requestedPosition) || requestedPosition < 0) return false;
+      try {
+        const playlist = (await read('index.m3u8')).toString();
+        let end = 0;
+        for (const match of playlist.matchAll(/^#EXTINF:([\d.]+),[^\n]*\r?\n(segment-\d{6,}\.m4s)\s*$/gm)) {
+          end += Number(match[1]);
+          if (requestedPosition < end) {
+            const assets = await Promise.all(['init.mp4', match[2]].map(asset => stat(join(directory, asset))));
+            return !closed && !failure && assets.every(asset => asset.size > 0);
+          }
+        }
+      } catch {}
+      return false;
+    }
+    function detach() {
+      if (closed) return;
+      playbackState({ paused: true });
+      detached = true;
+      touch();
+    }
     function playbackState(state = {}) {
+      if (typeof state.paused === 'boolean') detached = false;
       if (typeof state.paused === 'boolean') paused = state.paused;
       if (Number.isFinite(state.position) && state.position >= 0) position = state.position;
       const ahead = Math.max(0, (producer.position?.() || 0) - position);
@@ -132,7 +154,7 @@ export async function createHlsSession({ root, produce, signal, idleMs = 180000,
     }, checkMs);
     monitor.unref();
     touch();
-    return { directory, ready, read, touch, close, playbackState,
-      health: () => ({ failed: Boolean(failure), closed, completed, bytes, paused, interpolated: Boolean(producer.interpolated), position: producer.position?.() || 0 }) };
+    return { directory, ready, read, touch, close, playbackState, covers, detach,
+      health: () => ({ failed: Boolean(failure), closed, completed, bytes, paused, detached, interpolated: Boolean(producer.interpolated), position: producer.position?.() || 0 }) };
   } catch (error) { release(); if (directory) await rm(directory, { recursive: true, force: true }); throw error; }
 }

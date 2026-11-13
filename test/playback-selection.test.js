@@ -785,6 +785,26 @@ test('a saved lower-resolution fallback does not override a 2160p target on the 
   assert.equal(playback.release, 'Slow.Horses.S01E02.2160p');
 });
 
+test('a selected lower-resolution direct source is retained for resume under the same preset', async () => {
+  const settings = { targetResolution: '2160p', playbackQuality: 'fast' };
+  const plans = createPlaybackPlanCache(), starts = [];
+  let searches = 0;
+  for (const start of [0, 30]) {
+    const playback = { ...job(), selectionStart: start };
+    await preparePlayback(playback, settings, {
+      plans, persistence: null, health: { has: async () => false },
+      search: async () => { searches++; return [{ title: 'Film.1080p.SDR' }]; },
+      load: async () => nzb('mkv'), check: async () => Buffer.from('video'),
+      preflight: async (_candidate, _settings, offset) => { starts.push(offset); return { start: offset }; }
+    });
+    assert.equal(playback.status, 'ready');
+    assert.equal(playback.release, 'Film.1080p.SDR');
+    assert.equal(playback.preparedSession.start, start);
+  }
+  assert.equal(searches, 1, 'the accepted fallback must not trigger a fresh release search on resume');
+  assert.deepEqual(starts, [0, 30]);
+});
+
 test('slow availability checks do not leave NZB request slots idle', async () => {
   let releaseChecks, loadedSixth;
   const gate = new Promise(resolve => { releaseChecks = resolve; });

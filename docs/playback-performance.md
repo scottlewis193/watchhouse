@@ -1,5 +1,75 @@
 # Playback startup optimisation — 14 September 2026
 
+## Reusing encoded HLS for warm resume (2026-11-13)
+
+Normal player teardown previously closed FFmpeg and deleted its HLS directory.
+Keeping an archive/source warm therefore still paid for new segments and the
+opening/speed check. Normal stop now pauses and retains validated HLS output
+within the existing three-minute idle timeout, four-session limit and 8 GiB
+per-session quota. New conversions evict detached sessions when capacity is full.
+
+A covered resume reuses existing segments without release search, source probing,
+another encoder or another speed observation. Reuse requires the same media and
+provider/preset scope, compatible audio selection, healthy output and a finished
+segment covering the requested position. Missing/expired segments, changed
+settings and rejected sources take the normal preparation path. Failed browser
+sessions explicitly discard their output and are excluded from recovery reuse.
+Each claim rotates its URL lease so stale stop/heartbeat requests cannot interrupt
+the new player.
+
+The response distinguishes requested absolute `start`, converter-origin `offset`
+and playlist-relative `position`. Hls.js and native HLS seek relative to the
+retained playlist; the watch page uses the origin for progress and captions
+without recreating its source when the server supplies that origin.
+
+Isolated Chromium smoke, real HTTP playback handlers and FFmpeg H.264/AAC:
+
+| Warm resume scenario | Click to first presented frame |
+| --- | ---: |
+| First player load, retained origin 0 s | 221.4 ms |
+| Repeat after leaving the player | 58.6 ms |
+| Retained origin 40 s, resume at 45.125 s | 58.0 ms |
+
+Only the two initial fixture encoders ran; all three resumes reused their output.
+The nonzero-origin frame was at absolute 45.12 s. Old-lease stop and heartbeat
+returned 404 while the new session stayed attached; explicit discard returned
+200 and removed the session. The actual watch page also played the retained
+40-second-origin fixture, dismissed its preparation overlay and displayed
+0:46 while the media element was at 6.00 seconds, with 26 decoded frames.
+Catalogue/history requests were fixtures; no personal progress was written.
+
+Verification: 160 targeted tests passed across focused runs, including two real
+encoded-resume regressions at origins 0/40, incompatible presets and uncovered
+positions, browser/native offset handling, recovery, seeking, source selection,
+session expiry and archive forward-seek audio/video hashes. The watch page
+compiled independently. These are local fixture timings, not production release
+benchmarks. This change is not deployed; restart, eviction, expiry or a seek
+outside retained output still requires cold preparation.
+
+## Retaining lower-resolution sources for resume (2026-11-13)
+
+Production startup reports showed Heart of the Beast resuming at 29.860 seconds
+in 15.833 seconds. The active Fast preset had a 2160p target but selected a
+working 1080p archive. An older exact-resolution cache rule excluded that source
+from both live retention and saved plans. Resume searched again, rejected a
+missing upload, and reopened the same archive after 4.969 seconds; producing its
+first resumed segment then took another 6.957 seconds after encoding started.
+
+Validated lower-resolution fallbacks are now retained under their existing
+settings/provider scope. A nonzero resume may reuse them after the usual live
+validation; a fresh play still attempts its requested target. Sources above the
+target, HDR exclusions, rejected sources and explicit cache invalidation retain
+their existing behavior. This applies to live archive retention, persisted
+archive manifests and direct-source plans.
+
+Verification: the reproduced warm-archive case failed before the fix and passed
+after it. All 67 focused selection/resume tests passed, including a real FFmpeg
+growing-Matroska seek with matching audio/video hashes, retained fallback reuse,
+restart-safe archive resume and direct-source resume without repeated search.
+No post-fix production timing is claimed: two FFmpeg processes were active
+during diagnosis, so production was neither restarted nor used for playback
+benchmarks.
+
 ## Publishing integration correction (2026-11-13)
 
 The Docker full-suite check exposed four VM-harness failures: extracted recovery

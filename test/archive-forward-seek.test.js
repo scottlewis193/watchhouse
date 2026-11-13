@@ -6,12 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { startHlsConversion } from '../src/lib/server/streamer.js';
+import { startHlsConversion, preparePlayback, createPlaybackPlanCache, clearWatchedPlaybackWarmth } from '../src/lib/server/streamer.js';
 import { createHlsSession } from '../src/lib/server/hls-session.js';
 const run = promisify(execFile);
 
 test('cold growing Matroska resumes by seeking through available bytes with matching video and audio', { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'archive-forward-seek-'));
+  const media = { type: 'movie', id: 910041, title: 'Forward seek fixture' };
+  const settings = { usenetHost: 'fixture', targetResolution: '2160p', playbackQuality: 'fast' };
   let server, session, baseline;
   try {
     const input = join(root, 'source.mkv');
@@ -26,15 +28,24 @@ test('cold growing Matroska resumes by seeking through available bytes with matc
     });
     await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
     const source = { complete:false, available, metadata:{name:'source.mkv',size:bytes.length}, retain: () => ({url:`http://127.0.0.1:${server.address().port}/video`,close:async()=>{}}) };
-    const job = { progressiveArchive:true, archiveSource:source, file:{subject:'source.mkv'}, strategy:'remux',mode:'direct',release:'SDR' };
-    session = await createHlsSession({root,produce:directory=>startHlsConversion(job,{},40.123,directory)});
+    const job = { media, progressiveArchive:true, archiveSource:source, file:{subject:'source.mkv'}, strategy:'remux',mode:'direct',release:'Fixture.1080p.SDR' };
+    session = await createHlsSession({root,produce:directory=>startHlsConversion(job,settings,40.123,directory)});
     await Promise.race([session.ready(),new Promise((_,reject)=>{ const timer=setTimeout(()=>reject(Error('Resume waited for missing archive tail')),8000);timer.unref(); })]);
     assert.ok(ranges.some(start=>start>bytes.length*.2 && start<available), 'resume must skip available prefix bytes instead of decoding from byte zero');
+    const resumed = { media, selectionStart: 42.123, events: [] };
+    await preparePlayback(resumed, settings, {
+      plans: createPlaybackPlanCache(), persistence: null, health: { has: async () => false },
+      search: async () => assert.fail('A validated fallback must retain its live extraction for resume'),
+      preflight: async (_job, _settings, start) => ({ start })
+    });
+    assert.equal(resumed.status, 'ready');
+    assert.equal(resumed.archiveSource, source);
+    assert.equal(resumed.preparedSession.start, 42.123);
     baseline = await createHlsSession({root,produce:directory=>startHlsConversion({mode:'cached-convert',sourcePath:input,strategy:'remux',release:'SDR'}, {},40.123,directory)});
     await baseline.ready();
     for (const type of ['v','a']) {
       const hashes = async s => (await run('ffmpeg',['-v','error','-live_start_index','0','-i',join(s.directory,'index.m3u8'),'-map',`0:${type}:0`,`-frames:${type}`,'24','-f','framemd5','-'])).stdout.split('\n').filter(l=>l&&!l.startsWith('#')).map(l=>l.split(',').slice(2).join(','));
       assert.deepEqual(await hashes(session),await hashes(baseline), `${type} output and timing must match a normal accurate seek`);
     }
-  } finally { await session?.close(); await baseline?.close(); server?.closeAllConnections(); if(server)await new Promise(r=>server.close(r)); await rm(root,{recursive:true,force:true}); }
+  } finally { clearWatchedPlaybackWarmth(media, settings); await session?.close(); await baseline?.close(); server?.closeAllConnections(); if(server)await new Promise(r=>server.close(r)); await rm(root,{recursive:true,force:true}); }
 });

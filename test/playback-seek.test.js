@@ -9,7 +9,7 @@ const ast = parse(source);
 const handler = ast.instance.content.body.find(n => n.type === 'FunctionDeclaration' && n.id.name === 'seekToPosition');
 function fixture(paused = true) {
   let warmups = 0, scheduled = 0;
-  const state = { seekTimer:null,seekPaused:false,continuePlaybackOnReady:false, player: {paused,currentTime:20,buffered:{length:1,start:()=>0,end:()=>60}}, playback:{mode:'direct'}, resumeStreamOffset:100, seekPreview:null, playerPosition:20, bufferedRanges:[], videoFrameSample:null, measuredVideoFps:null, preparedSession:null, clearBufferedSourceRecovery(){}, savePlaybackProgress:async()=>{}, hasGrowingStreamDuration, controlTimeline:()=>({duration:1400}), beginPlaybackWarmup:()=>warmups++, setTimeout:()=>++scheduled, clearTimeout(){} };
+  const state = { seekTimer:null,seekPaused:false,continuePlaybackOnReady:false, player: {paused,currentTime:20,buffered:{length:1,start:()=>0,end:()=>60}}, playback:{mode:'direct'}, streamStart:100, streamAttempt:0, resumeStreamOffset:100, seekPreview:null, playerPosition:20, bufferedRanges:[], videoFrameSample:null, measuredVideoFps:null, preparedSession:null, clearBufferedSourceRecovery(){}, savePlaybackProgress:async()=>{}, hasGrowingStreamDuration, controlTimeline:()=>({duration:1400}), beginPlaybackWarmup:()=>warmups++, setTimeout:()=>++scheduled, clearTimeout(){} };
   runInNewContext(source.slice(handler.start,handler.end),state);
   return {state,get warmups(){return warmups;},get scheduled(){return scheduled;}};
 }
@@ -72,4 +72,30 @@ test('rapid unbuffered seeks replace pending work and preserve paused state', ()
   for(const callback of timers.values())callback();
   assert.equal(f.state.resumeStreamOffset,420);assert.equal(f.state.seekPaused,true);
   assert.equal(f.state.continuePlaybackOnReady,false);assert.equal(f.warmups,1);
+});
+
+test('an unbuffered seek updates the absolute request independently from a retained origin', () => {
+  const f = fixture();
+  f.state.streamStart = 130;
+  f.state.resumeStreamOffset = 100;
+  f.state.setTimeout = callback => { callback(); return 1; };
+  f.state.seekToPosition(420);
+  assert.equal(f.state.streamStart, 420);
+  assert.equal(f.state.resumeStreamOffset, 420);
+  assert.equal(f.state.streamAttempt, 1);
+  assert.equal(f.warmups, 1);
+});
+
+test('seeking within a retained origin-zero buffer stays native and does not double the target', () => {
+  const f = fixture();
+  f.state.streamStart = 30;
+  f.state.resumeStreamOffset = 0;
+  f.state.seekToPosition(45);
+  assert.equal(f.state.player.currentTime, 45);
+  assert.equal(f.state.streamStart, 30);
+  assert.equal(f.state.resumeStreamOffset, 0);
+  assert.equal(f.state.streamAttempt, 0);
+  assert.equal(f.state.player.paused, true);
+  assert.equal(f.warmups, 0);
+  assert.equal(f.scheduled, 0);
 });

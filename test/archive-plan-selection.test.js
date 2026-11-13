@@ -40,6 +40,38 @@ for (const fails of [false, true]) test(`saved successful archive ${fails ? 'fal
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('a validated fallback archive survives restart for resume without another release search', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'archive-fallback-resume-'));
+  const policy = { ...settings, targetResolution: '2160p', playbackQuality: 'fast' };
+  let searches = 0;
+  const starts = [];
+  try {
+    for (const start of [0, 30]) {
+      const job = { id: `resume-${start}`, media, selectionStart: start, events: [] };
+      await preparePlayback(job, policy, {
+        persistence: createPlaybackPersistence(root), plans: createPlaybackPlanCache(), health,
+        archivePlans: { get() { return null; }, delete() {} }, hints: null,
+        search: async () => { searches++; return [{ title: release }]; },
+        load: async () => '<nzb><file subject="film.part1.rar"><segments><segment bytes="1000" number="1">volume@fixture</segment></segments></file></nzb>',
+        progressive: async candidate => {
+          Object.assign(candidate, { archiveSource: source(), progressiveArchive: true,
+            file: { subject: 'film.mkv' }, strategy: 'remux', mode: 'direct' });
+          return true;
+        },
+        preflight: async (_candidate, _settings, offset) => { starts.push(offset); return { start: offset }; },
+        check: async () => Buffer.from('opening'), connectAhead: null, archiveCheck: null, archiveHeader: null,
+        archive: async () => assert.fail('A working progressive source must not download the full archive'),
+        cache: async () => assert.fail('A working progressive source must not download the full video')
+      });
+      assert.equal(job.status, 'ready');
+      assert.equal(job.release, release);
+      assert.equal(job.preparedSession.start, start);
+    }
+    assert.equal(searches, 1, 'resume must reopen the validated fallback rather than search again');
+    assert.deepEqual(starts, [0, 30], 'the saved source must still pass fresh validation at the resumed position');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 for (const playable of [true, false]) test(`explicit Play preparation ${playable ? 'can reach a working third candidate' : 'stops provider work after three failed candidates'}`, async () => {
   const loaded = [], candidates = Array.from({ length: 5 }, (_, index) => ({
     title: `Film.2024.1080p.BluRay.x264-Choice${index + 1}`, nzbUrl: `https://fixture.invalid/${index + 1}`

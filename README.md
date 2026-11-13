@@ -289,6 +289,16 @@ replacement.
 Inspect startup and source errors with `docker compose logs gluetun watchhouse`.
 Never paste your WireGuard file or the bundled indexer's API key into reports.
 
+DNS timeouts with no received tunnel packets can mean the WireGuard relay is
+inactive, not that DNS settings are wrong. Check the provider's current relay
+list ([Mullvad](https://api.mullvad.net/www/relays/all/)). When replacing a relay,
+update its `Endpoint` and peer `PublicKey` together; preserve the private key.
+For an existing file bind mount, edit the file in place or recreate the
+containers so Gluetun reads the new inode. Restart Gluetun and Watchhouse, then
+verify Gluetun's healthcheck and the provider's VPN exit check from inside
+Watchhouse before testing discovery. Do not disable the firewall or health
+dependency to work around an unhealthy tunnel.
+
 
 
 ## Playback logs

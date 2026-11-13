@@ -56,9 +56,63 @@ const OFFLINE_STATE_PATH = join(ROOT, 'data', 'offline-downloads.json');
 const downloads = new Map();
 const playbackJobs = new Map();
 const hlsSessions = new Map();
+
+function hlsSessionEntry(id, job, settings, start, audioTrack = null) {
+  return { id, jobId: job.id, job, scope: playbackScope(settings), start, audioTrack, validated: false };
+}
+
+async function makeHlsRoom() {
+  const admission = conversionAdmission.stats();
+  if (hlsSessions.size < 4 && admission.active < admission.limit) return;
+  for (const entry of hlsSessions.values()) {
+    if (entry.session.health().detached) { await entry.session.close(); return; }
+  }
+}
+
+async function takeRetainedHlsSession(job, settings, start, { audioTrack, excludeSessionUrl, allowActive = false } = {}) {
+  const mediaKey = offlineMediaKey(job.media), scope = playbackScope(settings);
+  if (!mediaKey || settings.signal?.aborted) return null;
+  for (const entry of [...hlsSessions.values()].reverse()) {
+    const oldId = entry.id, previous = entry.job;
+    if (!entry.validated || entry.scope !== scope || offlineMediaKey(previous.media) !== mediaKey
+      || previous.status !== 'ready' || previous.cancelled || previous.sourceRecoveryError
+      || previous.rejectedReleases?.has(previous.releaseKey || previous.release)
+      || job.rejectedReleases?.has(previous.releaseKey || previous.release)
+      || previous.archiveSource?.failure || previous.manualRelease && previous.id !== job.id
+      || job.release && (job.releaseKey || job.release) !== (previous.releaseKey || previous.release)
+      || !matchesTargetResolution(previous.release, settings, true)
+      || audioTrack == null && entry.audioTrack != null
+      || audioTrack != null && Number(audioTrack) !== entry.result.selectedAudioTrack
+      || excludeSessionUrl === entry.result.sessionUrl) continue;
+    const state = entry.session.health();
+    if (state.failed || state.closed || !state.detached && !(allowActive && entry.jobId === job.id)) continue;
+    if (settings.usenetHost && await releaseHealth.has(settings, job.media, previous.releaseKey || previous.release)) continue;
+    if (!await entry.session.covers(start - entry.start)) continue;
+    if (hlsSessions.get(oldId) !== entry || settings.signal?.aborted) continue;
+    if (previous.id !== job.id) {
+      for (const field of ['mode', 'file', 'strategy', 'release', 'releaseKey', 'archiveSource', 'archives',
+        'progressiveArchive', 'torrentSource', 'torrentPreflightInfoHash', 'sourceDuration', 'playbackTracks',
+        'selectedAudioTrack', 'frameInterpolation', 'videoAcceleration', 'prefetchedSegments', 'path', 'sourcePath', 'mime']) {
+        if (Object.hasOwn(previous, field)) job[field] = previous[field];
+      }
+    }
+    // Rotate the URL lease: a delayed stop from the old page cannot pause its successor.
+    hlsSessions.delete(oldId);
+    if (previous.preparedSession?.sessionUrl === entry.result.sessionUrl) delete previous.preparedSession;
+    entry.id = randomUUID(); entry.jobId = job.id; entry.job = job;
+    entry.result = { ...entry.result, playlistUrl: `/api/play/${job.id}/hls/${entry.id}/index.m3u8`,
+      sessionUrl: `/api/play/${job.id}/hls/${entry.id}`, start, offset: entry.start, position: start - entry.start };
+    hlsSessions.set(entry.id, entry);
+    entry.session.touch();
+    entry.session.playbackState({ paused: false, position: start - entry.start });
+    jobEvent(job, 'retained-hls-hit', 'Reusing validated playback segments.', { start, offset: entry.start });
+    return entry.result;
+  }
+  return null;
+}
 function foregroundPlaybackActive() {
   // Unclaimed poster sessions are speculative, not an active viewer.
-  for (const { jobId } of hlsSessions.values()) if (playbackJobs.has(jobId)) return true;
+  for (const { jobId, session } of hlsSessions.values()) if (playbackJobs.has(jobId) && !session.health().detached) return true;
   for (const job of playbackJobs.values()) if (!['ready', 'error', 'cancelled'].includes(job.status)) return true;
   return false;
 }
@@ -1562,7 +1616,7 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     // returned until the full existing validation has passed.
     const validated = Promise.all([inspection.validated, job.progressiveArchive && job.archiveSource?.randomAccess ? job.archiveSource.completion : undefined]);
     await withPlaybackSignal(Promise.race([validated, producer.completion.then(() => validated)]), settings.signal);
-    if (job.progressiveArchive && matchesTargetResolution(job.release, settings)) {
+    if (job.progressiveArchive && matchesTargetResolution(job.release, settings, true)) {
       const { archiveSource, archives, file, release, releaseKey, strategy } = job;
       archiveResumePlans.set(job.media, playbackScope(settings), { archiveSource, archives, file, release, releaseKey, strategy, progressiveArchive: true });
     }
@@ -1624,7 +1678,11 @@ export function assertPlayableHlsOpening(streams = []) {
 }
 
 export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = (ms, signal) => delay(ms, undefined, { signal }), now = () => performance.now(), firstSegmentMs = 8000, observationMs = 2000, minimumRate, sustained = false, timeoutMs = 45000 } = {}) {
+  const retained = await takeRetainedHlsSession(job, settings, start);
+  if (retained) return retained;
+  if (sessionFactory === createHlsSession) await makeHlsRoom();
   const id = randomUUID();
+  const entry = hlsSessionEntry(id, job, settings, start);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(Object.assign(new Error('Playback speed check timed out.'), { code: 'PLAYBACK_PREFLIGHT_TIMEOUT' })), timeoutMs);
   const removeCancelHandler = onDownloadCancel(job, () => controller.abort(new Error('Playback check cancelled.')));
@@ -1634,8 +1692,8 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
     signal.throwIfAborted();
     const opening = sessionFactory({ root: PLAYBACK_CACHE_ROOT, signal, produce: directory => convert(job, { ...settings, signal, preflight: true }, start, directory),
       onClose: () => {
-        hlsSessions.delete(id);
-        if (job.preparedSession?.sessionUrl === `/api/play/${job.id}/hls/${id}`) delete job.preparedSession;
+        hlsSessions.delete(entry.id);
+        if (entry.job.preparedSession?.sessionUrl === entry.result?.sessionUrl) delete entry.job.preparedSession;
       }, onMonitor: playbackOutputMonitor(job) });
     session = await withPlaybackSignal(Promise.resolve(opening).then(async opened => {
       if (signal.aborted) { await opened.close(); signal.throwIfAborted(); }
@@ -1718,8 +1776,10 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
     }
     signal.throwIfAborted();
     clearTimeout(timeout);
-    hlsSessions.set(id, { jobId: job.id, session });
-    return { playlistUrl: `/api/play/${job.id}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${job.id}/hls/${id}`, duration: job.sourceDuration || 0, tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: false, start };
+    Object.assign(entry, { session, validated: true,
+      result: { playlistUrl: `/api/play/${job.id}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${job.id}/hls/${id}`, duration: job.sourceDuration || 0, tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: false, start, offset: start, position: 0 } });
+    hlsSessions.set(id, entry);
+    return entry.result;
   } catch (error) {
     controller.abort(error);
     await session?.close();
@@ -2098,9 +2158,13 @@ async function savedPlanAvailable(plan, settings) {
   catch { return false; }
   finally { client.close(); }
 }
-function matchesTargetResolution(release, settings) {
+// Retain validated fallbacks, but reuse lower quality only for a resume.
+// Fresh plays must still get a chance to meet the requested target.
+function matchesTargetResolution(release, settings, allowLower = false) {
   const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[settings.targetResolution];
-  return !target || releaseResolution({ title: release }) === target;
+  if (!target) return true;
+  const resolution = releaseResolution({ title: release });
+  return resolution === target || (allowLower && resolution > 0 && resolution < target);
 }
 export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed, torrentOnly = false, archiveCheck = search === findReleases && load === loadNzb && check === postedFileAvailable ? archiveArticlesAvailable : null, archiveHeader = search === findReleases && load === loadNzb && check === postedFileAvailable ? archiveHeaderReadiness : null, hints = search === findReleases && load === loadNzb && check === postedFileAvailable ? releaseHints : null } = {}) {
   let torrentAttempted = false;
@@ -2111,6 +2175,14 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
   };
   job.frameInterpolation = Boolean(settings.frameInterpolation);
   const automaticForeground = !job.manualRelease && !settings.manualReleaseSelection && !job.backgroundFor && !job.speculative && !job.prepareAhead && !job.offlineDownload;
+  if (automaticForeground && job.selectionStart > 0) {
+    const retained = await takeRetainedHlsSession(job, settings, job.selectionStart);
+    if (retained) {
+      job.preparedSession = retained;
+      setJob(job, 'ready', 'Resuming prepared playback.', 100);
+      return;
+    }
+  }
   const providerHints = hints?.forProvider(settings);
   const equivalentPreference = release => `${releaseAudioConfidence(release)}:${releaseSizeTier(release, job.media, settings)}:${releaseResolution(release)}:${releaseScore(release, job.media, settings)}:${playbackStrategy('candidate.mkv', release.title)}`;
   const recoveringSource = Boolean(job.rejectedReleases?.size);
@@ -2131,7 +2203,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs: 20000 });
       if (!job.manualRelease && !settings.manualReleaseSelection && !job.speculative
         && job.archiveSource?.randomAccess && job.archiveSource.complete && !job.archiveSource.failure
-        && !job.archiveSource.closed && matchesTargetResolution(job.release, settings)) {
+        && !job.archiveSource.closed && matchesTargetResolution(job.release, settings, true)) {
         await persistence?.setPlan(job.media, settings, {
           archives: job.archives, release: job.release, releaseKey: job.releaseKey, strategy: job.strategy
         }).catch(() => {});
@@ -2192,10 +2264,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     if (!job.manualRelease) {
       let plan = plans.get(job.media, playbackScope(settings));
       if (plan && releaseDynamicRange(plan.release) !== 'sdr') plans.delete(job.media);
-      if (plan && (!matchesTargetResolution(plan.release, settings) || releaseDynamicRange(plan.release) !== 'sdr')) plan = null;
+      if (plan && (!matchesTargetResolution(plan.release, settings, job.selectionStart > 0) || releaseDynamicRange(plan.release) !== 'sdr')) plan = null;
       if (!plan && persistence) {
         const saved = savedPlan;
-        if (saved?.file?.segments?.length && postedFileByteLayout(saved.file) && matchesTargetResolution(saved.release, settings)
+        if (saved?.file?.segments?.length && postedFileByteLayout(saved.file) && matchesTargetResolution(saved.release, settings, job.selectionStart > 0)
           && releaseDynamicRange(saved.release) === 'sdr'
           && !job.rejectedReleases?.has(saved.releaseKey || saved.release) && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
           // A restored plan keeps its original validation, with a cheap live
@@ -2236,7 +2308,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     if (!job.manualRelease && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && !job.progressiveArchiveDisabled) {
       const saved = archivePlans.get(job.media, playbackScope(settings));
       if (saved && releaseDynamicRange(saved.release) !== 'sdr') archivePlans.delete?.(job.media);
-      if (saved && matchesTargetResolution(saved.release, settings) && releaseDynamicRange(saved.release) === 'sdr'
+      if (saved && matchesTargetResolution(saved.release, settings, job.selectionStart > 0) && releaseDynamicRange(saved.release) === 'sdr'
         && !job.rejectedReleases?.has(saved.releaseKey || saved.release)
         && !await health.has(settings, job.media, saved.releaseKey || saved.release)) {
         Object.assign(job, saved, { archiveResume: true, status: 'selecting', mode: 'direct', progress: 45, message: 'Reusing the archive video prepared earlier.' });
@@ -2251,7 +2323,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
     if (progressive && savedPlan?.archives?.length && !job.manualRelease && !settings.manualReleaseSelection
       && !job.offlineDownload && !job.prepareAhead && !job.backgroundFor && !job.downloadReplacement && !job.progressiveArchiveDisabled
-      && matchesTargetResolution(savedPlan.release, settings) && releaseDynamicRange(savedPlan.release) === 'sdr'
+      && matchesTargetResolution(savedPlan.release, settings, job.selectionStart > 0) && releaseDynamicRange(savedPlan.release) === 'sdr'
       && !job.rejectedReleases?.has(savedPlan.releaseKey || savedPlan.release)
       && !await health.has(settings, job.media, savedPlan.releaseKey || savedPlan.release)) {
       const releaseKey = savedPlan.releaseKey || savedPlan.release;
@@ -2533,7 +2605,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             continue;
           }
           throwIfDownloadCancelled(job);
-          if (matchesTargetResolution(release.title, settings)) {
+          if (matchesTargetResolution(release.title, settings, true)) {
             plans.set(job.media, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, videoAcceleration: job.videoAcceleration, prefetchedSegments: new Map(job.speculative ? [] : [[0, firstSegment]]) }, playbackScope(settings));
             if (persistence) await persistence.setPlan(job.media, settings, { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy }).catch(() => {});
           }
@@ -3205,8 +3277,20 @@ export async function handleRequest(req, res) {
             }
             await session?.close(); session = undefined;
           }
-          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report, undefined, undefined, { audioTrack: input.audioTrack }), onClose: () => hlsSessions.delete(id), onMonitor: playbackOutputMonitor(job) });
-          hlsSessions.set(id, { jobId, session });
+          const retained = await takeRetainedHlsSession(job, settings, start, { audioTrack: input.audioTrack, excludeSessionUrl: input.excludeSessionUrl, allowActive: true });
+          if (retained) {
+            delivered = true;
+            if (streaming) return res.end(JSON.stringify({ type: 'ready', session: retained }) + '\n');
+            return json(res, 200, retained);
+          }
+          await makeHlsRoom();
+          const entry = hlsSessionEntry(id, job, settings, start, input.audioTrack ?? null);
+          session = await createHlsSession({ root: PLAYBACK_CACHE_ROOT, produce: directory => startHlsConversion(job, settings, start, directory, report, undefined, undefined, { audioTrack: input.audioTrack }), onClose: () => {
+            hlsSessions.delete(entry.id);
+            if (entry.job.preparedSession?.sessionUrl === entry.result?.sessionUrl) delete entry.job.preparedSession;
+          }, onMonitor: playbackOutputMonitor(job) });
+          entry.session = session;
+          hlsSessions.set(id, entry);
           if (cancelled) { await session.close(); return; }
           // Growing archives must read through the resume prefix. Keep useful
           // extraction alive, but bound both inactivity and total preparation.
@@ -3224,7 +3308,8 @@ export async function handleRequest(req, res) {
             timer.unref();
           }
           delivered = true;
-          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}`, duration: job.sourceDuration || 0, tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: Boolean(job.sourcePath || job.path || job.archiveSource?.complete) };
+          const result = { playlistUrl: `/api/play/${jobId}/hls/${id}/index.m3u8`, sessionUrl: `/api/play/${jobId}/hls/${id}`, duration: job.sourceDuration || 0, tracks: job.playbackTracks || [], selectedAudioTrack: job.selectedAudioTrack, captionsAvailable: Boolean(job.sourcePath || job.path || job.archiveSource?.complete), start, offset: start, position: 0 };
+          Object.assign(entry, { validated: true, result });
           if (streaming) { report(2); return res.end(JSON.stringify({ type: 'ready', session: result }) + '\n'); }
           return json(res, 200, result);
         } catch (error) {
@@ -3241,7 +3326,13 @@ export async function handleRequest(req, res) {
       }
       const entry = hlsSessions.get(sessionId);
       if (!entry || entry.jobId !== jobId) return json(res, 404, { error: 'Playback segments have expired.' });
-      if (req.method === 'POST' && asset === 'stop') { jobEvent(job, 'hls-stop', 'Browser stopped the playback session.', { sessionId }); await entry.session.close(); return json(res, 200, { stopped: true }); }
+      if (req.method === 'POST' && asset === 'stop') {
+        const discard = url.searchParams.get('discard') === '1';
+        jobEvent(job, 'hls-stop', discard ? 'Browser discarded the playback session.' : 'Retaining stopped playback segments for resume.', { sessionId });
+        if (discard || !entry.validated || job.cancelled || entry.session.health().failed) await entry.session.close();
+        else entry.session.detach();
+        return json(res, 200, { stopped: true });
+      }
       if (req.method === 'POST' && asset === 'heartbeat') { entry.session.touch(); entry.session.playbackState(await body(req)); return json(res, 200, {}); }
       if (req.method === 'GET' && asset === 'status') { entry.session.touch(); return json(res, 200, { ...entry.session.health(), sourceRejected: Boolean(job.rejectedReleases?.has(job.releaseKey || job.release)) }); }
       if (['GET', 'HEAD'].includes(req.method) && /\.(m3u8|mp4|m4s)$/.test(asset)) {

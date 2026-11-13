@@ -29,6 +29,33 @@ test('archive resume reuses extraction without repeating release search', async 
   }
 });
 
+test('a resumed fallback archive skips search without changing fresh-play quality or exceeding the target', async () => {
+  for (const [targetResolution, start, reuse] of [['2160p', 30, true], ['2160p', 0, false], ['720p', 30, false]]) {
+    const cache = createArchiveResumeCache(), f = fixture();
+    const saved = { ...f.plan, release: 'Film.1080p' };
+    let searched = 0;
+    try {
+      cache.set(media, 'scope', saved);
+      const job = { media, selectionStart: start, events: [] };
+      await preparePlayback(job, { usenetHost: 'fixture', targetResolution, playbackQuality: 'fast' }, {
+        archivePlans: { get: () => cache.get(media, 'scope') },
+        plans: createPlaybackPlanCache(), health: { has: async () => false },
+        search: async () => { searched++; return [{ title: `Film.${targetResolution}` }]; },
+        load: async () => '<nzb><file subject="film.mp4"><segments><segment number="1">article</segment></segments></file></nzb>',
+        check: async () => Buffer.from('video'),
+        preflight: async (_candidate, _settings, offset) => ({ sessionUrl: '/prepared/archive', start: offset })
+      });
+      assert.equal(job.status, 'ready');
+      assert.equal(job.release, reuse ? saved.release : `Film.${targetResolution}`);
+      assert.equal(searched, reuse ? 0 : 1);
+      if (reuse) {
+        assert.equal(job.archiveSource, f.source);
+        assert.equal(job.preparedSession.start, 30);
+      }
+    } finally { cache.clear(); }
+  }
+});
+
 test('a slow resumed 2160p archive falls back to a playable 1080p release', async () => {
   const f = fixture(), checked = [], rejected = [];
   const archive = { ...f.plan, release: 'Film.2160p', releaseKey: 'Film.2160p' };

@@ -4,12 +4,12 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { parse } from 'svelte/compiler';
 import { readPlaybackSetup } from '../src/lib/playback-setup.js';
-import { bufferedRecoveryTarget, canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline } from '../src/lib/playback-controls.js';
+import { bufferedRecoveryTarget, canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, shouldContinuePlayback, resumePosition, resumeStreamUrl, progressDuration, resolvedMediaDuration, playbackTimeline } from '../src/lib/playback-controls.js';
 import { createStartupReporter } from '../src/lib/startup-reports.js';
 
 const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
 const ast = parse(source);
-const names = ['handlePlaybackInterruption', 'offerPlaybackRecovery', 'fallback', 'showReadyPlayback', 'restorePlaybackProgress', 'attemptAutomaticPlayback', 'controlTimeline', 'handleEnded'];
+const names = ['handlePlaybackInterruption', 'offerPlaybackRecovery', 'fallback', 'showReadyPlayback', 'updatePlaybackSession', 'playbackStreamUrl', 'restorePlaybackProgress', 'attemptAutomaticPlayback', 'controlTimeline', 'handleEnded'];
 const handlers = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name)).map(node => source.slice(node.start, node.end)).join('\n');
 const restartHandler = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && node.id.name === 'restartStream').map(node => source.slice(node.start, node.end)).join('\n');
 
@@ -20,16 +20,16 @@ function recoveryState(retries = 0) {
     currentMedia: { title: 'Friday Night Dinner', season: 2, episode: 3 },
     player: { currentTime: 12, duration: 1400, paused: true, play: async () => { state.plays++; } },
     plays: 0, automaticStreamRetries: retries, playbackDiagnostics: false,
-    playbackRecovery: null, playbackNeedsAction: false, playbackSettled: true, pendingBufferedRecovery: null, preparedSession: null,
+    playbackRecovery: null, playbackNeedsAction: false, playbackSettled: true, pendingBufferedRecovery: null, preparedSession: null, playbackSessionUrl: null, excludeSessionUrl: undefined,
     connectionLost: false, interruptedWhileOffline: false,
     continuePlaybackOnReady: false, playing: true, resumeStarting: false, streamRestarting: false,
-    resumeStreamOffset: 128, recoveryPosition: 0, resumePlayback: false,
+    streamStart: 128, resumeStreamOffset: 128, recoveryPosition: 0, resumePlayback: false,
     restoredMediaKey: 'episode', currentPlaybackRequestToken: 1,
     interruptionTimer: null, startupStableTimer: null, diagnosticPollTimer: null, fallbackPending: false,
     sourceDuration: 1400, clearTimeout() {}, setTimeout() { return 1; },
     canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, bufferedRecoveryTarget,
-    shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline,
-    captureVideoDiagnostics() {}, playerPosition: 12, playerDuration: 1400, seekPreview: null,
+    shouldContinuePlayback, resumePosition, resumeStreamUrl, progressDuration, resolvedMediaDuration, playbackTimeline,
+    captureVideoDiagnostics() {}, playerPosition: 12, playerDuration: 1400, seekPreview: null, bufferedRanges: [],
     currentPlaybackPosition: () => state.player.currentTime + state.resumeStreamOffset,
     savePlaybackProgress: async () => {}, stopBackgroundPlayback() {},
     settlePlaybackWarmup() {}, beginPlaybackWarmup() { state.playbackSettled = false; },
@@ -137,7 +137,7 @@ for (const [reason, evidence] of [
 test('a failed torrent seek retains its requested position and adopts the replacement preflight', async () => {
   const { state, requests } = recoveryState();
   state.playback.sourceKind = 'torrent';
-  state.resumeStreamOffset = 600;
+  state.streamStart = state.resumeStreamOffset = 600;
   state.resumeStarting = state.streamRestarting = true;
   state.api.post = async (url, input) => {
     requests.push(url);
@@ -223,15 +223,20 @@ test('a ready replacement waits for the buffered edge before handing playback ov
     player: { currentTime: 12, paused: false, buffered: { length: 1, start: () => 0, end: () => 30 } },
     resumeStreamOffset: 100, streamAttempt: 0, pendingBufferedRecovery: null, buffering: false,
     bufferedRecoveryTarget, readPlaybackSetup, AbortSignal, AbortController,
-    playbackTrace: { event() {} }, interpolationDisabled: false,
+    playbackTrace: { event() {} }, interpolationDisabled: false, selectedAudioTrack: 2,
     currentPlaybackPosition: () => state.player.currentTime + 100,
     setInterval: callback => { tick = callback; return 1; }, clearInterval() {},
-    fetch: async url => { requests.push(url); return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ sessionUrl: '/prepared', playlistUrl: '/prepared/index.m3u8' }) }; },
+    fetch: async (url, options) => {
+      requests.push(url);
+      assert.equal(JSON.parse(options.body).audioTrack, 2);
+      assert.equal(JSON.parse(options.body).excludeSessionUrl, '/rejected');
+      return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ sessionUrl: '/prepared', playlistUrl: '/prepared/index.m3u8' }) };
+    },
     restartStream: (position, session) => { state.handoff = { position, session }; },
     fallback() { assert.fail('The replacement is ready'); }, handlePlaybackInterruption() {}
   };
   runInNewContext(code, state);
-  state.prepareBufferedSourceRecovery();
+  state.prepareBufferedSourceRecovery('/rejected');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(state.handoff, undefined, 'the old buffered source must keep playing');
   assert.deepEqual(requests, ['/api/play/movie/hls']);
@@ -251,7 +256,7 @@ test('replacement preparation failure leaves buffered playback running until it 
     player: { currentTime: 12, paused: false, buffered: { length: 1, start: () => 0, end: () => 30 } },
     resumeStreamOffset: 100, streamAttempt: 0, pendingBufferedRecovery: null, buffering: false,
     bufferedRecoveryTarget, readPlaybackSetup, AbortSignal, AbortController,
-    playbackTrace: { event() {} }, interpolationDisabled: false,
+    playbackTrace: { event() {} }, interpolationDisabled: false, selectedAudioTrack: null,
     currentPlaybackPosition: () => state.player.currentTime + 100,
     setInterval: callback => { tick = callback; return 1; }, clearInterval() {},
     fetch: async () => ({ ok: false, headers: { get: () => 'application/json' }, json: async () => ({ error: 'No source', code: 'SOURCE_UNAVAILABLE' }) }),
@@ -397,4 +402,64 @@ test('an interpolation buffering timeout downgrades once instead of repeating th
   assert.match(state.playerControlError, /original frame rate/i);
   state.handlePlaybackInterruption('buffering-timeout', 'Still stalled.');
   assert.equal(state.automaticStreamRetries, 1, 'ordinary recovery remains bounded after interpolation is disabled');
+});
+
+for (const [start, offset, position, sessionTime] of [
+  [30, 0, 30, { start: 30, offset: 0, position: 30 }],
+  [130, 100, 30, { start: 130, offset: 100, position: 30 }],
+  [30, 30, 0, { start: 30 }]
+]) {
+  test(`prepared resume at ${start} adopts origin ${offset} without doubling the playhead`, async () => {
+    const { state } = recoveryState();
+    state.recoveryPosition = start;
+    const session = { sessionUrl: '/retained', playlistUrl: '/retained/index.m3u8', ...sessionTime };
+    await state.showReadyPlayback({ id: 'episode', status: 'ready', mode: 'direct', streamUrl: '/stream', preparedSession: session }, 2);
+    assert.equal(state.preparedSession, session);
+    assert.equal(state.streamStart, start);
+    assert.equal(state.resumeStreamOffset, offset, 'captions and progress use the converter origin');
+    assert.equal(state.playerPosition, position);
+    assert.equal(state.controlTimeline().position, start);
+    assert.equal(state.playbackStreamUrl(), `/stream?start=${start}`);
+    state.player.currentTime = position;
+    assert.equal(state.currentPlaybackPosition(), start);
+  });
+
+  test(`fetched resume metadata for ${start} cannot change the source request key`, () => {
+    const { state } = recoveryState();
+    state.streamStart = state.resumeStreamOffset = start;
+    state.playback.streamUrl = '/stream';
+    const sourceUrl = state.playbackStreamUrl();
+    state.updatePlaybackSession(sessionTime);
+    assert.equal(state.streamStart, start);
+    assert.equal(state.playbackStreamUrl(), sourceUrl);
+    assert.equal(state.resumeStreamOffset, offset);
+    assert.equal(state.playerPosition, position);
+    assert.equal(state.controlTimeline().position, start);
+  });
+}
+
+test('buffered recovery handoff adopts a retained playlist origin without losing its absolute request', () => {
+  const { state } = recoveryState();
+  state.streamAttempt = 0;
+  runInNewContext(restartHandler, state);
+  const session = { sessionUrl: '/retained', playlistUrl: '/retained/index.m3u8', start: 130, offset: 100, position: 30 };
+  state.restartStream(130, session);
+  assert.equal(state.streamStart, 130);
+  assert.equal(state.resumeStreamOffset, 100);
+  assert.equal(state.playerPosition, 30);
+  assert.equal(state.controlTimeline().position, 130);
+  assert.equal(state.streamAttempt, 1);
+  assert.equal(state.preparedSession, session);
+});
+
+test('watchdog recovery discards and excludes a browser-stalled retained session', () => {
+  const { state } = recoveryState();
+  const requests = [];
+  state.fetch = async (url, options) => { requests.push({ url, options }); return { ok: true }; };
+  state.updatePlaybackSession({ sessionUrl: '/stalled', offset: 0, position: 30 });
+  state.player.currentTime = 30;
+  state.handlePlaybackInterruption('buffering-timeout', 'No advancing frames.');
+  assert.equal(state.excludeSessionUrl, '/stalled');
+  assert.equal(state.restartedAt, 30);
+  assert.equal(requests[0].url, '/stalled/stop?discard=1');
 });

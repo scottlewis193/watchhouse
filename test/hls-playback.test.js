@@ -416,3 +416,107 @@ test('interpolation opt-out recreates only the session and sends the native-fram
     assert.deepEqual(JSON.parse(sessions[1].options.body), {start: 311, frameInterpolation: false});
   } finally { source.destroy(); globalThis.window = oldWindow; }
 });
+
+for (const prepared of [true, false]) {
+  for (const [sessionTime, offset, position] of [
+    [{ start: 30, offset: 0, position: 30 }, 0, 30],
+    [{ start: 130, offset: 100, position: 30 }, 100, 30],
+    [{ start: 30 }, 30, 0]
+  ]) test(`${prepared ? 'prepared' : 'fetched'} HLS starts at playlist position ${position} with origin ${offset}`, async t => {
+    const requests = [], instances = [], sessions = [];
+    const session = { sessionUrl: '/retained', playlistUrl: '/retained/index.m3u8', ...sessionTime };
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, json: async () => session };
+    });
+    const oldWindow = globalThis.window;
+    globalThis.window = { addEventListener() {}, removeEventListener() {} };
+    class Hls {
+      static isSupported = () => true;
+      static Events = {};
+      constructor(config) { this.config = config; instances.push(this); }
+      on() {}
+      attachMedia() { assert.equal(sessions[0], session, 'the page must know the origin before media is attached'); }
+      loadSource() {}
+      destroy() {}
+    }
+    const options = {
+      hlsUrl: '/hls', start: sessionTime.start, preparedSession: prepared ? session : undefined,
+      onSession: value => sessions.push(value), onError: assert.fail
+    };
+    const source = playbackSource({ currentTime: 0, removeAttribute() {}, load() {} }, options, async () => ({ default: Hls }));
+    try {
+      await setImmediate();
+      assert.equal(instances[0].config.startPosition, position);
+      source.update({ ...options, offset });
+      await setImmediate();
+      assert.equal(instances.length, 1, 'publishing a server origin must not recreate the source');
+      assert.equal(requests.filter(request => request.url === '/hls').length, prepared ? 0 : 1);
+    } finally { source.destroy(); globalThis.window = oldWindow; }
+    assert.ok(requests.some(request => request.url === '/retained/stop'), 'normal detach retains the converter through stop');
+  });
+}
+
+for (const sessionTime of [{ start: 30, offset: 0, position: 30 }, { start: 130, offset: 100, position: 30 }, { start: 30 }]) {
+  test(`native HLS applies playlist-relative position after metadata for ${JSON.stringify(sessionTime)}`, async t => {
+    t.mock.method(globalThis, 'fetch', async () => ({ ok: true }));
+    const oldWindow = globalThis.window;
+    globalThis.window = { addEventListener() {}, removeEventListener() {} };
+    const events = new EventTarget();
+    const video = {
+      currentTime: 0, canPlayType: () => 'probably', removeAttribute() {}, load() {},
+      addEventListener: events.addEventListener.bind(events)
+    };
+    const source = playbackSource(video, {
+      hlsUrl: '/hls', start: sessionTime.start,
+      preparedSession: { sessionUrl: '/native', playlistUrl: '/native/index.m3u8', ...sessionTime }, onError: assert.fail
+    }, async () => ({ default: class { static isSupported = () => false; } }));
+    try {
+      await setImmediate();
+      assert.equal(video.currentTime, 0, 'seeking must wait for the new playlist metadata');
+      events.dispatchEvent(new Event('loadedmetadata'));
+      assert.equal(video.currentTime, sessionTime.position || 0);
+      video.currentTime = 45;
+      events.dispatchEvent(new Event('loadedmetadata'));
+      assert.equal(video.currentTime, 45, 'later metadata must not undo native pause/resume or seeking');
+    } finally { source.destroy(); globalThis.window = oldWindow; }
+  });
+}
+
+for (const native of [false, true]) test(`${native ? 'native media' : 'exhausted HLS'} failure discards and excludes its session on replacement`, async t => {
+  const requests = [], errors = [];
+  let fatal;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, json: async () => url.endsWith('/status') ? { failed: false, closed: false } : { sessionUrl: '/replacement', playlistUrl: '/replacement/index.m3u8' } };
+  });
+  const oldWindow = globalThis.window;
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  const events = new EventTarget();
+  const video = {
+    currentTime: 30, canPlayType: () => 'probably', removeAttribute() {}, load() {},
+    addEventListener: events.addEventListener.bind(events)
+  };
+  class Hls {
+    static isSupported = () => !native;
+    static Events = { ERROR: 'error' };
+    on(event, callback) { if (event === 'error') fatal = callback; }
+    attachMedia() {} loadSource() {} destroy() {}
+  }
+  const options = { hlsUrl: '/hls', start: 30, preparedSession: { sessionUrl: '/bad', playlistUrl: '/bad/index.m3u8', offset: 0, position: 30 }, onError: (...args) => errors.push(args) };
+  const source = playbackSource(video, options, async () => ({ default: Hls }));
+  try {
+    await setImmediate();
+    if (native) events.dispatchEvent(new Event('error'));
+    else fatal(null, { fatal: true, details: 'manifestParsingError' });
+    await setImmediate();
+    assert.equal(errors.length, 1);
+    assert.ok(requests.some(request => request.url === '/bad/stop?discard=1'));
+    source.update({ ...options, preparedSession: null, attempt: 1 });
+    await setImmediate();
+    const request = requests.find(request => request.url === '/hls');
+    assert.equal(JSON.parse(request.options.body).excludeSessionUrl, '/bad');
+    assert.equal(JSON.parse(request.options.body).start, 30);
+    assert.equal(requests.some(request => request.url === '/bad/stop'), false, 'a bad session must never be retained by normal cleanup');
+  } finally { source.destroy(); globalThis.window = oldWindow; }
+});

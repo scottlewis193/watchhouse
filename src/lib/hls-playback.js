@@ -1,14 +1,14 @@
 import { playbackSetupProgress, readPlaybackSetup } from './playback-setup.js';
 
-// Each source owns its converter. Segment retries reuse that source's completed files.
+// Each attached source owns playback; normal detach retains its validated converter.
 export function playbackSource(video, initial, loadHls = () => import('hls.js')) {
-  let key, dispose = () => {};
+  let key, excludedSessionUrl, dispose = () => {};
   function update(options) {
     const nextKey = `${options.active}:${options.url}:${options.hlsUrl}:${options.start}:${options.attempt}:${options.audioTrack}:${options.frameInterpolation}:${options.preparedSession?.sessionUrl || ''}`;
     if (key === nextKey) return;
     key = nextKey; dispose(false);
     if (options.active === false) { video.pause(); return; }
-    let closed = false, hls, sessionUrl, heartbeat, buffered = false, localRecoveries = 0, recoveryPending = false, networkRecoveryPending = false, recoveryTimer, setupTimer;
+    let closed = false, failed = false, hls, sessionUrl, heartbeat, buffered = false, localRecoveries = 0, recoveryPending = false, networkRecoveryPending = false, recoveryTimer, setupTimer;
     const controller = new AbortController();
     const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
     const waitForOnline = () => offline() ? new Promise(resolve => {
@@ -31,6 +31,16 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
     };
     window.addEventListener('online', resumeNetwork);
     const post = path => fetch(path, { method: 'POST', keepalive: true }).catch(() => {});
+    const failSource = (message, evidence) => {
+      if (closed || failed) return;
+      failed = true;
+      clearTimeout(recoveryTimer); clearInterval(heartbeat);
+      if (sessionUrl) {
+        excludedSessionUrl = sessionUrl;
+        void post(`${sessionUrl}/stop?discard=1`);
+      }
+      options.onError(message, evidence);
+    };
     const stop = (resetMedia = true) => {
       if (closed) return;
       closed = true; controller.abort(); clearInterval(heartbeat); clearTimeout(recoveryTimer); clearTimeout(setupTimer);
@@ -39,7 +49,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       // or seek source. An explicit load() here discards its autoplay context
       // and can make the next episode require another user gesture.
       if (resetMedia) { video.removeAttribute('src'); video.load(); }
-      if (sessionUrl) void post(`${sessionUrl}/stop`);
+      if (sessionUrl) void post(`${sessionUrl}/stop${failed ? '?discard=1' : ''}`);
       window.removeEventListener('pagehide', stop);
       window.removeEventListener('online', resumeNetwork);
     };
@@ -57,7 +67,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
         if (offline()) await waitForOnline();
         if (closed) return;
         try {
-          const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack, frameInterpolation: options.frameInterpolation }), signal: controller.signal });
+          const response = await fetch(options.hlsUrl, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify({ start: options.start, audioTrack: options.audioTrack, frameInterpolation: options.frameInterpolation, excludeSessionUrl: options.excludeSessionUrl || excludedSessionUrl }), signal: controller.signal });
           session = await readPlaybackSetup(response, progress => { if (!closed) options.onProgress?.(progress); });
           if (!response.ok) throw Object.assign(new Error(session.error || 'Unable to prepare playback.'), { code: session.code, terminal: true });
         } catch (error) {
@@ -72,6 +82,8 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       if (closed) { void post(`${sessionUrl}/stop`); return; }
       options.onTracks?.({ tracks: session.tracks || [], selectedAudioTrack: session.selectedAudioTrack, captionsAvailable: session.captionsAvailable });
       if (Number.isFinite(session.duration) && session.duration > 0) options.onDuration?.(session.duration);
+      options.onSession?.(session);
+      const position = Number.isFinite(session.position) ? Math.max(0, session.position) : 0;
       heartbeat = setInterval(() => void fetch(`${sessionUrl}/heartbeat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ paused: video.paused, position: video.currentTime }), signal: controller.signal }).catch(() => {}), 5000);
       const loaded = await library;
       if (closed) return;
@@ -79,12 +91,17 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       const { default: Hls } = loaded.value;
       // Prefer MSE: Chromium may advertise native HLS yet reject its segments.
       if (!Hls.isSupported()) {
-        if (video.canPlayType('application/vnd.apple.mpegurl')) { video.addEventListener?.('error', () => options.onError('Segmented playback encountered a browser media error.', { sessionUrl }), { signal: controller.signal }); video.src = session.playlistUrl; return; }
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.addEventListener?.('error', () => failSource('Segmented playback encountered a browser media error.', { sessionUrl }), { signal: controller.signal });
+          video.addEventListener?.('loadedmetadata', () => { if (!closed) video.currentTime = position; }, { once: true, signal: controller.signal });
+          video.src = session.playlistUrl;
+          return;
+        }
         throw new Error('This browser cannot play segmented video.');
       }
-      hls = new Hls(playbackBufferConfig(typeof navigator === 'undefined' ? {} : navigator));
+      hls = new Hls({ ...playbackBufferConfig(typeof navigator === 'undefined' ? {} : navigator), startPosition: position });
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (closed) return;
+        if (closed || failed) return;
         const httpStatus = Number(data.response?.code || data.networkDetails?.status) || null;
         const evidence = { hlsDetails: data.details, httpStatus, sessionUrl };
         if (data.type) evidence.hlsType = data.type;
@@ -95,7 +112,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
           clearTimeout(recoveryTimer);
           return;
         }
-        const fail = () => { if (!closed) options.onError(`Segmented playback failed: ${data.details}${httpStatus ? ` (HTTP ${httpStatus})` : ''}`, evidence); };
+        const fail = () => failSource(`Segmented playback failed: ${data.details}${httpStatus ? ` (HTTP ${httpStatus})` : ''}`, evidence);
         recoveryPending = true;
         void (async () => {
           try {
@@ -103,7 +120,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
             const health = await response.json();
             if (closed) return;
             if (response.ok && health.sourceRejected) {
-              options.onError('This release has missing or invalid video data. Trying another source.', { ...evidence, code: 'SOURCE_REJECTED' });
+              failSource('This release has missing or invalid video data. Trying another source.', { ...evidence, code: 'SOURCE_REJECTED' });
               return;
             }
             if (!response.ok || health.failed || health.closed) { fail(); return; }
@@ -126,7 +143,7 @@ export function playbackSource(video, initial, loadHls = () => import('hls.js'))
       hls.on(Hls.Events.FRAG_BUFFERED, () => { if (!closed && !buffered) { buffered = true; options.onProgress?.(playbackSetupProgress(3)); } });
       hls.attachMedia(video);
       hls.loadSource(session.playlistUrl);
-    })().catch(error => { clearTimeout(setupTimer); if (!closed) options.onError(error.message, { code: error.code }); });
+    })().catch(error => { clearTimeout(setupTimer); failSource(error.message, { code: error.code, ...(sessionUrl ? { sessionUrl } : {}) }); });
   }
   update(initial);
   return { update, destroy: () => dispose() };

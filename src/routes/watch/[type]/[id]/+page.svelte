@@ -33,6 +33,10 @@
   let cacheClearing = $state(false), cacheMessage = $state(''), cacheError = $state('');
   let resumeStreamOffset = $state(0), resumeStarting = $state(false), streamRestarting = $state(false), resumePlayback = $state(false), playbackSettled = $state(false), playbackNeedsAction = $state(false), playbackRecovery = $state(null), streamAttempt = $state(0), bulkUpdating = $state(false), bulkError = $state('');
   let preparedSession = $state(null);
+  // Requested absolute start stays stable when a retained playlist reports its origin.
+  let streamStart = $state(0);
+  let playbackSessionUrl = null;
+  let excludeSessionUrl = $state();
   let pendingBufferedRecovery = null;
   let fallbackPending = false;
   let seekPaused = false, seekTimer, statusFailures = 0, lastAdvancedPosition = 0, lastDiagnosticAt = 0, firstAdvancedSource = '';
@@ -273,7 +277,7 @@
       sourceDuration = 0;
       clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer);
       clearBufferedSourceRecovery(); preparedSession = null;
-      restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; resumeStreamOffset = 0; resumeStarting = false; streamRestarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; seekPaused = false; interpolationDisabled = false; buffering = false; statusFailures = 0; lastAdvancedPosition = 0; clearTimeout(seekTimer); seekTimer = null; playerPosition = 0; bufferedRanges = []; playerDuration = 0; seekPreview = null; audioFrameSample = null; automaticStreamRetries = 0;
+      restoredMediaKey = ''; autoMarkedMediaKey = ''; recoveryPosition = 0; streamStart = 0; resumeStreamOffset = 0; resumeStarting = false; streamRestarting = false; resumePlayback = resume; playbackSettled = false; playbackNeedsAction = false; playbackRecovery = null; streamAttempt = 0; seekPaused = false; interpolationDisabled = false; buffering = false; statusFailures = 0; lastAdvancedPosition = 0; clearTimeout(seekTimer); seekTimer = null; playerPosition = 0; bufferedRanges = []; playerDuration = 0; seekPreview = null; audioFrameSample = null; automaticStreamRetries = 0;
       clearTimeout(interruptionTimer); showPlayerControls();
       playback = preparedJob || { status: 'selecting', message: 'Finding the best available release…', progress: 3 };
       let early;
@@ -310,12 +314,16 @@
   async function showReadyPlayback(job, requestToken) {
     const entry = progressFor(currentMedia);
     const duration = progressDuration(job.mode, player?.duration) || resolvedMediaDuration(sourceDuration, currentMedia?.durationHint, entry?.duration);
-    resumeStreamOffset = hasGrowingStreamDuration(job.mode) ? recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0) : 0;
-    if (job.preparedSession?.start === resumeStreamOffset) preparedSession = job.preparedSession;
+    streamStart = hasGrowingStreamDuration(job.mode) ? recoveryPosition || (resumePlayback ? resumePosition(entry, duration) : 0) : 0;
+    resumeStreamOffset = streamStart;
+    preparedSession = null;
+    playbackSessionUrl = null; excludeSessionUrl = undefined;
+    if (job.preparedSession?.start === streamStart) preparedSession = job.preparedSession;
     else if (job.preparedSession?.sessionUrl) void fetch(`${job.preparedSession.sessionUrl}/stop`, { method: 'POST', keepalive: true }).catch(() => {});
     if (hasGrowingStreamDuration(job.mode)) recoveryPosition = 0;
     beginPlaybackWarmup();
     playback = job;
+    if (preparedSession) updatePlaybackSession(preparedSession);
     if (shouldContinuePlayback(continuePlaybackOnReady, job)) {
       await tick();
       if (playbackRequests.isCurrent(requestToken) && playback?.id === job.id) void attemptAutomaticPlayback();
@@ -573,7 +581,14 @@
   }
 
   function currentPlaybackPosition() { return Math.max(0, Number(player?.currentTime) || 0) + (hasGrowingStreamDuration(playback?.mode) ? resumeStreamOffset : 0); }
-  function playbackStreamUrl() { return resumeStreamUrl(playback?.streamUrl, playback?.mode, resumeStreamOffset); }
+  function playbackStreamUrl() { return resumeStreamUrl(playback?.streamUrl, playback?.mode, streamStart); }
+  function updatePlaybackSession(session) {
+    playbackSessionUrl = session.sessionUrl;
+    if (!hasGrowingStreamDuration(playback?.mode)) return;
+    resumeStreamOffset = Number.isFinite(session.offset) ? Math.max(0, session.offset) : streamStart;
+    playerPosition = Number.isFinite(session.position) ? Math.max(0, session.position) : 0;
+    bufferedRanges = [];
+  }
 
   function beginPlaybackWarmup(restarting = false) {
     bufferingReports.finish('source-changed');
@@ -726,7 +741,7 @@
       else void fallback();
     }
   }
-  function prepareBufferedSourceRecovery() {
+  function prepareBufferedSourceRecovery(excludeSessionUrl) {
     if (pendingBufferedRecovery || !playback?.hlsUrl || !player) return;
     const start = bufferedRecoveryTarget(player.buffered, player.currentTime, resumeStreamOffset);
     if (start === null) { restartStream(currentPlaybackPosition()); return; }
@@ -738,7 +753,7 @@
       try {
         const response = await fetch(playback.hlsUrl, {
           method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
-          body: JSON.stringify({ start, frameInterpolation: interpolationDisabled ? false : undefined }),
+          body: JSON.stringify({ start, audioTrack: selectedAudioTrack, frameInterpolation: interpolationDisabled ? false : undefined, excludeSessionUrl }),
           signal: AbortSignal.any([pending.controller.signal, AbortSignal.timeout(120000)])
         });
         const session = await readPlaybackSetup(response);
@@ -759,7 +774,10 @@
     clearTimeout(interruptionTimer); clearTimeout(startupStableTimer);
     playbackTrace.event('stream-restart', { position });
     bufferedRanges = [];
-    resumeStreamOffset = hasGrowingStreamDuration(playback?.mode) ? Math.max(0, position || 0) : 0;
+    streamStart = hasGrowingStreamDuration(playback?.mode) ? Math.max(0, position || 0) : 0;
+    resumeStreamOffset = streamStart;
+    playerPosition = 0;
+    if (session) updatePlaybackSession(session);
     if (playback?.mode === 'cached') recoveryPosition = Math.max(0, position || 0);
     lastAdvancedPosition = Math.max(0, position || 0);
     audioFrameSample = null;
@@ -790,9 +808,13 @@
       return;
     }
     if (['PLAYBACK_BUSY', 'PLAYBACK_STORAGE_LIMIT', 'INVALID_AUDIO_TRACK'].includes(evidence.code)) { playback = { ...playback, status: 'error', message }; return; }
+    if (playbackSessionUrl) {
+      excludeSessionUrl = playbackSessionUrl;
+      void fetch(`${playbackSessionUrl}/stop?discard=1`, { method: 'POST', keepalive: true }).catch(() => {});
+    }
     const torrent = playback.sourceKind === 'torrent';
     if (evidence.code === 'SOURCE_REJECTED' && !torrent) {
-      prepareBufferedSourceRecovery();
+      prepareBufferedSourceRecovery(evidence.sessionUrl || excludeSessionUrl);
       return;
     }
     const action = torrent || ['SOURCE_UNAVAILABLE', 'PLAYBACK_SEGMENT_TIMEOUT', 'PLAYBACK_TIMEOUT'].includes(evidence.code) ? 'offer' : streamInterruptionAction(playback, automaticStreamRetries, 3, reason);
@@ -808,7 +830,7 @@
     if (action === 'offer' && (torrent || canUseFallback(playback))) {
       // During a failed seek, the retained media may still report the old
       // currentTime. Retry the requested offset, not that time plus the offset.
-      void fallback(torrent && (resumeStarting || streamRestarting) ? resumeStreamOffset : null);
+      void fallback(torrent && (resumeStarting || streamRestarting) ? streamStart : null);
       return;
     }
     if (action !== 'retry') { offerPlaybackRecovery(message, evidence.code === 'SOURCE_UNAVAILABLE', reason); return; }
@@ -1040,14 +1062,16 @@
         }
       }
       void savePlaybackProgress(true);
-      clearBufferedSourceRecovery(); preparedSession = null;
+      clearBufferedSourceRecovery();
       const paused = seekTimer ? seekPaused : player.paused;
       seekPaused = paused;
       clearTimeout(seekTimer);
       seekPreview = target;
       seekTimer = setTimeout(() => {
-        seekTimer = null; seekPreview = null;
+        seekTimer = null; seekPreview = null; preparedSession = null;
+        streamStart = target;
         resumeStreamOffset = target;
+        streamAttempt++;
         playerPosition = 0; bufferedRanges = [];
         videoFrameSample = null; measuredFrameStats = null;
         beginPlaybackWarmup(true);
@@ -1075,7 +1099,8 @@
     if (!audioTracks.some(track => track.index === index)) return;
     clearBufferedSourceRecovery(); preparedSession = null;
     seekPaused = player?.paused || false;
-    resumeStreamOffset = currentPlaybackPosition();
+    streamStart = currentPlaybackPosition();
+    resumeStreamOffset = streamStart;
     playerPosition = 0;
     selectedAudioTrack = index;
     if (!playback.hlsUrl) playback = { ...playback, mode: 'cached-convert', hlsUrl: `/api/play/${playback.id}/hls` };
@@ -1253,7 +1278,7 @@
           {#if playbackDiagnostics && diagnosticsOpen && playback?.status === 'ready'}{@render diagnosticsPanel()}{/if}
           <!-- Keep the video element through episode preparation so browser playback permission survives. -->
           <!-- svelte-ignore a11y_media_has_caption -->
-          <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} playsinline preload="auto" use:frameTiming={{ key: `${playback?.id}:${streamAttempt}:${resumeStreamOffset}:${selectedAudioTrack}`, onSample: sample => { frameTimingStats = sample; const { intervals, ...summary } = sample; playbackTrace.event('frame-timing', summary); } }} use:playbackSource={{ active: playback?.status === 'ready', attempt: streamAttempt, url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: resumeStreamOffset, preparedSession, audioTrack: selectedAudioTrack, frameInterpolation: interpolationDisabled ? false : undefined, onTracks: updatePlaybackTracks, onEvent: (type, details) => playbackTrace.event(type, details), onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: updateSetupProgress, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); if (!playback?.hlsUrl) handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onseeking={() => { videoFrameSample = null; measuredFrameStats = null; captureVideoDiagnostics('seeking'); }} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { if (!playback?.hlsUrl) void loadCachedTracks(); updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}>
+          <video class="h-full w-full bg-black object-contain transition-opacity focus:outline-none" class:opacity-0={playbackUi.hideVideo} class:cursor-none={playing && !controlsVisible} bind:this={player} tabindex={playbackUi.hideVideo ? -1 : 0} aria-hidden={playbackUi.hideVideo} aria-label={`${media.title} video player`} playsinline preload="auto" use:frameTiming={{ key: `${playback?.id}:${streamAttempt}:${streamStart}:${selectedAudioTrack}`, onSample: sample => { frameTimingStats = sample; const { intervals, ...summary } = sample; playbackTrace.event('frame-timing', summary); } }} use:playbackSource={{ active: playback?.status === 'ready', attempt: streamAttempt, url: playbackStreamUrl(), hlsUrl: playback?.hlsUrl, start: streamStart, preparedSession, excludeSessionUrl, audioTrack: selectedAudioTrack, frameInterpolation: interpolationDisabled ? false : undefined, onSession: updatePlaybackSession, onTracks: updatePlaybackTracks, onEvent: (type, details) => playbackTrace.event(type, details), onError: (message, evidence) => handlePlaybackInterruption('media-error', message, evidence), onProgress: updateSetupProgress, onDuration: value => { sourceDuration = value; } }} onclick={togglePlayback} onerror={() => { captureVideoDiagnostics('error'); if (!playback?.hlsUrl) handlePlaybackInterruption('media-error', 'The direct stream encountered a playback error.'); }} onprogress={updateBufferedRanges} onseeking={() => { videoFrameSample = null; measuredFrameStats = null; captureVideoDiagnostics('seeking'); }} onloadstart={() => { bufferedRanges = []; }} onemptied={() => { bufferedRanges = []; }} onloadedmetadata={() => { if (!playback?.hlsUrl) void loadCachedTracks(); updateBufferedRanges(); restorePlaybackProgress(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('metadata loaded'); }} oncanplay={handleCanPlay} ondurationchange={() => { updateBufferedRanges(); playerDuration = Number.isFinite(player?.duration) ? player.duration : 0; captureVideoDiagnostics('duration changed'); }} ontimeupdate={handleTimeUpdate} onplay={() => { playing = true; captureVideoDiagnostics('play'); }} onplaying={handlePlaying} onwaiting={handleStartupBuffering} onstalled={handleStartupBuffering} onpause={handlePause} onvolumechange={() => { playerVolume = player?.volume ?? 1; playerMuted = player?.muted ?? false; }} onended={handleEnded}>
             {#if selectedCaptionTrack !== 'off'}<track kind="subtitles" label="Captions" src={`/api/play/${playback.id}/captions/${selectedCaptionTrack}.vtt?start=${resumeStreamOffset}`} default onload={enableCaptions} onerror={() => { playerControlError = 'Could not load captions. Try another caption track.'; }} />{/if}
           </video>
           {#if playback?.status === 'ready'}
