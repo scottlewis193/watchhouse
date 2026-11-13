@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { parse } from 'svelte/compiler';
 import { createBufferingReporter } from '../src/lib/buffering-reports.js';
+import { createStartupReporter } from '../src/lib/startup-reports.js';
 
 // Run the actual page handlers with controlled media events and timers.
 const source = await readFile(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
@@ -11,7 +12,7 @@ const ast = parse(source);
 const names = ['handlePause', 'handleStartupBuffering', 'updateSetupProgress', 'attemptAutomaticPlayback', 'refreshDiagnostics', 'handleTimeUpdate'];
 const handlers = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name)).map(node => source.slice(node.start, node.end)).join('\n');
 function playerState() {
-  const timers = new Map(); let next = 0;
+  const timers = new Map(), startupReports = []; let next = 0;
   const state = {
     player: { paused: false, play: async () => { state.plays++; } },
     plays: 0, interruptions: 0, playing: true, playbackSettled: true,
@@ -26,8 +27,12 @@ function playerState() {
     clearTimeout: id => timers.delete(id)
   };
   Object.assign(state, { bufferingReports: { start() {}, finish() {} }, seekPaused: false, seekTimer: null, buffering: false, connectionLost: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} }, traceSource: () => 'fixture', firstAdvancedSource: '' });
+  state.startupReports = createStartupReporter({
+    capture: () => ({ jobId: state.playback?.id }), send: report => startupReports.push(report),
+    schedule: state.setTimeout, cancel: state.clearTimeout
+  });
   runInNewContext(handlers, state);
-  return { state, timers };
+  return { state, timers, startupReports };
 }
 
 test('a stalled event after pause does not restart the stream as a seek', () => {

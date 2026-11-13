@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { parse } from 'svelte/compiler';
 import { readPlaybackSetup } from '../src/lib/playback-setup.js';
 import { bufferedRecoveryTarget, canUseFallback, streamInterruptionAction, hasGrowingStreamDuration, shouldContinuePlayback, resumePosition, progressDuration, resolvedMediaDuration, playbackTimeline } from '../src/lib/playback-controls.js';
+import { createStartupReporter } from '../src/lib/startup-reports.js';
 
 const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
 const ast = parse(source);
@@ -13,7 +14,7 @@ const handlers = ast.instance.content.body.filter(node => node.type === 'Functio
 const restartHandler = ast.instance.content.body.filter(node => node.type === 'FunctionDeclaration' && node.id.name === 'restartStream').map(node => source.slice(node.start, node.end)).join('\n');
 
 function recoveryState(retries = 0) {
-  const requests = [], polls = [];
+  const requests = [], polls = [], startupReports = [];
   const state = {
     playback: { id: 's02e03', status: 'ready', mode: 'direct', revision: 7 },
     currentMedia: { title: 'Friday Night Dinner', season: 2, episode: 3 },
@@ -41,8 +42,12 @@ function recoveryState(retries = 0) {
     prepareBufferedSourceRecovery: () => { state.preparingReplacement = true; }, clearBufferedSourceRecovery() {}
   };
   Object.assign(state, { bufferingReports: { start() {}, finish() {} }, seekPaused: false, seekTimer: null, buffering: false, statusFailures: 0, lastAdvancedPosition: 0, lastDiagnosticAt: 0, AbortSignal, playbackTrace: { event() {} } });
+  state.startupReports = createStartupReporter({
+    capture: () => ({ jobId: state.playback?.id }), send: report => startupReports.push(report),
+    schedule: state.setTimeout, cancel: state.clearTimeout
+  });
   runInNewContext(handlers, state);
-  return { state, requests, polls };
+  return { state, requests, polls, startupReports };
 }
 
 for (const unavailable of [true, false]) test(unavailable

@@ -1,5 +1,13 @@
 # Playback startup optimisation — 14 September 2026
 
+## Publishing integration correction (2026-11-13)
+
+The Docker full-suite check exposed four VM-harness failures: extracted recovery
+and watchdog handlers referenced `startupReports`, but those harnesses did not
+supply it. They now use the real startup reporter with controlled scheduling and
+captured reports, matching the page dependency without suppressing diagnostics.
+All 41 recovery/watchdog tests passed after the correction.
+
 ## Successful-source restart, linear probes and longer Play intent (2026-11-13)
 
 ### Changes
