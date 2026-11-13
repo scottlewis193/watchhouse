@@ -196,17 +196,19 @@ test('a stalled metadata result does not consume the deadline for a later playab
     assert.equal(selected.title, 'Silo.S01E02.1080p.x264.Second');
   } finally { await service.close(); }
 });
-test('well-seeded playback remains reachable before tiny unavailable swarms exhaust selection', async () => {
+test('oversized healthy torrents remain reachable after under-cap swarms fail', async () => {
   const releases = [
     ...['a', 'b', 'c', 'd'].map((hash, index) => ({ hash, size: 200e6 + index, seeds: 1 })),
     { hash: 'e', size: 2800e6, seeds: 69 }
   ];
+  const attempted = [];
   const service = createTorrentStreaming({
-    timeoutMs: 120, metadataTimeoutMs: 50,
+    timeoutMs: 500, metadataTimeoutMs: 50,
     request: async (url, { signal }) => {
       if (url.pathname === '/api') return new Response(`<rss>${releases.map(({ hash, size, seeds }) =>
         `<item><title>Silo.S01E02.1080p.x264.${hash}</title><torznab:attr name="seeders" value="${seeds}"/><enclosure url="https://indexer.example/${hash}" length="${size}"/></item>`
       ).join('')}</rss>`);
+      attempted.push(url.pathname);
       if (url.pathname === '/e') return new Response('healthy torrent metadata');
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('Metadata request was not cancelled.')), 1000);
@@ -218,6 +220,7 @@ test('well-seeded playback remains reachable before tiny unavailable swarms exha
   try {
     const selected = await service.select(media, { ...settings, targetResolution: 'auto' });
     assert.equal(selected.infoHash, 'e'.repeat(40));
+    assert.deepEqual(attempted, ['/a', '/b', '/c', '/d', '/e']);
   } finally { await service.close(); }
 });
 

@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { isIP } from 'node:net';
-import { englishAudioRelease, episodeTag, playbackStrategy, rankReleases, releaseResolution, releaseTitleMatches, titleVariants } from '../../../media.js';
+import { englishAudioRelease, episodeTag, playbackStrategy, rankReleases, releaseResolution, releaseSizeTier, releaseTitleMatches, titleVariants } from '../../../media.js';
 import { createConversionAdmission } from './conversion-admission.js';
 import { createSegmentCache } from './segment-cache.js';
 
@@ -47,8 +47,9 @@ export function torrentFileSelection(parsed, media, release = {}) {
     // A single-file episode release may omit its tag from the actual filename.
     return parsed.files.filter(entry => /\.(?:mp4|m4v|mov|mkv|webm)$/i.test(entry.path || entry.name)).length === 1 && episodeMatches(release.title, media);
   });
-  if (media.type !== 'tv' && !releaseTitleMatches(release, media)) throw new Error('Torrent does not match the requested movie.');
+  if (media.type !== 'tv' && candidates.length === 1 && !releaseTitleMatches(release, media)) throw new Error('Torrent does not match the requested movie.');
   if (media.type !== 'tv' && candidates.length > 1) {
+    // Collection names need not name one movie. Require its actual filename.
     candidates = candidates.filter(file => {
       const name = String(file.path || file.name).split(/[\\/]/).at(-1);
       const years = name.replace(/_/g, '.').match(/\b(?:19|20)\d{2}\b/g) || [];
@@ -90,7 +91,7 @@ function rankTorrentReleases(releases, media, settings) {
     // Indexer titles often omit the container. H264 can still remux in an MKV;
     // actual metadata and playback validation remain authoritative.
     const subject = /\.(?:mkv|mp4|m4v|mov|webm)(?:"|\s|$)/i.test(release.title) ? release.title : 'candidate.mkv';
-    const key = `${fastest ? 'auto' : releaseResolution(release)}:${playbackStrategy(subject, release.title)}:${settings.allowUnverifiedAnimeAudio ? englishAudioRelease(release) : true}`;
+    const key = `${releaseSizeTier(release, media, settings)}:${fastest ? 'auto' : releaseResolution(release)}:${playbackStrategy(subject, release.title)}:${settings.allowUnverifiedAnimeAudio ? englishAudioRelease(release) : true}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(index);
   }

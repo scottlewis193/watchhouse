@@ -1,34 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from '../src/lib/server/playback-capacity.js';
+import { preparePlayback } from '../src/lib/server/streamer.js';
 
-test('recent provider speed uses a conservative median and expires', () => {
-  let time = 0;
-  const meter = createProviderSpeedMeter({ now: () => time });
-  const settings = { usenetHost: 'provider', usenetUser: 'viewer', maxConnections: 4 };
-  meter.record(settings, 1024 * 1024, 1000);
-  assert.equal(meter.rate(settings), 1024 * 1024);
-  meter.record(settings, 1024 * 1024, 2000);
-  assert.equal(meter.rate(settings), 512 * 1024);
-  meter.record(settings, 1024 * 1024, 500);
-  assert.equal(meter.rate(settings), 1024 * 1024);
-  assert.equal(meter.rate({ ...settings, usenetUser: 'other' }), null);
-  time += 10 * 60 * 1000;
-  assert.equal(meter.rate(settings), null);
-});
-
-test('one slow article check cannot pin the provider estimate below later healthy samples', () => {
-  const meter = createProviderSpeedMeter();
-  const settings = { usenetHost: 'provider', maxConnections: 4 };
-  for (const rate of [1_500_000, 5_000_000, 8_000_000]) meter.record(settings, rate, 1000);
-  assert.equal(meter.rate(settings), 5_000_000);
-});
-
-test('release size and duration are only a conservative speed screen', () => {
-  const file = { segments: [{ decodedBytes: 6_000_000 }, { decodedBytes: 6_000_000 }] };
-  assert.equal(candidatePlaybackDemand(file, 60), 300_000);
-  assert.equal(candidateNeedsMoreSpeed(file, 60, 250_000), true);
-  assert.equal(candidateNeedsMoreSpeed(file, 60, 400_000), false);
-  assert.equal(candidatePlaybackDemand(file, 0), null);
-  assert.equal(candidateNeedsMoreSpeed(file, 0, 10), false);
-});
+for (const cached of [false, true]) {
+  test(`conversion capacity exhaustion preserves healthy ${cached ? 'saved' : 'new'} sources instead of scanning alternatives`, async () => {
+    const media = { type: 'movie', id: 42, title: 'Film', year: '2024' };
+    const releases = ['Preferred', 'Alternative'].map(name => ({ title: `Film.2024.1080p.English.${name}` }));
+    const file = { subject: 'film.mkv', segments: [{ id: 'article', number: 1 }] };
+    const plan = { release: releases[0].title, releaseKey: 'saved', file, strategy: 'remux', prefetchedSegments: new Map() };
+    let searches = 0, probes = 0, deleted = 0, rejected = 0;
+    const job = { id: `capacity-${cached}`, media, events: [], status: 'selecting' };
+    await preparePlayback(job, { usenetHost: 'provider', playbackQuality: 'quality' }, {
+      search: async () => { searches++; return releases; },
+      load: async () => '<nzb><file subject="film.mkv"><segments><segment number="1">article</segment></segments></file></nzb>',
+      check: async () => Buffer.from('header'),
+      preflight: async () => { probes++; throw Object.assign(new Error('All playback conversion slots are in use.'), { code: 'PLAYBACK_BUSY' }); },
+      cache: async () => { throw new Error('Unexpected downloaded fallback'); },
+      plans: { get: () => cached ? plan : null, set() {}, delete: () => { deleted++; } },
+      archivePlans: { get: () => null, delete() {} },
+      health: { has: async () => false, reject: async () => { rejected++; } },
+      persistence: null
+    });
+    assert.equal(job.status, 'error');
+    assert.equal(probes, 1);
+    assert.match(job.message, /conversion slots are in use/);
+    assert.equal(searches, cached ? 0 : 1);
+    assert.equal(deleted, 0);
+    assert.equal(rejected, 0);
+  });
+}

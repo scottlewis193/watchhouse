@@ -62,3 +62,50 @@ test('rejects malformed and oversized browser reports before saving', async () =
   const value = { jobId: 'silo', incident: { id: 'one', outcome: 'buffering' } };
   assert.deepEqual(await readBufferingReport(Readable.from([JSON.stringify(value)])), value);
 });
+
+const startupReport = (overrides = {}) => ({
+  jobId: null, media: { id: 42, type: 'movie', title: 'Example' },
+  incident: { kind: 'startup', id: 'attempt-one', startedAt: 1000, durationMs: 0, outcome: 'started', targetMs: 10000, stage: 'selection', ...overrides }
+});
+
+test('accepts startup reports before a job exists and rejects invalid startup contracts', async () => {
+  const input = startupReport();
+  assert.deepEqual(await readBufferingReport(Readable.from([JSON.stringify(input)])), input);
+  for (const incident of [
+    { outcome: 'buffering' }, { durationMs: -1 }, { durationMs: null }, { startedAt: '1000' },
+    { targetMs: 3000 }, { stage: '' }, { id: '' }
+  ]) {
+    await assert.rejects(readBufferingReport(Readable.from([JSON.stringify(startupReport(incident))])), /valid startup report/);
+  }
+  for (const jobId of [undefined, 42, '']) {
+    await assert.rejects(readBufferingReport(Readable.from([JSON.stringify({ ...input, jobId })])), /valid startup report/);
+  }
+  await assert.rejects(readBufferingReport(Readable.from([JSON.stringify({ jobId: null, incident: { id: 'stall', outcome: 'buffering' } })])), /valid buffering report/);
+});
+
+test('startup identity survives job attachment and delayed nonterminal uploads', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'watchhouse-startup-reports-'));
+  try {
+    const path = join(root, 'reports.json');
+    const store = createBufferingReportStore(path);
+    await store.save(startupReport());
+    await store.save({ ...startupReport({ durationMs: 10000, outcome: 'slow' }), jobId: 'attached',
+      job: { id: 'attached', events: [{ message: 'https://private.test/path' }], releaseSelection: { token: 'private' } } });
+    await store.save(startupReport({ durationMs: 10000, outcome: 'slow' }));
+    let reports = await store.list();
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].jobId, 'attached');
+    assert.equal(reports[0].job.releaseSelection.token, '<REDACTED>');
+    assert.equal(reports[0].job.events[0].message, '<REDACTED_URL>');
+    await store.save({ ...startupReport({ durationMs: 10000, outcome: 'playing', stage: 'advancing' }), jobId: 'attached', job: reports[0].job });
+    await store.save(startupReport({ durationMs: 10000, outcome: 'slow' }));
+    await store.save(startupReport({ durationMs: 11000, outcome: 'slow' }));
+    reports = await createBufferingReportStore(path).list();
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].incident.outcome, 'playing');
+    assert.equal(reports[0].jobId, 'attached');
+    // Buffering incidents retain job-scoped identity even if their ID matches a startup.
+    await store.save({ jobId: 'attached', incident: { id: 'attempt-one', outcome: 'buffering' } });
+    assert.equal((await store.list()).length, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

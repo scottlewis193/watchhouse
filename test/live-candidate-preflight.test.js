@@ -277,21 +277,19 @@ test('parent cancellation also closes a session that finishes opening after canc
   assert.equal(closed, true);
 });
 
-for (const stage of ['metadata', 'timeline']) test(`torrent preflight kills a stalled ${stage} FFprobe within its own budget and allows a fresh inspection`, { timeout: 10000 }, async t => {
+for (const stage of ['headers', 'body']) test(`torrent preflight kills a source stalled at HTTP ${stage} within its inspection budget and allows a fresh inspection`, { timeout: 10000 }, async t => {
   const { stdout: video } = await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25:duration=2',
     '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-f', 'matroska', 'pipe:1'], { encoding: 'buffer' });
   const job = { id: `stalled-${stage}`, mode: 'cached-convert', strategy: 'remux', torrentSource: {}, diagnosticsEnabled: true, events: [] };
   let reachedStall, connectionClosed, stalledRequests = 0;
   const server = createServer((_req, res) => {
-    const timeline = job.events.some(event => event.activity === 'metadata-ready');
-    if (stage === 'metadata' || timeline) {
-      stalledRequests++;
-      res.on('close', () => connectionClosed());
-      reachedStall();
-    } else {
+    stalledRequests++;
+    res.on('close', () => connectionClosed());
+    if (stage === 'body') {
       res.writeHead(200, { 'content-type': 'video/x-matroska', 'content-length': video.length });
-      res.end(video);
+      res.write(video.subarray(0, 512));
     }
+    reachedStall();
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   job.sourcePath = `http://127.0.0.1:${server.address().port}/video.mkv`;

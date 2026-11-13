@@ -24,6 +24,14 @@ Playback still checks the selected source when opening it: a prepared choice is
 not a guarantee that articles or peers will remain available. Saved torrent
 metadata can contain private tracker URLs and is written with owner-only access.
 
+Release identity is checked against the leading movie/series title, including
+catalogue aliases, before quality ranking. Episode names and uploader-group names
+cannot satisfy a title match; sequels and labelled bonus features are excluded
+when requesting the main film. Bracketed uploader prefixes, punctuation, numeric
+titles and standard edition labels remain supported.
+Selections cached before these identity checks are reselected once on upgrade.
+Their records and completed offline downloads are not deleted.
+
 **Prepare stream selections for the rest of the series** is enabled by default and queues stream choices
 for every remaining aired episode, including later seasons. Unknown/future air
 dates are skipped. The queue advances serially and Usenet probes yield to active
@@ -305,20 +313,30 @@ configured retention policy. Browser-only seeks, buffering and player state
 still require the watch page's **Download diagnostic report**; enable Playback
 diagnostics before starting playback and download the report before refreshing.
 
+Every release-click playback attempt is reported automatically, even when
+**Playback diagnostics** is disabled and before a playback job exists. Startup
+reports measure from the click until video advances: they record `started`, `slow`
+at the 10-second target, and a terminal `playing`, `failed`, or `cancelled` outcome.
+Ten seconds is a measured target, not a guaranteed startup time. The same attempt
+is updated when a job attaches, including server-owned identity, recent events,
+and release-selection evidence; late uploads cannot undo a terminal outcome.
+
 With **Playback diagnostics** enabled, browser buffering lasting at least three
 seconds is saved automatically to `data/playback-diagnostics.json`. Reports include
 player samples before the stall, the stalled state, source/job identity, and recent
-server events. Recovery, pause, and retry update the same incident. The most recent
-20 incidents are retained (at most 128 KiB each), outside the playback cache, so
-refreshing or clearing an episode cache does not remove them. Failed reporting is
-best effort and does not affect playback. URLs and credential-shaped fields are
-redacted on both sides. The file is written with owner-only permissions.
+server events. Recovery, pause, and retry update the same incident. Startup and
+buffering reports share the most recent 20 incidents (at most 128 KiB each),
+outside the playback cache, so refreshing or clearing an episode cache does not
+remove them. Failed reporting is best effort and does not affect playback. URLs
+and credential-shaped fields are redacted on both sides. The file is written
+with owner-only permissions.
 
-Use **Download saved buffering reports** in the watch page's diagnostics panel to
+Use **Download saved playback reports** in the watch page's diagnostics panel to
 retrieve the saved history, or GET `/api/playback-diagnostics`. Container logs also
-include `browser-buffering` entries with the job, incident, position, buffer headroom,
-and duration. This feature needs the updated server and browser build deployed;
-existing images do not record these reports.
+include `browser-buffering` and `browser-startup` entries for reports with a known
+job, with the incident, position, buffer headroom, and duration. This feature needs
+the updated server and browser build deployed; existing images do not record these
+reports.
 
 ## Progressive archive playback
 

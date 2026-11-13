@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createReleaseHealthStore } from '../src/lib/server/release-health.js';
+import { articleSetIdentity, createReleaseHealthStore } from '../src/lib/server/release-health.js';
 
 test('rejected releases survive restart, stay provider-specific and expire', async () => {
   const dir=await mkdtemp(join(tmpdir(),'release-health-'));
@@ -29,6 +29,15 @@ test('upload identity separates reposts and stays stable across API key changes'
   assert.equal(one,releaseIdentity({title:'Same title',nzbUrl:'https://indexer.example/api?apikey=changed&id=one'}));
   assert.notEqual(one,releaseIdentity({title:'Same title',nzbUrl:'https://indexer.example/api?id=two'}));
   assert.match(one,/^upload:[a-f0-9]{64}$/);
+});
+
+test('article-set identity ignores names and ordering but never conflates changed or empty sets', () => {
+  const files = [{ subject: 'original.mkv', segments: [{ id: '<one@example>' }, { id: 'two@example' }] }];
+  const reordered = [{ subject: 'renamed.mkv', segments: [{ id: 'two@example' }, { id: ' one@example ' }, { id: 'two@example' }] }];
+  assert.equal(articleSetIdentity(files), articleSetIdentity(reordered));
+  assert.notEqual(articleSetIdentity(files), articleSetIdentity([{ segments: [{ id: 'one@example' }, { id: 'replacement@example' }] }]));
+  assert.notEqual(articleSetIdentity([{ segments: [{ id: 'ab' }, { id: 'c' }] }]), articleSetIdentity([{ segments: [{ id: 'a' }, { id: 'bc' }] }]));
+  assert.equal(articleSetIdentity([]), null);
 });
 
 test('clears remembered failures for only the selected episode', async () => {

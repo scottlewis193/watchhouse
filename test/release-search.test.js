@@ -1,9 +1,77 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { catalogueAlternativeTitles, findReleases } from '../src/lib/server/streamer.js';
+import { rankReleases } from '../media.js';
 const media = { type: 'tv', title: 'Silo', season: 1, episode: 1 };
 const settings = { indexerUrl: 'https://indexer.example', indexerKey: 'test' };
 const xml = (start, count, total) => `<rss><newznab:response offset="${start}" total="${total}" />${Array.from({length:count}, (_, i) => `<item><title>Silo.S01E01.1080p.H264.Release${start+i}</title><enclosure url="https://indexer.example/nzb/${start+i}" /></item>`).join('')}</rss>`;
+
+test('movie searches reject title words in release groups, other films and bonus features', async () => {
+  const correct = 'Inception.2010.1080p.BluRay.x264-GROUP';
+  const titles = [
+    'How to Train Your Dragon.2010.Ger.Eng.DL.AC3.1080p.BluRay.x264-iNCEPTiON',
+    'Alice.In.Wonderland.2010.Ger.Eng.AC3.DL.BDRip.x264-iNCEPTiON',
+    'Inception.The.Cobol.Job.2010.1080p.BDRip.x264.AC3-ViSiON',
+    'Inception.2010.Special.Features.1080p.BluRay.REMUX',
+    correct
+  ];
+  const request = async () => ({ ok: true, text: async () => `<rss>${titles.map((title, i) => `<item><title>${title}</title><enclosure url="https://indexer.example/nzb/${i}" /></item>`).join('')}</rss>` });
+  for (const manualReleaseSelection of [false, true]) {
+    const releases = await findReleases({ ...settings, manualReleaseSelection }, { type: 'movie', title: 'Inception', year: '2010' }, true, { request });
+    assert.deepEqual(releases.map(release => release.title), [correct]);
+  }
+});
+
+test('a sparse movie endpoint does not hide better releases available through general search', async () => {
+  const camera = 'Arrival.2016.HDCAM.x264.AC3-GROUP';
+  const healthy = 'Arrival.2016.2160p.WEB-DL.H265-GROUP';
+  for (const genericFails of [false, true]) {
+    const releases = await findReleases({ ...settings, playbackQuality: 'quality' },
+      { type: 'movie', title: 'Arrival', year: '2016' }, true, {
+        request: async url => {
+          const generic = url.searchParams.get('t') === 'search';
+          if (generic && genericFails) throw new Error('Generic endpoint unavailable');
+          const title = generic ? healthy : camera;
+          return new Response(`<rss><item><title>${title}</title><enclosure url="https://indexer.example/${generic ? 'web' : 'cam'}"/></item></rss>`);
+        }
+      });
+    assert.deepEqual(releases.map(release => release.title), genericFails ? [camera] : [healthy, camera]);
+  }
+});
+
+test('episode search rejects a different series year without confusing episode air years', async () => {
+  const titles = [
+    'The.Office.2001.S03E01.Christmas.Special.Part.1.1080p.H264',
+    'The.Office.2005.S03E01.Gay.Witch.Hunt.1080p.H264',
+    'The.Office.S03E01.2006.1080p.H264',
+    'The.Office.S03E01.Gay.Witch.Hunt.1080p.H264'
+  ];
+  const request = async () => new Response(`<rss>${titles.map((title, index) =>
+    `<item><title>${title}</title><enclosure url="https://indexer.example/${index}"/></item>`).join('')}</rss>`);
+  for (const manualReleaseSelection of [false, true]) {
+    const releases = await findReleases({ ...settings, manualReleaseSelection },
+      { type: 'tv', title: 'The Office', year: '2005', season: 3, episode: 1 }, true, { request });
+    assert.deepEqual(new Set(releases.map(release => release.title)), new Set(titles.slice(1)));
+  }
+});
+
+test('title boundaries retain uploader prefixes, editions, numeric titles and catalogue aliases', () => {
+  for (const [title, release, extra = {}] of [
+    ['Inception', '[Uploader] Inception.2010.1080p.BluRay.x264-GROUP'],
+    ['Inception', 'Inception.EXTENDED.2010.1080p.BluRay.x264-GROUP'],
+    ['Inception', 'Inception.mkv'],
+    ['2001: A Space Odyssey', '2001.A.Space.Odyssey.1968.1080p.BluRay'],
+    ['Blade Runner 2049', 'Blade.Runner.2049.2017.1080p.BluRay'],
+    ['Amélie', 'Amelie.2001.1080p.BluRay'],
+    ['千と千尋の神隠し', '千と千尋の神隠し.2001.1080p.BluRay'],
+    ['The Original Title', 'The.International.Title.2024.1080p.WEB-DL', { alternativeTitles: ['The International Title'] }]
+  ]) {
+    const candidate = { title: release };
+    assert.deepEqual(rankReleases([candidate], { type: 'movie', title, ...extra }), [candidate], release);
+  }
+  assert.deepEqual(rankReleases([{ title: 'The.Matrix.Reloaded.2003.1080p' }], { type: 'movie', title: 'The Matrix' }), []);
+  assert.deepEqual(rankReleases([{ title: 'Another.Show.Reacher.S02E03.1080p' }], { type: 'tv', title: 'Reacher', season: 2, episode: 3 }), []);
+});
 test('Silo episode search reports an indexer account error instead of no releases', async () => {
   let calls = 0;
   await assert.rejects(findReleases(settings, { ...media, episode: 2 }, true, {
@@ -24,6 +92,47 @@ test('automatic search orders target resolution before lower fallbacks while man
   const manual = await findReleases({ ...settings, targetResolution: '720p', manualReleaseSelection: true }, media, true, { request });
   assert.equal(manual.length, 3);
 });
+
+test('automatic search defers preset-oversized releases without hiding manual choices or fallbacks', async () => {
+  const movie = { type: 'movie', title: 'Film', year: '2024', durationHint: 3600 };
+  const sizes = [7, 5, 3, 0, 1];
+  const titles = sizes.map(size => `Film.2024.1080p.WEB-DL.H264.Release${size}`);
+  const request = async () => new Response(`<rss>${titles.map((title, index) =>
+    `<item><title>${title}</title><enclosure url="https://indexer.example/${index}" length="${sizes[index] * 1024 ** 3}"/></item>`).join('')}</rss>`);
+  for (const [playbackQuality, order] of [
+    ['fast', [4, 3, 0, 1, 2]],
+    ['balanced', [2, 4, 3, 0, 1]],
+    ['quality', [1, 2, 4, 3, 0]]
+  ]) {
+    const automatic = await findReleases({ ...settings, playbackQuality }, movie, true, { request });
+    assert.deepEqual(automatic.map(release => release.title), order.map(index => titles[index]));
+    const manual = await findReleases({ ...settings, playbackQuality, manualReleaseSelection: true }, movie, true, { request });
+    assert.deepEqual(manual.map(release => release.title), titles);
+  }
+});
+
+test('size deferral scales with runtime, includes the exact cap, and treats invalid sizes as unknown', () => {
+  const large = { title: 'Silo.S01E01.2160p.H264', size: 4 * 1024 ** 3 };
+  const small = { title: 'Silo.S01E01.1080p.H264', size: 1024 ** 3 };
+  const unknown = { title: 'Silo.S01E01.2160p.HEVC', size: 0 };
+  const preferences = { playbackQuality: 'fast', targetResolution: '2160p' };
+  for (const [selection, expected] of [
+    [{ ...media, durationHint: 1800 }, [small, unknown, large]],
+    [{ ...media, durationHint: 7200 }, [large, small, unknown]],
+    [{ ...media, durationHint: '7200' }, [large, small, unknown]],
+    [{ ...media, durationHint: 0 }, [small, unknown, large]],
+    [{ ...media, durationHint: -1 }, [small, unknown, large]],
+    [{ ...media, durationHint: Infinity }, [small, unknown, large]],
+    [{ ...media, type: 'movie', durationHint: NaN }, [large, small, unknown]]
+  ]) {
+    assert.deepEqual(rankReleases([large, unknown, small], selection, preferences), expected);
+  }
+  for (const size of [undefined, 0, -1, NaN, Infinity]) {
+    const invalid = { ...large, size };
+    assert.deepEqual(rankReleases([invalid, small], media, preferences), [small, invalid]);
+  }
+});
+
 test('automatic and manual searches omit HDR releases that need CPU tone mapping', async () => {
   const titles = ['Silo.S01E01.2160p.HDR10.HEVC', 'Silo.S01E01.2160p.SDR.HEVC', 'Silo.S01E01.1080p.H264'];
   const request = async () => ({ ok: true, text: async () => `<rss><newznab:response offset="0" total="3" />${titles.map((title, i) => `<item><title>${title}</title><enclosure url="https://indexer.example/nzb/${i}" /></item>`).join('')}</rss>` });

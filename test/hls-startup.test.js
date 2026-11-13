@@ -75,3 +75,37 @@ test('encoding overlaps validation but a failed check never releases the HLS ses
     assert.deepEqual((await readdir(root)).filter(name => name.startsWith('hls-')), [], 'discard speculative output after rejection');
   } finally { failValidation(new Error('cleanup')); await pending?.catch(() => {}); await rm(root, { recursive: true, force: true }); }
 });
+
+test('stored archive encoding can overlap header checks but failed headers never release a session', { timeout: 15000 }, async () => {
+  const { readdir } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'hls-archive-validation-'));
+  let failHeaders, conversionStarted, pending;
+  const completion = new Promise((_resolve, reject) => { failHeaders = reject; });
+  void completion.catch(() => {});
+  const started = new Promise(resolve => { conversionStarted = resolve; });
+  let settled = false;
+  try {
+    const input = join(root, 'source.mkv');
+    await run('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25', '-t', '20', '-c:v', 'libx264', '-preset', 'ultrafast', input]);
+    const source = { randomAccess: true, complete: false, completion, retain: () => ({ url: input, close() {} }) };
+    pending = createHlsSession({ root, produce: directory => startHlsConversion(
+      { progressiveArchive: true, archiveSource: source, file: { subject: 'source.mkv' }, strategy: 'remux', release: 'SDR', mode: 'direct' },
+      { preflight: true }, 0, directory, conversionStarted, async () => [],
+      () => ({ metadata: Promise.resolve({ audioIndex: null, duration: 20 }), validated: Promise.resolve() })
+    ) });
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    await started;
+    let produced = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if ((await readdir(root, { recursive: true })).some(name => name.endsWith('.m4s'))) { produced = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    if (!produced && settled) await pending;
+    assert.equal(produced, true, 'encoding must proceed during header validation');
+    assert.equal(settled, false, 'no session may expose media before every header passes');
+    const missing = Object.assign(new Error('Middle archive article missing'), { code: 'USENET_ARTICLE_MISSING' });
+    failHeaders(missing);
+    await assert.rejects(pending, error => error === missing);
+    assert.deepEqual((await readdir(root)).filter(name => name.startsWith('hls-')), []);
+  } finally { failHeaders(new Error('cleanup')); await pending?.catch(() => {}); await rm(root, { recursive: true, force: true }); }
+});

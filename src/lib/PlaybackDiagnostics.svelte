@@ -9,9 +9,9 @@
     savedReportError = '';
     try {
       const response = await fetch('/api/playback-diagnostics', { signal: AbortSignal.timeout(10000) });
-      if (!response.ok) throw new Error('Could not load saved buffering reports.');
-      downloadReport(await response.json(), 'watchhouse-saved-buffering-reports.json');
-    } catch { savedReportError = 'Could not download saved buffering reports. Try again.'; }
+      if (!response.ok) throw new Error('Could not load saved playback reports.');
+      downloadReport(await response.json(), 'watchhouse-saved-playback-reports.json');
+    } catch { savedReportError = 'Could not download saved playback reports. Try again.'; }
   }
   function downloadReport(report, filename) {
     const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }));
@@ -116,7 +116,7 @@
       {#if savedReportError}<p class="text-xs text-error" role="alert">{savedReportError}</p>{/if}
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h3 class="font-semibold uppercase tracking-[0.12em] text-base-content/55">Playback interruptions</h3>
-        <div class="flex flex-wrap gap-2"><button class="btn btn-xs" onclick={downloadSavedReports}>Download saved buffering reports</button><button class="btn btn-xs" disabled={!report && !interruptions.length} onclick={downloadTrace}>Download diagnostic report</button></div>
+        <div class="flex flex-wrap gap-2"><button class="btn btn-xs" onclick={downloadSavedReports}>Download saved playback reports</button><button class="btn btn-xs" disabled={!report && !interruptions.length} onclick={downloadTrace}>Download diagnostic report</button></div>
       </div>
       <p class="mt-2 text-base-content/55">Keeps the last 20 interruptions while this page is open, including player samples leading up to each one. Reports include startup, buffering events and recent frame timing. Presentation times are browser estimates; callback gaps and delays do not prove dropped frames. Download before reloading or leaving the page.</p>
       {#if interruptions.length}

@@ -1,5 +1,5 @@
 <script>
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { createProgressWriter } from '$lib/progress-writer.js';
   import { frameTiming } from '$lib/frame-timing.js';
   import { playbackSource } from '$lib/hls-playback.js';
@@ -15,9 +15,10 @@
   import PlaybackDiagnostics from '$lib/PlaybackDiagnostics.svelte';
   import { createPlaybackTrace, playbackTraceSample } from '$lib/playback-trace.js';
   import { createBufferingReporter, bufferingReportPayload } from '$lib/buffering-reports.js';
+  import { createStartupReporter } from '$lib/startup-reports.js';
   import PlaybackPreparation from '$lib/PlaybackPreparation.svelte';
   import { offlineAvailability, offlineEpisodeState, offlineMediaKey, offlineSeriesCatalogue } from '$lib/offline.js';
-  import { shouldPrewarmResume } from '$lib/poster-preparation.js';
+  import { preparePlayIntent, prewarmPlayback, shouldPrewarmResume } from '$lib/poster-preparation.js';
 
   const media = { id: Number(page.params.id), type: page.params.type, title: page.url.searchParams.get('title') || '', year: page.url.searchParams.get('year') || '', poster: page.url.searchParams.get('poster') || '' };
   const requestedSeason = page.url.searchParams.get('season') || '', requestedEpisode = page.url.searchParams.get('episode') || '', shouldResume = page.url.searchParams.get('resume') === '1', shouldStartImmediately = page.url.searchParams.get('play') === '1' || shouldResume;
@@ -47,6 +48,22 @@
   let setupProgress = $state(null);
   let sourceDuration = $state(0);
   const playbackTrace = createPlaybackTrace();
+  const startupReports = createStartupReporter({
+    capture: () => playback?.id ? bufferingReportPayload({ ...diagnosticReport(), snapshot: traceSample(), browser: navigator.userAgent }, playback.id) : null,
+    send: report => fetch('/api/playback-diagnostics', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(report), keepalive: true, signal: AbortSignal.timeout(10000)
+    })
+  });
+  $effect(() => {
+    const job = playback && { id: playback.id, status: playback.status, message: playback.message };
+    if (job?.id) untrack(() => startupReports.job(job));
+  });
+  onMount(() => {
+    const leaving = () => startupReports.finish('cancelled', { reason: 'navigation' });
+    window.addEventListener('pagehide', leaving);
+    return () => window.removeEventListener('pagehide', leaving);
+  });
   const bufferingReports = createBufferingReporter({
     capture: () => playbackDiagnostics && playback?.id ? bufferingReportPayload({ ...diagnosticReport(), snapshot: traceSample(), browser: navigator.userAgent }, playback.id) : null,
     send: report => fetch('/api/playback-diagnostics', {
@@ -90,7 +107,7 @@
     }
     backgroundTimer = setInterval(() => void reportBackgroundPlayback(), 3000);
     void initialise();
-    return () => { bufferingReports.finish('source-changed'); window.removeEventListener('offline', onOffline); window.removeEventListener('online', onOnline); clearBufferedSourceRecovery(); clearInterval(backgroundTimer); clearTimeout(seekTimer); stopBackgroundPlayback(); playbackRequests.cancel(); readinessController?.abort(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
+    return () => { startupReports.finish('cancelled', { reason: 'navigation' }); bufferingReports.finish('source-changed'); window.removeEventListener('offline', onOffline); window.removeEventListener('online', onOnline); clearBufferedSourceRecovery(); clearInterval(backgroundTimer); clearTimeout(seekTimer); stopBackgroundPlayback(); playbackRequests.cancel(); readinessController?.abort(); void savePlaybackProgress(true); clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(downloadPollTimer); clearTimeout(startupStableTimer); clearTimeout(startupFallbackTimer); clearTimeout(interruptionTimer); clearTimeout(controlHideTimer); clearTimeout(upNextTimer); clearTimeout(playerRevealTimer); player?.pause(); };
   });
 
   async function initialise() {
@@ -240,8 +257,10 @@
     const requestToken = playbackRequests.begin();
     playbackTrace.event('play-request', { media: selectedMedia.title, resume });
     currentPlaybackRequestToken = requestToken;
+    if (!offlineMode) startupReports.start(selectedMedia);
     try {
       void savePlaybackProgress(true);
+      playback = { status: 'selecting', message: 'Finding the best available release…', progress: 3 };
       clearTimeout(pollTimer); clearTimeout(nextPollTimer); clearTimeout(diagnosticPollTimer); clearTimeout(upNextTimer); nextMedia = null; nextJob = null; nextEpisodePreparation.reset(); continuePlaybackOnReady = autoAdvance; showUpNext = false; autoPlayNext = autoPlayNextEpisode; upNextStartedAt = 0; upNextSeconds = 30; upNextReason = ''; likelyCreditFrames = 0; creditSampleCount = 0; creditEvidence = []; lastCreditSampleAt = 0; lastCreditSample = null; creditSamplingError = ''; creditDiagnostics = null; videoDiagnostics = null; videoFrameSample = null; measuredFrameStats = null;
       if (selectedMedia.type === 'tv') {
         selectedSeason = String(selectedMedia.season);
@@ -271,7 +290,7 @@
       if (job.status === 'ready') return await showReadyPlayback(job, requestToken);
       playback = job;
       void poll(job.id, requestToken, 0);
-    } catch (e) { if (playbackRequests.isCurrent(requestToken)) playback = { status: 'error', message: e.message, progress: 0 }; }
+    } catch (e) { if (playbackRequests.isCurrent(requestToken)) { startupReports.finish('failed', { message: e.message }); playback = { status: 'error', message: e.message, progress: 0 }; } }
   }
 
   async function chooseRelease(selectedMedia, resume = false) {
@@ -427,7 +446,7 @@
   function prewarmCurrentResume(item) {
     const saved = progressFor(item);
     if (!shouldPrewarmResume({ position: saved?.position, online: navigator.onLine, saveData: navigator.connection?.saveData, offlineMode, manualReleaseSelection, shouldStartImmediately })) return;
-    void api.post('/api/play/prewarm', { id: item.id, type: item.type, season: item.season, episode: item.episode }).catch(() => {});
+    void prewarmPlayback(item).catch(() => {});
   }
   function selectedMediaItem() { return media.type === 'movie' ? media : episodePlaybackMedia(media, selectedSeason, selectedEpisode, episodes); }
   function isInLibrary() { return library.some(item => item.id === media.id && item.type === media.type); }
@@ -583,6 +602,7 @@
   }
   function handlePlaying() {
     if (setupProgress) setupProgress = playbackSetupProgress(4);
+    observeStartupFrames();
     clearTimeout(interruptionTimer); buffering = false; interruptionTimer = null; playing = true; continuePlaybackOnReady = false; playbackNeedsAction = false; playbackRecovery = null;
     captureVideoDiagnostics('playing');
     bufferingReports.finish('recovered');
@@ -594,6 +614,7 @@
   function updateSetupProgress(value) {
     const wasPreparing = playback?.hlsUrl && (!setupProgress || setupProgress.completed < 2);
     setupProgress = value;
+    if (value) startupReports.stage(`setup-${value.completed}`, { message: value.message, detail: value.detail });
     if (wasPreparing && value?.completed >= 2 && buffering && !interruptionTimer) handleStartupBuffering({ type: 'setup-ready' });
   }
   function handleStartupBuffering(event) {
@@ -630,6 +651,7 @@
 
   async function retryPlayback() {
     if (!playback?.id) return;
+    if (!offlineMode && currentMedia) startupReports.start(currentMedia);
     clearBufferedSourceRecovery(); preparedSession = null;
     const requestToken = playbackRequests.begin(), id = playback.id;
     currentPlaybackRequestToken = requestToken;
@@ -652,7 +674,7 @@
     if (playbackSettled && !continuePlaybackOnReady) return;
     try { await player.play(); }
     catch (error) {
-      if (error?.name === 'NotAllowedError') { playbackNeedsAction = true; settlePlaybackWarmup(); }
+      if (error?.name === 'NotAllowedError') { startupReports.stage('autoplay-blocked'); playbackNeedsAction = true; settlePlaybackWarmup(); }
     }
   }
   async function playPreparedVideo() {
@@ -662,6 +684,7 @@
     catch { playbackNeedsAction = true; }
   }
   function offerPlaybackRecovery(message, sourceUnavailable = false, reason = '') {
+    startupReports.finish('failed', { message, reason });
     if (playback?.mode === 'cached' && reason === 'buffering-timeout') {
       clearTimeout(interruptionTimer); settlePlaybackWarmup(); playing = false;
       playbackRecovery = { message: 'The downloaded video stopped making progress. You can retry from the same place.', cached: true, position: currentPlaybackPosition() };
@@ -893,9 +916,22 @@
     const ranges = player?.buffered;
     bufferedRanges = ranges ? Array.from({ length: ranges.length }, (_, index) => ({ start: ranges.start(index), end: ranges.end(index) })) : [];
   }
+  function observeStartupFrames() {
+    if (!player?.requestVideoFrameCallback) return;
+    const video = player, requestToken = currentPlaybackRequestToken, jobId = playback?.id;
+    video.requestVideoFrameCallback((_, first) => {
+      if (player !== video || playback?.id !== jobId || !playbackRequests.isCurrent(requestToken)) return;
+      video.requestVideoFrameCallback((_, next) => {
+        if (player === video && playback?.id === jobId && playbackRequests.isCurrent(requestToken) && !video.paused && !video.seeking && next.mediaTime > first.mediaTime) {
+          startupReports.finish('playing', { measurement: 'video-frame' });
+        }
+      });
+    });
+  }
   function handleTimeUpdate() {
     updateBufferedRanges();
     const advancedPosition = currentPlaybackPosition();
+    if (!player?.requestVideoFrameCallback && !player?.paused && !player?.seeking && advancedPosition > lastAdvancedPosition + 0.1) startupReports.finish('playing', { measurement: 'playhead' });
     if (advancedPosition > lastAdvancedPosition + 0.1) {
       if (buffering) playbackTrace.event('buffering-end', { source: traceSource() });
       bufferingReports.finish('recovered');
@@ -1061,6 +1097,7 @@
     guideOpen = open;
   }
   async function returnToHero() {
+    startupReports.finish('cancelled', { reason: 'cancelled-by-user' });
     if (document.fullscreenElement) await document.exitFullscreen();
     await savePlaybackProgress(true);
     player?.pause();
@@ -1202,7 +1239,7 @@
           {#if playback || heroLaunching}
             {@render heroPreparation(resumeStarting ? (resumeStreamOffset > 0 ? `Opening the stream and restoring your position at ${formatPosition(resumeStreamOffset)}…` : 'Opening the video stream and preparing the first frames…') : playback?.message, playback?.progress, playback?.status, resumeStarting || heroLaunching && !playback || playback?.status === 'extracting' || playback?.status === 'optimizing')}
           {:else}
-            <button class="hero-identity-play" onclick={playSelectedMedia} aria-label={`Play ${media.type === 'tv' ? episodes.find(episode => String(episode.number) === selectedEpisode)?.name || media.title : media.title}`}><span aria-hidden="true">▶</span><span>Play{currentMedia?.episodeTitle ? ` ${currentMedia.episodeTitle}` : ''}</span></button>
+            <button use:preparePlayIntent={!offlineMode && !manualReleaseSelection && selectedMediaItem() && !progressFor(selectedMediaItem())?.position && episodeDownloadState(selectedMediaItem()).status !== 'ready' ? selectedMediaItem() : null} class="hero-identity-play" onclick={playSelectedMedia} aria-label={`Play ${media.type === 'tv' ? episodes.find(episode => String(episode.number) === selectedEpisode)?.name || media.title : media.title}`}><span aria-hidden="true">▶</span><span>Play{currentMedia?.episodeTitle ? ` ${currentMedia.episodeTitle}` : ''}</span></button>
           {/if}
         </div>
       </div>

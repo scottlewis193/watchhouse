@@ -82,21 +82,34 @@ export function titleVariants(title) {
 function titleTokens(value) {
   return String(value || '')
     .toLowerCase()
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
     .replace(/['‘’`]/g, '')
     .replace(/&/g, ' and ')
-    .match(/[a-z0-9]+/g) || [];
+    .match(/[\p{L}\p{N}]+/gu) || [];
 }
 
 export function releaseTitleMatches(release, media) {
-  const expectedTitles = [media?.title, ...(media?.alternativeTitles || [])].flatMap(titleVariants).map(titleTokens);
-  if (!expectedTitles.length) return true;
-  // For episodes, the series name precedes the episode tag. Text after it can
-  // be an episode title belonging to an entirely different show.
-  const seriesTitle = media?.type === 'tv'
-    ? String(release?.title || '').split(/\b(?:s\d{1,2}[ ._-]*e\d{1,3}|\d{1,2}x\d{1,3})\b/i)[0]
-    : release?.title;
-  const actual = titleTokens(seriesTitle);
-  return expectedTitles.some(expected => actual.some((_, start) => expected.every((token, offset) => actual[start + offset] === token)));
+  const expectedTitles = [media?.title, ...(media?.alternativeTitles || [])].flatMap(titleVariants).map(titleTokens).filter(tokens => tokens.length);
+  if (!media?.title && !media?.alternativeTitles?.length) return true;
+  const title = String(release?.title || '').replace(/^(?:\s*\[[^\]]*\]\s*)+/, '');
+  // Episode names and release groups are not evidence of the requested title.
+  const episodic = media?.type === 'tv' || media?.season && media?.episode;
+  const actual = titleTokens(episodic
+    ? title.split(/\b(?:s\d{1,2}[ ._-]*e\d{1,3}|\d{1,2}x\d{1,3})\b/i)[0]
+    : title);
+  const seriesYear = episodic && /^(?:19|20)\d{2}$/.test(String(media.year)) ? String(media.year) : null;
+  return expectedTitles.some(expected => {
+    if (!expected.every((token, index) => actual[index] === token)) return false;
+    const suffixTokens = actual.slice(expected.length);
+    // A year before the episode tag identifies the series; years after it may
+    // instead identify the episode's air date.
+    if (seriesYear && suffixTokens.some(token => /^(?:19|20)\d{2}$/.test(token) && token !== seriesYear)) return false;
+    const suffix = suffixTokens.join(' ');
+    // A longer title is a different work, not a match for its shorter prefix.
+    if (suffix && !/^(?:(?:19|20)\d{2}|(?:480|576|720|1080|2160)[pi]|4k|uhd|blu ?ray|b[dr]rip|web(?: ?dl| ?rip)?|h ?26[45]|x26[45]|hevc|avc|av1|dvd(?:rip)?|remux|remastered|extended|unrated|uncut|directors cut|theatrical|criterion|imax|proper|repack|internal|eng(?:lish)?|multi|dual|mkv|mp4|m4v|avi|mov|m2?ts|webm)(?: |$)/.test(suffix)) return false;
+    return !/\b(?:special features|bonus|extras|featurettes?|making of|sample|trailer)\b/.test(suffix);
+  });
 }
 
 export function releaseScore(release, media, preferences = {}) {
@@ -163,6 +176,18 @@ export function releaseResolution(release) {
   return 0;
 }
 
+// Soft limits: keep unknown sizes and oversized releases available as fallbacks.
+export function releaseSizeTier(release, media, preferences = {}) {
+  if (preferences.manualReleaseSelection) return 0;
+  const size = Number(release.size);
+  if (!Number.isFinite(size) || size <= 0) return 1;
+  const duration = Number(media.durationHint);
+  const hours = Number.isFinite(duration) && duration > 0
+    ? duration / 3600 : media.type === 'tv' ? 0.75 : 2;
+  const gibPerHour = { fast: 2, balanced: 4, quality: 6 }[preferences.playbackQuality] || 4;
+  return size <= gibPerHour * hours * 1024 ** 3 ? 0 : 2;
+}
+
 export function rankReleases(releases, media, preferences) {
   const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[preferences?.targetResolution] || 0;
   return releases
@@ -171,6 +196,7 @@ export function rankReleases(releases, media, preferences) {
     .filter(release => releaseDynamicRange(release) === 'sdr')
     .filter(release => !target || releaseResolution(release) <= target)
     .sort((a, b) => (preferences?.allowUnverifiedAnimeAudio ? Number(englishAudioRelease(b)) - Number(englishAudioRelease(a)) : 0)
+      || releaseSizeTier(a, media, preferences) - releaseSizeTier(b, media, preferences)
       || (target ? releaseResolution(b) - releaseResolution(a) : 0)
       || releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
 }

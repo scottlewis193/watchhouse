@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createReleaseHealthStore } from '../src/lib/server/release-health.js';
 import { NntpClient, preparePlayback, createPlaybackPlanCache, preflightLiveCandidate } from '../src/lib/server/streamer.js';
 import { rankReleases } from '../media.js';
 import { waitForPlayback } from '../src/lib/server/playback-notifications.js';
@@ -320,6 +324,128 @@ test('poster prewarm rechecks a saved direct plan before reporting it ready', as
   assert.equal(playback.preparedSession.sessionUrl, '/prepared/saved');
 });
 
+test('resume prewarming retains the preferred streamable archive and validates it without a full download', async () => {
+  const playback = { ...job(), speculative: true, selectionStart: 120 }, checked = [];
+  await preparePlayback(playback, { usenetHost: 'fixture', playbackQuality: 'quality' }, {
+    search: async () => [{ title: 'Film.2160p.Archive' }, { title: 'Film.1080p.Direct' }],
+    load: async release => nzb(release.title.includes('Archive') ? 'rar' : 'mkv'),
+    check: async () => Buffer.from('video'),
+    progressive: async candidate => {
+      candidate.progressiveArchive = true;
+      candidate.archiveSource = { metadata: { size: 100 }, closed: false };
+      candidate.file = { subject: 'film.mkv' };
+      candidate.strategy = 'transcode';
+      return true;
+    },
+    preflight: async (candidate, _settings, start) => { checked.push([candidate.release, start]); return { sessionUrl: '/prepared/archive', start }; },
+    archive: async () => assert.fail('Speculative preparation must not download the archive'),
+    cache: async () => assert.fail('Speculative preparation must not download a full video'),
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.equal(playback.status, 'ready');
+  assert.equal(playback.release, 'Film.2160p.Archive');
+  assert.deepEqual(checked, [['Film.2160p.Archive', 120]]);
+});
+
+test('unsupported speculative archives wait for foreground without changing quality or downloading', async () => {
+  const playback = { ...job(), speculative: true }, loaded = [];
+  await preparePlayback(playback, { usenetHost: 'fixture' }, {
+    search: async () => [{ title: 'Film.2160p.Archive' }, { title: 'Film.1080p.Direct' }],
+    load: async release => { loaded.push(release.title); return nzb('rar'); },
+    progressive: async () => false,
+    archive: async () => assert.fail('Speculative preparation must not download an archive'),
+    cache: async () => assert.fail('Speculative preparation must not download a full video'),
+    health: { has: async () => false }, plans: createPlaybackPlanCache()
+  });
+  assert.equal(playback.status, 'error');
+  assert.deepEqual(loaded, ['Film.2160p.Archive']);
+});
+
+test('reposted missing article sets are checked once even when descriptions arrive concurrently', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'duplicate-articles-'));
+  const releases = ['Broken', 'Repost', 'Healthy'].map(name => ({
+    title: `Slow.Horses.S01E02.1080p.${name}`, nzbUrl: `https://indexer.example/${name}`
+  }));
+  const settings = { usenetHost: 'fixture' }, checked = [];
+  const path = join(directory, 'health.json');
+  try {
+    for (const restart of [false, true]) {
+      const playback = job();
+      await preparePlayback(playback, settings, {
+        search: async () => restart ? [releases[1], releases[2]] : releases,
+        load: async release => release === releases[2] ? nzb('mkv').replace('>article<', '>healthy<')
+          : `<nzb><file subject="${release.title}.mkv"><segments><segment number="1">missing</segment><segment number="2">tail</segment></segments></file></nzb>`,
+        check: async file => {
+          checked.push(file.segments[0].id);
+          await new Promise(resolve => setImmediate(resolve));
+          if (file.segments[0].id === 'missing') throw Object.assign(new Error('No such article'), { code: 'USENET_ARTICLE_MISSING' });
+          return Buffer.from('video');
+        },
+        preflight: async () => ({ sessionUrl: '/prepared/healthy' }),
+        health: createReleaseHealthStore(path), plans: createPlaybackPlanCache()
+      });
+      assert.equal(playback.status, 'ready');
+      assert.equal(playback.release, releases[2].title);
+    }
+    assert.deepEqual(checked, ['missing', 'healthy', 'healthy']);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('archive reposts with renamed and reordered volumes skip confirmed missing article sets', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'duplicate-archives-'));
+  const releases = ['Broken', 'Repost', 'Healthy'].map(name => ({ title: `Film.1080p.${name}`, nzbUrl: `https://indexer.example/${name}` }));
+  const attempted = [], playback = job();
+  try {
+    await preparePlayback(playback, { usenetHost: 'fixture' }, {
+      search: async () => releases,
+      load: async release => {
+        const ids = release === releases[2] ? ['healthy-one', 'healthy-two'] : ['shared-one', 'shared-two'];
+        if (release === releases[1]) ids.reverse();
+        return `<nzb>${ids.map((id, index) => `<file subject="${release.title}.part0${index + 1}.rar"><segments><segment number="1">${id}</segment></segments></file>`).join('')}</nzb>`;
+      },
+      progressive: async candidate => {
+        attempted.push(candidate.release);
+        if (candidate.release === releases[0].title) throw Object.assign(new Error('Missing archive article'), { code: 'ARCHIVE_UNAVAILABLE', unavailableCode: 'USENET_ARTICLE_MISSING' });
+        candidate.progressiveArchive = true;
+        candidate.archiveSource = { metadata: { size: 100 }, closed: false };
+        candidate.file = { subject: 'film.mkv' };
+        candidate.strategy = 'remux';
+        return true;
+      },
+      preflight: async () => ({ sessionUrl: '/prepared/archive' }),
+      archivePlans: { get: () => null, delete: () => {} },
+      health: createReleaseHealthStore(join(directory, 'health.json')), plans: createPlaybackPlanCache()
+    });
+    assert.equal(playback.status, 'ready');
+    assert.equal(playback.release, releases[2].title);
+    assert.deepEqual(attempted, [releases[0].title, releases[2].title]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('temporary or invalid-body failures do not poison another upload with the same articles', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'article-failure-scope-'));
+  try {
+    for (const code of ['ETIMEDOUT', 'INVALID_USENET_ARTICLE']) {
+      const playback = job(), checked = [];
+      const releases = ['First', 'Replacement'].map(name => ({ title: `Film.1080p.${name}`, nzbUrl: `https://indexer.example/${name}` }));
+      await preparePlayback(playback, { usenetHost: 'fixture' }, {
+        search: async () => releases,
+        load: async () => nzb('mkv'),
+        check: async () => {
+          checked.push(code);
+          if (checked.length === 1) throw Object.assign(new Error('First attempt failed'), { code });
+          return Buffer.from('video');
+        },
+        preflight: async () => ({ sessionUrl: '/prepared/replacement' }),
+        health: createReleaseHealthStore(join(directory, `${code}.json`)), plans: createPlaybackPlanCache()
+      });
+      assert.equal(playback.status, 'ready');
+      assert.equal(playback.release, releases[1].title);
+      assert.deepEqual(checked, [code, code]);
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test('falls back from an unplayable 2160p release to 1080p before trying 720p', async () => {
   const playback = job(), checked = [];
   const settings = { targetResolution: '2160p' };
@@ -338,6 +464,36 @@ test('falls back from an unplayable 2160p release to 1080p before trying 720p', 
   assert.deepEqual(checked, [candidates[2].title, candidates[1].title]);
   assert.equal(playback.release, candidates[1].title);
   assert.equal(playback.status, 'ready');
+});
+
+test('size tiers defer NZB and provider work until earlier tiers fail, retaining oversized playback fallback', async () => {
+  const settings = { playbackQuality: 'fast', targetResolution: '2160p' };
+  const candidates = [
+    { title: 'Slow.Horses.S01E02.2160p.H264.Large.mkv', size: 8 * 1024 ** 3 },
+    { title: 'Slow.Horses.S01E02.2160p.H264.Unknown.mkv', size: 0 },
+    { title: 'Slow.Horses.S01E02.1080p.H264.Small.mkv', size: 1024 ** 3 }
+  ];
+  const order = [candidates[2], candidates[1], candidates[0]];
+  for (let chosen = 0; chosen < order.length; chosen++) {
+    const playback = job(), loaded = [], checked = [];
+    await preparePlayback(playback, settings, {
+      search: async () => rankReleases(candidates, media, settings),
+      load: async release => {
+        loaded.push(release.title);
+        return nzb('mkv').replace('episode.mkv', release.title);
+      },
+      check: async file => { checked.push(file.subject); return Buffer.from('video'); },
+      preflight: async candidate => {
+        if (candidate.release !== order[chosen].title) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+        return { sessionUrl: '/prepared/video' };
+      },
+      health: { has: async () => false }, plans: createPlaybackPlanCache()
+    });
+    assert.equal(playback.status, 'ready');
+    assert.equal(playback.release, order[chosen].title);
+    assert.deepEqual(loaded, order.slice(0, chosen + 1).map(release => release.title));
+    assert.deepEqual(checked, loaded);
+  }
 });
 
 test('skips HDR tone-mapping releases and selects an SDR fallback', async () => {
@@ -398,25 +554,40 @@ test('a newly opened 2160p archive must pass the live conversion check before se
   assert.equal(playback.release, 'Film.1080p');
 });
 
-test('stops probing missing archives at one resolution and reaches a later direct release', async () => {
-  const playback = { ...job(), diagnosticsEnabled: true }, probed = [];
-  const releases = Array.from({ length: 12 }, (_, index) => ({ title: `Film.1080p.Archive${index}` }));
-  releases.push({ title: 'Film.1080p.Direct' });
-  await preparePlayback(playback, { usenetHost: 'fixture' }, {
-    search: async () => releases,
-    load: async release => nzb(release.title.endsWith('Direct') ? 'mkv' : 'rar'),
-    check: async () => Buffer.from('video'),
-    progressive: async candidate => {
-      probed.push(candidate.release);
-      throw Object.assign(new Error('Missing archive article'), { code: 'ARCHIVE_UNAVAILABLE', unavailableCode: 'USENET_ARTICLE_MISSING' });
-    },
-    preflight: async () => ({ sessionUrl: '/prepared/direct' }),
-    health: { has: async () => false, reject: async () => {} }, plans: createPlaybackPlanCache()
-  });
-  assert.equal(probed.length, 4);
-  assert.equal(playback.status, 'ready');
-  assert.equal(playback.release, 'Film.1080p.Direct');
-  assert.ok(playback.events.some(event => event.message?.includes('Skipping further archives')));
+test('repeated missing archives defer their resolution without dropping healthy archive fallbacks', async () => {
+  const missing = Array.from({ length: 12 }, (_, index) => ({ title: `Film.1080p.MissingArchive${index}`, size: 1024 ** 3 }));
+  for (const [lowerPlayable, oversizedLower] of [[true, false], [false, false], [true, true]]) {
+    const lower = { title: 'Film.720p.Direct', size: (oversizedLower ? 8 : 1) * 1024 ** 3 };
+    const healthy = { title: 'Film.1080p.HealthyArchive', size: 1024 ** 3 };
+    const playback = { ...job(), diagnosticsEnabled: true }, loaded = [], probed = [];
+    await preparePlayback(playback, { usenetHost: 'fixture' }, {
+      search: async () => oversizedLower ? [...missing, healthy, lower] : [...missing, lower, healthy],
+      load: async release => { loaded.push(release.title); return nzb(release === lower ? 'mkv' : 'rar'); },
+      check: async () => Buffer.from('video'),
+      progressive: async candidate => {
+        probed.push(candidate.release);
+        if (candidate.release !== healthy.title) {
+          throw Object.assign(new Error('Missing archive article'), { code: 'ARCHIVE_UNAVAILABLE', unavailableCode: 'USENET_ARTICLE_MISSING' });
+        }
+        candidate.progressiveArchive = true;
+        candidate.archiveSource = { metadata: { size: 100 }, closed: false };
+        candidate.file = { subject: 'film.mkv' };
+        candidate.strategy = 'remux';
+        return true;
+      },
+      preflight: async candidate => {
+        if (candidate.release === lower.title && !lowerPlayable) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+        return { sessionUrl: '/prepared/video' };
+      },
+      archivePlans: { get: () => null, delete: () => {} },
+      health: { has: async () => false, reject: async () => {} }, plans: createPlaybackPlanCache()
+    });
+    assert.equal(playback.status, 'ready');
+    const choseLower = lowerPlayable && !oversizedLower;
+    assert.equal(playback.release, choseLower ? lower.title : healthy.title);
+    if (choseLower) assert.ok(!loaded.includes(healthy.title), 'deferred NZBs must not compete with a viable lower resolution');
+    else assert.ok(probed.includes(healthy.title), 'four missing uploads must not permanently exclude a healthy archive');
+  }
 });
 
 test('checks a targeted 2160p stream live despite one pessimistic provider speed sample', async () => {
@@ -567,7 +738,7 @@ test('availability of the next release overlaps a slow preferred candidate witho
   const playback = job();
   const preparation = preparePlayback(playback, { maxConnections: 4 }, {
     search: async () => [{ title: 'Preferred' }, { title: 'Other' }],
-    load: async release => nzb('mp4').replace('episode.mp4', `${release.title}.mp4`),
+    load: async release => nzb('mp4').replace('episode.mp4', `${release.title}.mp4`).replace('>article<', `>${release.title}<`),
     check: async file => { if (file.subject.startsWith('Preferred')) await blocked; else secondStarted(); return Buffer.from('video'); },
     health: { has: async () => false }, plans: createPlaybackPlanCache()
   });
@@ -682,19 +853,6 @@ test('starts the highest-ranked progressive archive before exhausting lower-rank
   assert.equal(playback.release, 'Preferred archive');
 });
 
-test('speculative resume preparation does not extract a cold archive before play is clicked', async () => {
-  const playback = { ...job(), speculative: true };
-  let opened = false, downloaded = false;
-  await preparePlayback(playback, {}, {
-    search: async () => [{ title: 'Resumable archive' }],
-    load: async () => nzb('rar'), health: { has: async () => false }, plans: createPlaybackPlanCache(),
-    progressive: async candidate => { opened = true; candidate.status = 'ready'; candidate.mode = 'direct'; return true; },
-    archive: async () => { downloaded = true; }
-  });
-  assert.equal(opened, false);
-  assert.equal(downloaded, false);
-  assert.equal(playback.status, 'error');
-});
 
 test('a failed progressive archive check downloads a copy during initial playback', async () => {
   const playback = job();

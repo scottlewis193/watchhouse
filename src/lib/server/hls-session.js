@@ -32,7 +32,7 @@ function playlistCoversExpectedDuration(bytes, expectedDuration) {
 
 let activeSessions = 0;
 
-export async function createHlsSession({ root, produce, idleMs = 180000, onClose = () => {}, onMonitor = () => {}, maxSessions = 4, maxBytes = 8 * 1024 ** 3, checkMs = 5000 }) {
+export async function createHlsSession({ root, produce, signal, idleMs = 180000, onClose = () => {}, onMonitor = () => {}, maxSessions = 4, maxBytes = 8 * 1024 ** 3, checkMs = 5000 }) {
   if (activeSessions >= maxSessions) throw Object.assign(new Error('All playback conversion slots are in use. Try again shortly.'), { code: 'PLAYBACK_BUSY' });
   activeSessions++;
   let released = false;
@@ -44,6 +44,7 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
     let producer;
     try { producer = await produce(directory); }
     catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
+    if (signal?.aborted) { await producer.stop(); throw signal.reason; }
     let failure = null, completed = false, closed = false, closing, timer, monitor, bytes = 0, paused = false, position = 0, checking = false;
     void producer.completion.then(() => { completed = true; }, error => { failure = error; });
     function touch() {
@@ -55,6 +56,7 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
     function close() {
       if (closing) return closing;
       closed = true; clearTimeout(timer); clearInterval(monitor);
+      signal?.removeEventListener('abort', close);
       closing = (async () => {
         try { await producer.stop(); }
         finally {
@@ -64,6 +66,7 @@ export async function createHlsSession({ root, produce, idleMs = 180000, onClose
       })();
       return closing;
     }
+    signal?.addEventListener('abort', close, { once: true });
     async function read(asset) {
       if (!/^(index\.m3u8|init\.mp4|segment-\d{6,}\.m4s)$/.test(asset)) throw new Error('Invalid playback asset.');
       touch();

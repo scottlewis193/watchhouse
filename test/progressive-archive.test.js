@@ -103,16 +103,22 @@ function encoded(bytes) {
 test('virtual split-archive ranges map correctly across yEnc volume boundaries', async () => {
   const payloads = [Buffer.from('abcdefghijkl'), Buffer.from('mnopqrstuvwx'), Buffer.from('yz!')];
   const files = payloads.map((data, volume) => ({ subject: `movie.7z.00${volume + 1}`, segments: Array.from({ length: Math.ceil(data.length / 4) }, (_, index) => ({ id: `${volume}:${index}` })) }));
-  const input = await openArchiveByteInput(files.toReversed(), { maxConnections: 2 }, async () => ({ close() {}, async body(id, line) {
+  let releaseFirst, input;
+  const first = new Promise(resolve => { releaseFirst = resolve; });
+  const opening = openArchiveByteInput(files.toReversed(), { maxConnections: 2 }, async () => ({ close() {}, async body(id, line) {
     const [volume, index] = id.split(':').map(Number), data = payloads[volume], begin = index * 4, chunk = data.subarray(begin, begin + 4);
+    if (volume === 0 && index === 0) await first;
+    if (volume === 2 && index === 0) releaseFirst();
     await line(`=ybegin size=${data.length} name=movie.7z.00${volume + 1}`);
     await line(`=ypart begin=${begin + 1} end=${begin + chunk.length}`);
     await line(encoded(chunk)); await line(`=yend size=${chunk.length}`);
-  } }));
+  } })).then(value => { input = value; return value; });
   try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(input, 'the last volume must open independently of a slow first volume');
     assert.equal(input.size, 27);
     assert.equal((await input.read(10, 25)).toString(), 'klmnopqrstuvwxyz');
-  } finally { await input.close(); }
+  } finally { releaseFirst(); await opening; await input?.close(); }
 });
 
 test('a later missing archive article reports the failed source for replacement', async () => {
@@ -257,7 +263,10 @@ function storedInput(volumes, reads = []) {
   const offsets = [0];
   for (const volume of volumes) offsets.push(offsets.at(-1) + volume.length);
   const archive = Buffer.concat(volumes);
-  return { size: archive.length, volumeOffsets: offsets, close: async () => {}, async read(start, end) {
+  return { size: archive.length, volumeOffsets: offsets, close: async () => {},
+    readVolumeHeader(index, count) {
+      return this.read(offsets[index], Math.min(offsets[index + 1], offsets[index] + count) - 1);
+    }, async read(start, end) {
     reads.push([start, end]);
     return archive.subarray(start, end + 1);
   } };
@@ -302,6 +311,76 @@ test('stored RAR maps a deep video range without reading the preceding video', a
       assert.deepEqual(reads.slice(before).map(([a, b]) => b - a + 1), [1000]);
     } finally { lease.close(); }
   } finally { await source?.close(); }
+});
+
+test('stored RAR opens without serializing independently arriving volume headers', async () => {
+  const video = randomBytes(7 * 1024 * 1024 + 123);
+  const volumes = storedRarVolumes(video);
+  let releaseFirst;
+  const first = new Promise(resolve => { releaseFirst = resolve; });
+  const files = volumes.map((data, volume) => ({
+    subject: volume ? `movie.r${String(volume - 1).padStart(2, '0')}` : 'movie.rar',
+    segments: Array.from({ length: Math.ceil(data.length / 65536) }, (_, index) => ({ id: `${volume}:${index}` }))
+  }));
+  const input = await openArchiveByteInput(files, { maxConnections: 8 }, async () => ({ close() {}, async body(id, line) {
+    const [volume, index] = id.split(':').map(Number);
+    if (volume === 1 && index === 0) await first;
+    if (volume === 6 && index === 0) releaseFirst();
+    const data = volumes[volume], begin = index * 65536, chunk = data.subarray(begin, begin + 65536);
+    await line(`=ybegin size=${data.length} name=${files[volume].subject}`);
+    await line(`=ypart begin=${begin + 1} end=${begin + chunk.length}`);
+    await line(encoded(chunk)); await line(`=yend size=${chunk.length}`);
+  } }));
+  let source;
+  const pending = tryCreateStoredRarSource(input).then(value => { source = value; return value; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(source?.randomAccess, 'independent volume reads should overlap before playback');
+    const lease = source.retain(), start = 3 * 1024 * 1024 - 32;
+    try {
+      const response = await fetch(lease.url, { headers: { Range: `bytes=${start}-${start + 63}` } });
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), video.subarray(start, start + 64));
+    } finally { lease.close(); }
+  } finally {
+    releaseFirst();
+    await pending;
+    await source?.close();
+    await input.close();
+  }
+});
+
+test('stored RAR keeps bounded header readers busy across a slow volume before serving byte-exact video', async () => {
+  const video = randomBytes(10 * 1024 * 1024 + 123);
+  const input = storedInput(storedRarVolumes(video));
+  const readHeader = input.readVolumeHeader.bind(input);
+  let releaseSlow, sawLater, active = 0, maximum = 0;
+  const slow = new Promise(resolve => { releaseSlow = resolve; });
+  const later = new Promise(resolve => { sawLater = resolve; });
+  input.readVolumeHeader = async (index, count) => {
+    maximum = Math.max(maximum, ++active);
+    try {
+      if (index === 1) await slow;
+      if (index === 9) { sawLater(true); releaseSlow(); }
+      return await readHeader(index, count);
+    } finally { active--; }
+  };
+  const opening = tryCreateStoredRarSource(input);
+  let source, timer;
+  try {
+    assert.equal(await Promise.race([later, new Promise(resolve => { timer = setTimeout(() => resolve(false), 1000); })]), true,
+      'later volume headers must not wait for the slowest reader in a batch');
+    source = await opening;
+    assert.ok(maximum <= 8, 'the existing eight-reader limit still applies');
+    const lease = source.retain(), start = 9 * 1024 * 1024 - 32;
+    try {
+      const response = await fetch(lease.url, { headers: { Range: `bytes=${start}-${start + 63}` } });
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), video.subarray(start, start + 64));
+    } finally { lease.close(); }
+  } finally {
+    clearTimeout(timer); releaseSlow();
+    source = await opening;
+    await source?.close();
+  }
 });
 
 test('stored RAR5 maps video bytes across volume boundaries', async () => {
@@ -349,14 +428,14 @@ test('deep stored-RAR HLS resume fetches the seek window instead of the film pre
 });
 
 test('compressed or damaged RAR headers retain the sequential extraction path', async () => {
-  const video = randomBytes(2 * 1024 * 1024), volumes = storedRarVolumes(video);
+  const video = randomBytes(9 * 1024 * 1024), volumes = storedRarVolumes(video);
   const compressed = volumes.map(volume => Buffer.from(volume));
   const at = 7 + 13, headerSize = compressed[0].readUInt16LE(at + 5);
   compressed[0][at + 7 + 18] = 0x33;
   compressed[0].writeUInt16LE(crc32(compressed[0].subarray(at + 2, at + headerSize)) & 65535, at);
   assert.equal(await inspectStoredRar(storedInput(compressed)), null);
   const damaged = volumes.map(volume => Buffer.from(volume));
-  damaged[1][20] ^= 1;
+  damaged.at(-1)[20] ^= 1;
   assert.equal(await inspectStoredRar(storedInput(damaged)), null);
   assert.equal(await tryCreateStoredRarSource(storedInput([Buffer.from('377abcaf271c0000', 'hex')])), null);
 });
