@@ -1473,3 +1473,21 @@ checksum check; failure then invalidates the direct-range source. Fetched Usenet
 articles continue through the existing per-article validation. This has been
 verified with local RAR4/RAR5 and HLS fixtures. A live provider film timing is
 still needed to quantify the gain.
+
+## Restore next-episode background preparation (2026-11-15)
+
+`POST /api/play` incorrectly marked prepare-ahead jobs as speculative poster
+previews. Archive preparation therefore refused its full-download fallback.
+Direct releases also reported ready after source selection without preparing
+a local browser-ready copy, including when reusing a saved source plan.
+
+Next-episode requests now retain prepare-ahead priority without the speculative
+preview flag. Direct sources are downloaded and optimized before readiness;
+saved source plans follow the same rule. Poster previews remain lightweight,
+and background transfers still yield to unhealthy playback and foreground work.
+
+The request-handler/source-selection regression reproduced the archive refusal
+and premature direct readiness before the fix. All 163 focused tests pass,
+including archive/direct/saved-plan preparation, autoplay handover, background
+admission, and real FFmpeg browser-ready conversion. Live provider episode
+handover latency has not been measured.

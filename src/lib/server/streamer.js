@@ -913,7 +913,7 @@ export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
 }
 export function shouldCacheDirectPlayback(job, settings = {}) {
-  return Boolean(job.offlineDownload);
+  return Boolean(job.offlineDownload || (job.prepareAhead && !job.speculative));
 }
 export function shouldFinalizeCachedPlayback(job, strategy) {
   return Boolean((job.prepareAhead || job.offlineDownload) && strategy !== 'raw');
@@ -2287,10 +2287,13 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
               firstSegmentMs: settings.playbackQuality === 'quality' && plan.strategy === 'transcode' ? 15000 : 8000
             });
           }
+          if (shouldCacheDirectPlayback(job, settings)) {
+            await cache(job, settings);
+            return;
+          }
           Object.assign(job, { status: 'ready', message: plan.strategy === 'raw' ? 'Reusing the direct stream selected earlier.' : 'Reusing the browser-compatible stream selected earlier.', progress: 100, mode: 'direct' });
           reusedReleaseSelection(job, settings, plan.release, 'Saved source passed its live playback check; search was skipped.');
           jobEvent(job, 'plan-cache-hit', job.message, { release: plan.release, strategy: plan.strategy, mode: 'direct' });
-          if (job.offlineDownload) await cache(job, settings);
           return;
         } catch (error) {
           if (isDownloadCancelled(job, error) || error.code === 'PLAYBACK_BUSY') throw error;
@@ -3181,7 +3184,7 @@ export async function handleRequest(req, res) {
       const choice = media.releaseId ? manualReleases.get(media.releaseId) : undefined;
       if (media.releaseId && (!choice || choice.expires < Date.now())) return json(res, 404, { error: 'That release selection expired. Search again.' });
       const backgroundFor = media.prepareAhead && playbackJobs.has(media.backgroundFor) ? media.backgroundFor : null;
-      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, selectionStart: Number.isFinite(Number(media.selectionStart)) ? Math.max(0, Number(media.selectionStart)) : 0, prepareAhead: Boolean(media.prepareAhead), speculative: Boolean(media.prepareAhead), ...(backgroundFor ? { backgroundFor } : {}), ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] };
+      const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, selectionStart: Number.isFinite(Number(media.selectionStart)) ? Math.max(0, Number(media.selectionStart)) : 0, prepareAhead: Boolean(media.prepareAhead), ...(backgroundFor ? { backgroundFor } : {}), ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] };
       jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job);
       const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref();
       void preparePlayback(job, media.prepareAhead ? { ...settings, backgroundJob: job } : settings);
