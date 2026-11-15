@@ -56,7 +56,7 @@ test('a resumed fallback archive skips search without changing fresh-play qualit
   }
 });
 
-test('a slow resumed 2160p archive falls back to a playable 1080p release', async () => {
+test('an invalid resumed 2160p archive falls back to a playable 1080p release', async () => {
   const f = fixture(), checked = [], rejected = [];
   const archive = { ...f.plan, release: 'Film.2160p', releaseKey: 'Film.2160p' };
   let cleared = false;
@@ -70,7 +70,7 @@ test('a slow resumed 2160p archive falls back to a playable 1080p release', asyn
     check: async () => Buffer.from('video'),
     preflight: async (candidate, _settings, start, options) => {
       checked.push({ release: candidate.release, start, firstSegmentMs: options.firstSegmentMs });
-      if (candidate.release === 'Film.2160p') throw Object.assign(new Error('converter produced 0.8× video'), { code: 'PLAYBACK_TOO_SLOW' });
+      if (candidate.release === 'Film.2160p') throw Object.assign(new Error('invalid opening timestamps'), { code: 'INVALID_MEDIA_TIMELINE' });
       return { sessionUrl: '/prepared/1080p', start };
     }
   });
@@ -98,7 +98,7 @@ test('a poster-prepared archive is checked after play is pressed', async () => {
   assert.equal(job.preparedSession.sessionUrl, '/prepared/2160p');
 });
 
-test('a reused archive stays selecting until its playback speed check finishes', async () => {
+test('a reused archive stays selecting until its playback opening check finishes', async () => {
   const f = fixture();
   let releaseCheck;
   const waiting = new Promise(resolve => { releaseCheck = resolve; });
@@ -110,7 +110,6 @@ test('a reused archive stays selecting until its playback speed check finishes',
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(job.status, 'selecting');
-  assert.equal(job.message, 'Checking archive playback speed…');
   releaseCheck();
   await preparation;
   assert.equal(job.status, 'ready');

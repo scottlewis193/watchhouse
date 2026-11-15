@@ -22,7 +22,6 @@ import { conversionAdmission } from './conversion-admission.js';
 import { hasEnglishAudioTrack, playbackTracks, extractCaptions } from './playback-tracks.js';
 import { createHlsSession, hlsOutputArgs, hlsKeyframeArgs } from './hls-session.js';
 import { createHlsPacing } from './hls-pacing.js';
-import { candidateNeedsMoreSpeed, candidatePlaybackDemand, createProviderSpeedMeter } from './playback-capacity.js';
 import { createArticleDeliveryMeter, createVideoOutputMeter, createVideoTimelineGuard } from './playback-throughput.js';
 import { createPosterPreparation } from './poster-preparation.js';
 import { createValidatedPreparationCache } from './validated-preparation.js';
@@ -117,7 +116,6 @@ function foregroundPlaybackActive() {
   return false;
 }
 const hlsPacing = createHlsPacing();
-const providerSpeed = createProviderSpeedMeter();
 const manualReleases = new Map();
 const posterPreparation = createPosterPreparation({ budgetMs: 30000 });
 async function cancelUnusedPosterPreparations() {
@@ -180,7 +178,7 @@ async function prepareTorrentPlayback(job, settings, persistence = playbackPersi
       const checking = foreground ?? (!job.speculative && !job.prepareAhead && !job.backgroundFor);
       if (checking && job.torrentPreflightInfoHash !== source.infoHash) {
         setJob(job, 'selecting', 'Opening torrent metadata…', 45);
-        const prepared = await preflight(job, { ...settings, signal }, start, { timeoutMs: 40000, observationMs: 10000, minimumRate: 1.25, sustained: true });
+        const prepared = await preflight(job, { ...settings, signal }, start, { timeoutMs: 40000 });
         if (signal.aborted) {
           await hlsSessions.get(prepared.sessionUrl.split('/').pop())?.session.close();
           signal.throwIfAborted();
@@ -206,14 +204,14 @@ async function prepareTorrentPlayback(job, settings, persistence = playbackPersi
           catch (error) { await reject(candidate, error); throw error; }
         }
       });
-      if (!source && foreground) throw new Error('No torrent passed the playback speed check.');
+      if (!source && foreground) throw new Error('No torrent passed the playback startup check.');
       if (!source) return false;
       settings.signal.throwIfAborted();
       if (persistence) await persistence.setPlan(job.media, settings, { torrentSource: source }).catch(() => {});
     }
     torrentPlans.set(job.media, source, scope);
     setJob(job, 'ready', job.torrentPreflightInfoHash === source.infoHash
-      ? 'Torrent playback speed verified.' : 'Torrent metadata selected. Playback speed will be checked before viewing.', 100);
+      ? 'Torrent playback verified.' : 'Torrent metadata selected. Playback will be checked before viewing.', 100);
     return true;
   } catch (error) {
     if (foreground && !job.cancelled) {
@@ -478,7 +476,6 @@ async function openNntp(settings) {
   finally { detachAbort(); }
 }
 export async function postedFileAvailable(file, settings, connect = connectNntp) {
-  const sampledAt = performance.now();
   const client = await connect(settings);
   let clientClosed = false;
   try {
@@ -513,7 +510,6 @@ export async function postedFileAvailable(file, settings, connect = connectNntp)
         resumeSegments.set(file, indexes[index], check.value);
         if (settings.usenetHost) playbackPersistence.setSegment(file, indexes[index], settings, check.value);
       });
-      settings.onProviderSpeedSample?.(first.length + checks.reduce((total, check) => total + check.value.length, 0), performance.now() - sampledAt);
     } finally { await loader.close(); headerClient?.close(); }
     return first;
   } finally { if (!clientClosed) client.close(); }
@@ -1687,14 +1683,14 @@ export function assertPlayableHlsOpening(streams = []) {
   }
 }
 
-export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = (ms, signal) => delay(ms, undefined, { signal }), now = () => performance.now(), firstSegmentMs = 8000, observationMs = 2000, minimumRate, sustained = false, timeoutMs = 45000 } = {}) {
+export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = (ms, signal) => delay(ms, undefined, { signal }), now = () => performance.now(), firstSegmentMs = 8000, timeoutMs = 45000 } = {}) {
   const retained = await takeRetainedHlsSession(job, settings, start);
   if (retained) return retained;
   if (sessionFactory === createHlsSession) await makeHlsRoom();
   const id = randomUUID();
   const entry = hlsSessionEntry(id, job, settings, start);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(Object.assign(new Error('Playback speed check timed out.'), { code: 'PLAYBACK_PREFLIGHT_TIMEOUT' })), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(Object.assign(new Error('Playback startup check timed out.'), { code: 'PLAYBACK_PREFLIGHT_TIMEOUT' })), timeoutMs);
   const removeCancelHandler = onDownloadCancel(job, () => controller.abort(new Error('Playback check cancelled.')));
   const signal = settings.signal ? AbortSignal.any([settings.signal, controller.signal]) : controller.signal;
   let session;
@@ -1721,7 +1717,7 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
       if (now() >= deadline) {
         if (deadline < extendedDeadline && Number(state?.position) >= 6) {
           deadline = extendedDeadline;
-          jobEvent(job, 'playback-speed', 'Video is advancing; waiting for the first segment boundary.', { position: state.position });
+          jobEvent(job, 'playback-startup', 'Video is advancing; waiting for the first segment boundary.', { position: state.position });
         } else break;
       }
       await withPlaybackSignal(wait(200, signal), signal);
@@ -1730,29 +1726,12 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
       const reportedPosition = session.health?.()?.position;
       const position = Number.isFinite(reportedPosition) ? reportedPosition : 0;
       const waitBudgetMs = deadline - started;
-      jobEvent(job, 'playback-speed', `No first segment after ${(waitBudgetMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs: waitBudgetMs });
-      throw Object.assign(new Error('No playable segment arrived during the playback speed check.'), { code: 'NO_PLAYABLE_SEGMENT' });
+      jobEvent(job, 'playback-startup', `No first segment after ${(waitBudgetMs / 1000).toFixed(0)}s; converter reached ${position.toFixed(1)}s of video.`, { position, firstSegmentMs: waitBudgetMs });
+      throw Object.assign(new Error('No playable segment arrived during the playback startup check.'), { code: 'NO_PLAYABLE_SEGMENT' });
     }
-    let first = session.health().position;
-    let observationStarted = now();
-    jobEvent(job, 'first-segment-ready', 'First playback segment was produced.', { position: first });
-    if (job.torrentSource) setJob(job, 'selecting', 'Measuring sustained torrent playback speed…', 55);
-    // Probe the first segment while the converter produces the sample used by
-    // the speed check. Both checks still finish before exposing the session.
-    const sampleMs = sustained ? observationMs / 2 : observationMs;
-    const observation = (async () => {
-      if (sustained) {
-        // Discard the startup burst before measuring steady delivery.
-        await wait(sampleMs, signal);
-        first = session.health().position;
-        observationStarted = now();
-      }
-      await wait(sampleMs, signal);
-    })();
-    // A growing playlist may expose its video stream before FFprobe can see
-    // an audio packet. Recheck briefly rather than banning that upload for a
-    // day based on incomplete stream metadata.
-    await withPlaybackSignal(Promise.all([observation, (async () => {
+    jobEvent(job, 'first-segment-ready', 'First playback segment was produced.', { position: session.health?.()?.position });
+    // A growing playlist can expose video before FFprobe sees an audio packet.
+    await withPlaybackSignal((async () => {
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted();
         const streams = await inspect(session.directory, signal) || [];
@@ -1765,24 +1744,30 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
         }
       }
       jobEvent(job, 'opening-segment-probed', 'Opening video and audio timestamps validated.');
-    })()]), signal);
-    // Give borderline startup four more seconds so FFmpeg's early progress
-    // reports or one delayed read do not reject an otherwise usable stream.
-    signal.throwIfAborted();
-    let health = session.health();
-    if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
-    let observedSeconds = Math.max(sampleMs / 1000, (now() - observationStarted) / 1000);
-    if (!health.completed && health.position - first < observedSeconds * (minimumRate ?? 1.25)) {
-      await withPlaybackSignal(wait(4000, signal), signal);
+    })(), signal);
+    let health = session.health?.();
+    if (health?.failed || health?.closed) throw new Error('The playback converter stopped during its opening check.');
+    if (job.torrentSource && !health?.completed) {
+      setJob(job, 'selecting', 'Measuring sustained torrent playback speed…', 55);
+      // Discard the startup burst before timing steady output. Usenet skips
+      // this benchmark entirely; a completed conversion needs no further data.
+      await withPlaybackSignal(wait(5000, signal), signal);
       signal.throwIfAborted();
       health = session.health();
       if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
-      observedSeconds = Math.max((sampleMs + 4000) / 1000, (now() - observationStarted) / 1000);
-    }
-    const producedSeconds = Number.isFinite(health.position - first) ? Math.max(0, health.position - first) : 0;
-    jobEvent(job, 'playback-speed', `Playback output: ${producedSeconds.toFixed(1)}s of video in ${observedSeconds}s (${(producedSeconds / observedSeconds).toFixed(1)}× viewing speed).`, { producedSeconds, observedSeconds });
-    if (!health.completed && producedSeconds < observedSeconds * (minimumRate ?? (observedSeconds <= 2 ? 1.25 : 1.1))) {
-      throw Object.assign(new Error('This release cannot produce playback segments faster than viewing speed.'), { code: 'PLAYBACK_TOO_SLOW' });
+      if (!health.completed) {
+        const first = health.position, sampleStarted = now();
+        await withPlaybackSignal(wait(5000, signal), signal);
+        signal.throwIfAborted();
+        health = session.health();
+        if (health.failed || health.closed) throw new Error('The playback converter stopped during its speed check.');
+        const observedSeconds = Math.max(5, (now() - sampleStarted) / 1000);
+        const producedSeconds = Number.isFinite(health.position - first) ? Math.max(0, health.position - first) : 0;
+        jobEvent(job, 'playback-speed', `Torrent output: ${producedSeconds.toFixed(1)}s of video in ${observedSeconds.toFixed(1)}s (${(producedSeconds / observedSeconds).toFixed(1)}× viewing speed).`, { producedSeconds, observedSeconds });
+        if (!health.completed && producedSeconds < observedSeconds * 1.25) {
+          throw Object.assign(new Error('This torrent cannot produce playback segments faster than viewing speed.'), { code: 'PLAYBACK_TOO_SLOW' });
+        }
+      }
     }
     signal.throwIfAborted();
     clearTimeout(timeout);
@@ -2184,7 +2169,7 @@ function matchesTargetResolution(release, settings, allowLower = false) {
   const resolution = releaseResolution({ title: release });
   return resolution === target || (allowLower && resolution > 0 && resolution < target);
 }
-export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, speedMeter = providerSpeed, torrentOnly = false, archiveCheck = search === findReleases && load === loadNzb && check === postedFileAvailable ? archiveArticlesAvailable : null, archiveHeader = search === findReleases && load === loadNzb && check === postedFileAvailable ? archiveHeaderReadiness : null, hints = search === findReleases && load === loadNzb && check === postedFileAvailable ? releaseHints : null } = {}) {
+export async function preparePlayback(job, settings, { search = findReleases, load = loadNzb, check = postedFileAvailable, archive = prepareArchive, cache = cacheDirect, progressive = archive === prepareArchive ? tryProgressiveArchive : null, health = releaseHealth, plans = playbackPlans, archivePlans = archiveResumePlans, persistence = plans === playbackPlans ? playbackPersistence : null, verify = savedPlanAvailable, connectAhead = search === findReleases && load === loadNzb && check === postedFileAvailable ? settings => nntpPool.warm(settings) : null, preflight = check === postedFileAvailable ? preflightLiveCandidate : null, torrentOnly = false, archiveCheck = search === findReleases && load === loadNzb && check === postedFileAvailable ? archiveArticlesAvailable : null, archiveHeader = search === findReleases && load === loadNzb && check === postedFileAvailable ? archiveHeaderReadiness : null, hints = search === findReleases && load === loadNzb && check === postedFileAvailable ? releaseHints : null } = {}) {
   let torrentAttempted = false;
   const prepareTorrent = async () => {
     if (torrentAttempted) return false;
@@ -2218,10 +2203,9 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       setJob(job, 'ready', readyMessage, 100);
       return true;
     }
-    setJob(job, 'selecting', 'Checking archive playback speed…', 45);
+    setJob(job, 'selecting', 'Checking archive playback opening…', 45);
     try {
-      // Archive opening only checks availability. Verify sustained segment
-      // production too, including when a previously opened archive is reused.
+      // Validate a first playable segment, including when reusing an archive.
       job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs: 20000 });
       if (!job.manualRelease && !settings.manualReleaseSelection && !job.speculative
         && job.archiveSource?.randomAccess && job.archiveSource.complete && !job.archiveSource.failure
@@ -2238,7 +2222,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       const releaseKey = job.releaseKey || job.release;
       job.rejectedReleases ||= new Set();
       job.rejectedReleases.add(releaseKey);
-      if (['USENET_ARTICLE_MISSING', 'PLAYBACK_TOO_SLOW', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseKey);
+      if (['USENET_ARTICLE_MISSING', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION'].includes(error.code)) await health.reject(settings, job.media, releaseKey);
       archivePlans.delete?.(job.media);
       if (job.archives?.length) await persistence?.deleteArchiveLayout?.(job.archives, settings).catch(() => {});
       jobEvent(job, 'release-rejected', `Archive playback check failed: ${error.message}`, { release: job.release });
@@ -2253,7 +2237,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
   try {
     if (torrentOnly) {
       throwIfDownloadCancelled(job);
-      if (!await prepareTorrent()) throw new Error('No alternative torrent passed the playback speed check.');
+      if (!await prepareTorrent()) throw new Error('No alternative torrent passed the playback startup check.');
       return;
     }
     const savedPlan = !job.manualRelease && persistence ? await persistence.getPlan(job.media, settings).catch(() => null) : null;
@@ -2278,7 +2262,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         delete job.archiveSource; delete job.progressiveArchive; delete job.archiveResume;
         delete job.archives; delete job.file;
       } else if (await checkArchivePlayback()) {
-        Object.assign(job, { status: 'ready', progress: 100, message: 'Archive video passed its playback speed check.' });
+        Object.assign(job, { status: 'ready', progress: 100, message: 'Archive video passed its playback startup check.' });
         reusedReleaseSelection(job, settings, job.release, 'Previously prepared archive passed its live playback check.');
         return;
       }
@@ -2391,7 +2375,6 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     let intentDescriptions = 0;
     let obfuscatedProbes = 0;
     let extendedSlowStarts = 0;
-    let targetSpeedTrials = 0;
     const missingArchiveProbes = new Map();
     const missingArchive = resolution => {
       const failures = (missingArchiveProbes.get(resolution) || 0) + 1;
@@ -2420,7 +2403,6 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     const checkLimit = concurrencyLimit(job.backgroundFor || job.speculative || Number(settings.maxConnections) === 1 ? 1 : 2);
     // One lightweight archive sequence shares the provider pool with playback.
     const archiveCheckLimit = concurrencyLimit(1);
-    const sampleSettings = signal => ({ ...settings, signal, onProviderSpeedSample: (bytes, elapsedMs) => speedMeter.record(settings, bytes, elapsedMs) });
     const articleChecks = new Map();
     const assertArticleSetAvailable = async identity => {
       const rejection = identity && (health.get ? await health.get(settings, job.media, identity) : await health.has(settings, job.media, identity));
@@ -2446,7 +2428,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         try {
           return await checkLimit(() => {
             signal?.throwIfAborted();
-            return check(direct, sampleSettings(signal));
+            return check(direct, { ...settings, signal });
           });
         } catch (error) { await rememberMissingArticles(identity, error); throw error; }
       })();
@@ -2480,7 +2462,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
               const probeSignal = AbortSignal.any([combined, AbortSignal.timeout(1500)]);
               if (archiveHeader && (Number(settings.maxConnections) || 4) > 2) {
                 try {
-                  const result = await archiveHeader(archives, sampleSettings(probeSignal));
+                  const result = await archiveHeader(archives, { ...settings, signal: probeSignal });
                   archiveKind = result.kind; prefetchedArchiveHeader = result.header;
                 } catch (error) {
                   combined.throwIfAborted();
@@ -2489,7 +2471,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
                 }
               }
               if (!archiveCheck || providerHints?.get(articleSet)?.available === true) return;
-              const available = await archiveCheck(archives, sampleSettings(probeSignal));
+              const available = await archiveCheck(archives, { ...settings, signal: probeSignal });
               if (available !== null) {
                 providerHints?.record(articleSet, { available: true });
                 providerHints?.record(releaseIdentity(release), { available: true });
@@ -2576,37 +2558,8 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             finishReleaseSelection(job, candidateIndex);
             return;
           }
-          const duration = Number(job.media.durationHint);
-          const rate = speedMeter.rate(settings);
-          const demand = candidatePlaybackDemand(direct, duration);
           const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && (strategy !== 'raw' || needsEnglishTrack);
-          // The spot check includes startup and can underestimate an otherwise
-          // healthy source. Verify a marginal best-quality source with the
-          // converter; an explicit resolution also gets two bounded live tries
-          // even when that estimate falls below the average bitrate.
-          const requiredFactor = (settings.playbackQuality === 'quality' || ['2160p', '1080p', '720p'].includes(settings.targetResolution)) && liveCheck ? 1 : 1.5;
-          if (Number.isFinite(rate) && rate > 0 && demand !== null) {
-            jobEvent(job, 'provider-speed', `Recent article check: ${(rate / 1_000_000).toFixed(1)} MB/s; this release averages about ${(demand / 1.5 / 1_000_000).toFixed(1)} MB/s and targets ${(demand / 1_000_000).toFixed(1)} MB/s with headroom.`, { release: release.title, bytesPerSecond: rate, averageBytesPerSecond: demand / 1.5, requiredBytesPerSecond: demand });
-          }
-          const tooLarge = candidateNeedsMoreSpeed(direct, duration, rate, requiredFactor);
-          const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[settings.targetResolution];
-          const verifyTarget = tooLarge && liveCheck && releaseResolution(release) === target && targetSpeedTrials < 2;
-          if (verifyTarget) {
-            targetSpeedTrials++;
-            jobEvent(job, 'provider-speed', 'The article speed estimate is low; checking the requested resolution with live playback.', { release: release.title });
-          }
-          if (tooLarge && !verifyTarget) {
-            if (needsEnglishTrack) {
-              markReleaseSelection(job, candidateIndex, 'rejected', 'Provider speed is too low to verify the English audio track.');
-              continue;
-            }
-            downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment, candidateIndex };
-            markReleaseSelection(job, candidateIndex, 'deferred', 'Provider speed is below live playback demand; may use a downloaded copy.');
-            jobEvent(job, 'release-rejected', 'Recent provider speed is below this release’s estimated playback demand.', { release: release.title });
-            continue;
-          }
           if (liveCheck) {
-            if (requiredFactor === 1 && Number.isFinite(rate) && rate < demand) jobEvent(job, 'provider-speed', 'Startup speed sample is short of the preferred headroom; checking live segment production.', { release: release.title });
             const firstSegmentMs = settings.playbackQuality === 'quality' && strategy === 'transcode' && extendedSlowStarts < 2 ? 15000 : 8000;
             try { job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs }); }
             catch (error) {
@@ -2614,14 +2567,14 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
               if (error.code === 'NO_PLAYABLE_SEGMENT' && firstSegmentMs > 8000) extendedSlowStarts++;
               if (error.code === 'INVALID_MEDIA_TIMELINE' || error.code === 'INVALID_MEDIA_DURATION') {
                 await health.reject(settings, job.media, releaseIdentity(release));
-                markReleaseSelection(job, candidateIndex, 'rejected', `Playback speed check failed: ${error.message}`);
+                markReleaseSelection(job, candidateIndex, 'rejected', `Playback startup check failed: ${error.message}`);
               } else if (needsEnglishTrack) {
                 markReleaseSelection(job, candidateIndex, 'rejected', `Audio check failed: ${error.message}`);
               } else {
                 downloadChoice ||= { file: direct, release: release.title, releaseKey: releaseIdentity(release), strategy, firstSegment, candidateIndex };
                 markReleaseSelection(job, candidateIndex, 'deferred', `Live playback failed: ${error.message} May use a downloaded copy.`);
               }
-              jobEvent(job, 'release-rejected', `Playback speed check failed: ${error.message}`, { release: release.title });
+              jobEvent(job, 'release-rejected', `Playback startup check failed: ${error.message}`, { release: release.title });
               continue;
             }
           }
@@ -2669,7 +2622,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
                 } else if (!recoveringSource) {
                   markReleaseSelection(job, candidateIndex, 'deferred', 'Live archive opening failed; preparing the downloaded copy.');
                 } else {
-                  choice.unavailable = new Error('Archive could not sustain playback.');
+                  choice.unavailable = new Error('Archive could not start playback.');
                   markReleaseSelection(job, candidateIndex, 'rejected', choice.unavailable.message);
                 }
               } else {
@@ -2718,7 +2671,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
       Object.assign(job, { ...sourceChoice, prefetchedSegments: downloadChoice.firstSegment ? new Map([[0, downloadChoice.firstSegment]]) : new Map() });
       job.requireEnglishTrack = false;
       if (fallbackIndex !== undefined) markReleaseSelection(job, fallbackIndex, 'checking', 'Downloading a playable copy.');
-      jobEvent(job, 'download-fallback', 'No candidate sustained the playback speed check. Preparing the best direct release before playback.');
+      jobEvent(job, 'download-fallback', 'No candidate passed the playback startup check. Preparing the best direct release before playback.');
       await cache(job, settings);
       finishReleaseSelection(job, fallbackIndex);
       if (fallbackIndex === undefined && job.releaseSelection) job.releaseSelection.candidates.push({
@@ -3200,7 +3153,7 @@ export async function handleRequest(req, res) {
         jobEvent(prepared, 'poster-preparation-hit', 'Continuing preparation started from the poster.');
         if (prepared.status === 'ready' && (prepared.progressiveArchive && !prepared.preparedSession || prepared.torrentSource && prepared.torrentPreflightInfoHash !== prepared.torrentSource.infoHash)) {
           if (prepared.progressiveArchive) prepared.archiveNeedsCheck = true;
-          setJob(prepared, 'selecting', 'Checking playback speed…', 45);
+          setJob(prepared, 'selecting', 'Checking playback opening…', 45);
           void preparePlayback(prepared, settings);
           return json(res, 202, publicJob(prepared));
         }

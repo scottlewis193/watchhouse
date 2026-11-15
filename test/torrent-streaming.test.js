@@ -186,7 +186,7 @@ test('torrent selection skips a metadata-compatible release that fails playback 
   try {
     const selected = await service.select(media, settings, {
       validate: async source => {
-        if (source.infoHash === 'a'.repeat(40)) throw Object.assign(new Error('Torrent is too slow.'), { code: 'PLAYBACK_TOO_SLOW' });
+        if (source.infoHash === 'a'.repeat(40)) throw Object.assign(new Error('No playable segment.'), { code: 'NO_PLAYABLE_SEGMENT' });
       }
     });
     assert.equal(selected.infoHash, 'b'.repeat(40));

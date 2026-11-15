@@ -1535,3 +1535,28 @@ Balanced to 0.973798 with Best quality; H.264 remux packet hashes were unchanged
 Browser checks covered settings, the release picker, playback summary and
 diagnostics using isolated API/media fixtures. No live provider title or
 subjective 4K dark-scene comparison has been performed.
+
+## Keep speed benchmarks only for torrent fallback (2026-11-15)
+
+Usenet release selection no longer waits for a conversion-speed observation
+window or rejects/defers candidates using sampled provider throughput. The
+provider speed meter and its selection gate have been removed.
+
+Live direct, archive and torrent candidates still need a playable first HLS
+segment and valid opening audio/video timestamps. Missing-segment deadlines,
+incomplete-probe retries, cancellation and prepared-session reuse remain.
+Usenet playback becomes ready immediately after those opening checks.
+
+Torrent fallback additionally discards five seconds of startup output, then
+measures five seconds of steady conversion output before exposing playback.
+Output must advance at least 1.25× viewing speed; slower torrents are closed
+and selection can try another release. Completed conversion skips sampling.
+The existing overall preflight deadline also bounds the torrent speed check.
+
+Estimated bitrate displays, quality ranking and runtime playback diagnostics
+are unchanged. A slow Usenet source can now start and later buffer rather than
+being rejected during selection.
+
+Focused coverage includes immediate Usenet readiness, torrent startup bursts,
+sustained output, cancellation, opening validation, source fallback, retained
+sessions and real FFmpeg HLS playback. Live-provider latency is not measured.

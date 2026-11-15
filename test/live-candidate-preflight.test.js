@@ -86,20 +86,20 @@ test('accepts an HLS opening whose audio and video share a nonzero timestamp ori
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('keeps a candidate that produces segments faster than playback', async () => {
-  let closed = false, position = 2;
+test('a playable Usenet opening is ready immediately without sampling future conversion speed', async () => {
+  let closed = false;
   let onClose;
   const waits = [];
   const job = { id: 'job', playbackTracks: [], diagnosticsEnabled: true, events: [] };
   const result = await preflightLiveCandidate(job, {}, 120, {
     sessionFactory: async options => { onClose = options.onClose; return ({
       read: async () => Buffer.from('#EXTINF:2.0,'),
-      health: () => ({ position, completed: false }),
+      health: () => ({ position: 2, completed: false }),
       close: async () => { closed = true; }
     }); },
     convert: async () => {},
     inspect: async () => [{ codec_type: 'video', start_time: '0' }],
-    wait: async ms => { waits.push(ms); position += 8; }
+    wait: async ms => { waits.push(ms); }
   });
   assert.equal(result.start, 120);
   assert.match(result.playlistUrl, /index\.m3u8$/);
@@ -107,98 +107,74 @@ test('keeps a candidate that produces segments faster than playback', async () =
   job.preparedSession = result;
   onClose();
   assert.equal(job.preparedSession, undefined);
-  assert.deepEqual(waits, [2000], 'a healthy converter must not wait through the six-second slow-path check');
-  assert.equal(job.events.find(event => event.activity === 'playback-speed').producedSeconds, 8);
+  assert.deepEqual(waits, [], 'a valid first segment must not wait for more output');
 });
 
-test('checks output speed while probing the first segment', async () => {
-  let position = 2, observationStarted = false;
-  const result = await preflightLiveCandidate({ id: 'job', playbackTracks: [] }, {}, 120, {
-    sessionFactory: async () => ({
-      read: async () => Buffer.from('#EXTINF:2.0,'),
-      health: () => ({ position, completed: false }),
-      close: async () => {}
-    }),
-    convert: async () => {},
-    inspect: async () => {
-      assert.equal(observationStarted, true, 'the speed observation should already be running during the HLS probe');
-      return [{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '0' }];
+for (const steadyRate of [0, 1.1, 1.3]) test(`torrent admission discards its startup burst and checks ${steadyRate}× sustained output`, async () => {
+  let elapsed = 0, position = 2, closed = false, onClose;
+  const job = { id: `torrent-rate-${steadyRate}`, torrentSource: {}, status: 'selecting' };
+  const pending = preflightLiveCandidate(job, {}, 0, {
+    sessionFactory: async options => {
+      onClose = options.onClose;
+      return {
+        read: async () => Buffer.from('#EXTINF:2.0,'),
+        health: () => ({ position, completed: false }),
+        close: async () => { closed = true; onClose(); }
+      };
     },
+    inspect: async () => [{ codec_type: 'video', start_time: '0' }],
+    now: () => elapsed,
     wait: async ms => {
-      if (ms === 2000) { observationStarted = true; position += 4; }
+      position += elapsed === 0 ? 100 : steadyRate * ms / 1000;
+      elapsed += ms;
     }
   });
-  assert.equal(result.start, 120);
+  if (steadyRate < 1.25) {
+    await assert.rejects(pending, { code: 'PLAYBACK_TOO_SLOW' });
+    assert.equal(closed, true, 'a rejected torrent must release its session');
+  } else {
+    const result = await pending;
+    assert.match(result.playlistUrl, /index\.m3u8$/);
+    assert.equal(closed, false);
+    onClose();
+  }
+  assert.ok(elapsed >= 10000, 'the startup burst must not replace the sustained sample');
 });
 
-test('a slow HLS probe does not inflate the measured conversion rate', async () => {
-  let elapsed = 0, position = 2;
-  await assert.rejects(preflightLiveCandidate({ id: 'job', playbackTracks: [] }, {}, 120, {
-    sessionFactory: async () => ({
-      read: async () => Buffer.from('#EXTINF:2.0,'),
-      health: () => ({ position, completed: false }),
-      close: async () => {}
-    }),
-    convert: async () => {},
-    inspect: async () => {
-      elapsed += 5000;
-      position = 8;
-      return [{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '0' }];
+test('completed torrent conversion needs no sustained speed sample', async () => {
+  let onClose;
+  const result = await preflightLiveCandidate({ id: 'torrent-complete', torrentSource: {} }, {}, 0, {
+    sessionFactory: async options => {
+      onClose = options.onClose;
+      return {
+        read: async () => Buffer.from('#EXTINF:2.0,'),
+        health: () => ({ position: 8, completed: true }),
+        close: async () => {}
+      };
     },
-    now: () => elapsed,
-    wait: async ms => { elapsed += ms; }
-  }), { code: 'PLAYBACK_TOO_SLOW' });
+    inspect: async () => [{ codec_type: 'video', start_time: '0' }],
+    wait: async () => { assert.fail('completed video cannot buffer waiting for more conversion'); }
+  });
+  assert.match(result.playlistUrl, /index\.m3u8$/);
+  onClose();
 });
 
-test('rejects and closes a candidate that cannot keep producing segments', async () => {
+test('cancelling a torrent speed sample closes its session promptly', async () => {
+  const controller = new AbortController();
   let closed = false;
-  const waits = [];
-  await assert.rejects(preflightLiveCandidate({ id: 'job' }, {}, 0, {
+  await assert.rejects(preflightLiveCandidate({ id: 'torrent-speed-cancel', torrentSource: {} }, { signal: controller.signal }, 0, {
     sessionFactory: async () => ({
       read: async () => Buffer.from('#EXTINF:2.0,'),
       health: () => ({ position: 2, completed: false }),
       close: async () => { closed = true; }
     }),
-    convert: async () => {}, inspect: async () => [{ codec_type: 'video', start_time: '0' }], wait: async ms => { waits.push(ms); }
-  }), { code: 'PLAYBACK_TOO_SLOW' });
-  assert.equal(closed, true);
-  assert.deepEqual(waits, [2000, 4000], 'a slow converter still gets the full observation window');
-});
-
-test('a torrent startup burst cannot substitute for sustained playback output', async () => {
-  let elapsed = 0, position = 2, burst = false, closed = false;
-  await assert.rejects(preflightLiveCandidate({ id: 'torrent-burst' }, {}, 0, {
-    sessionFactory: async () => ({
-      read: async () => Buffer.from('#EXTINF:2.0,'),
-      health: () => ({ position, completed: false }),
-      close: async () => { closed = true; }
-    }),
     inspect: async () => [{ codec_type: 'video', start_time: '0' }],
-    now: () => elapsed,
-    wait: async ms => { elapsed += ms; position += ms / 1000 * 0.6; if (!burst) { position += 8; burst = true; } },
-    observationMs: 10000, minimumRate: 1.25, sustained: true
-  }), { code: 'PLAYBACK_TOO_SLOW' });
+    wait: async () => { controller.abort(); }
+  }), { name: 'AbortError' });
   assert.equal(closed, true);
 });
 
-for (const rate of [1.1, 1.3]) test(`torrent output at ${rate}x ${rate < 1.25 ? 'fails' : 'passes'} the playback headroom requirement`, async () => {
-  let elapsed = 0, position = 2;
-  const check = preflightLiveCandidate({ id: `torrent-rate-${rate}` }, {}, 0, {
-    sessionFactory: async () => ({
-      read: async () => Buffer.from('#EXTINF:2.0,'),
-      health: () => ({ position, completed: false }),
-      close: async () => {}
-    }),
-    inspect: async () => [{ codec_type: 'video', start_time: '0' }],
-    now: () => elapsed,
-    wait: async ms => { elapsed += ms; position += ms / 1000 * rate; },
-    observationMs: 10000, minimumRate: 1.25, sustained: true
-  });
-  if (rate < 1.25) await assert.rejects(check, { code: 'PLAYBACK_TOO_SLOW' });
-  else assert.match((await check).playlistUrl, /index\.m3u8$/);
-});
-
-test('cancelling a sustained playback check closes its session promptly', { timeout: 1000 }, async () => {
+test('cancelling an opening inspection closes its session promptly', { timeout: 1000 }, async () => {
   const controller = new AbortController();
   let closed = false;
   await assert.rejects(preflightLiveCandidate({ id: 'torrent-cancel' }, { signal: controller.signal }, 0, {
@@ -210,8 +186,7 @@ test('cancelling a sustained playback check closes its session promptly', { time
     inspect: async () => {
       controller.abort();
       return [{ codec_type: 'video', start_time: '0' }];
-    },
-    observationMs: 10000, minimumRate: 1.25, sustained: true
+    }
   }), { name: 'AbortError' });
   assert.equal(closed, true);
 });
@@ -357,21 +332,6 @@ test('torrent Matroska opening remains playable when tail ranges are unavailable
   }
 });
 
-test('a converter that recovers after a slow start can pass the longer check', async () => {
-  let position = 2;
-  const waits = [];
-  await preflightLiveCandidate({ id: 'job' }, {}, 0, {
-    sessionFactory: async () => ({
-      read: async () => Buffer.from('#EXTINF:2.0,'),
-      health: () => ({ position, completed: false }),
-      close: async () => {}
-    }),
-    convert: async () => {}, inspect: async () => [{ codec_type: 'video', start_time: '0' }],
-    wait: async ms => { waits.push(ms); position += ms === 2000 ? 1 : 6; }
-  });
-  assert.deepEqual(waits, [2000, 4000]);
-});
-
 test('a candidate with no first segment fails within the short startup budget', async () => {
   let elapsed = 0, closed = false;
   const job = { id: 'job', diagnosticsEnabled: true, events: [] };
@@ -384,7 +344,6 @@ test('a candidate with no first segment fails within the short startup budget', 
   }), { code: 'NO_PLAYABLE_SEGMENT' });
   assert.equal(elapsed, 8000);
   assert.equal(closed, true);
-  assert.equal(job.events.find(event => event.activity === 'playback-speed').firstSegmentMs, 8000);
 });
 
 test('a slow-starting converter can pass a longer first-segment budget', async () => {
@@ -402,7 +361,7 @@ test('a slow-starting converter can pass a longer first-segment budget', async (
     firstSegmentMs: 15000
   });
   assert.match(result.playlistUrl, /index\.m3u8$/);
-  assert.equal(elapsed, 12000);
+  assert.equal(elapsed, 10000);
 });
 
 test('an advancing converter can finish a long first segment after the initial deadline', async () => {
@@ -419,6 +378,6 @@ test('an advancing converter can finish a long first segment after the initial d
     wait: async ms => { elapsed += ms; if (elapsed >= 8000 && position === 0) position = 11.8; if (ms === 2000) position += 8; },
     firstSegmentMs: 8000
   });
-  assert.equal(elapsed, 14000);
+  assert.equal(elapsed, 12000);
   assert.ok(job.events.some(event => event.message?.includes('waiting for the first segment boundary')));
 });

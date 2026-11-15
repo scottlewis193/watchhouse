@@ -48,8 +48,8 @@ test('torrent fallback rejects a slow source before exposing playback and select
     await preparePlayback(playback, settings, {
       search: async () => [], plans: createPlaybackPlanCache(), persistence: null,
       preflight: async candidate => {
-        assert.equal(candidate.status, 'selecting', 'torrent must not be ready before its speed check');
-        if (candidate.release.endsWith('.First')) throw Object.assign(new Error('Too slow for playback.'), { code: 'PLAYBACK_TOO_SLOW' });
+        assert.equal(candidate.status, 'selecting', 'torrent must not be ready before its opening check');
+        if (candidate.release.endsWith('.First')) throw Object.assign(new Error('Torrent playback is too slow.'), { code: 'PLAYBACK_TOO_SLOW' });
         return { sessionUrl: '/prepared/torrent' };
       }
     });
@@ -94,12 +94,12 @@ test('torrent preflight deadline frees the failed session before accepting the n
   });
 });
 
-test('torrent fallback remains unavailable when every source fails its speed check', async () => {
+test('torrent fallback remains unavailable when every source fails its opening check', async () => {
   await withTorrentIndexer(async settings => {
     const playback = job();
     await preparePlayback(playback, settings, {
       search: async () => [], plans: createPlaybackPlanCache(), persistence: null,
-      preflight: async () => { throw Object.assign(new Error('Too slow for playback.'), { code: 'PLAYBACK_TOO_SLOW' }); }
+      preflight: async () => { throw Object.assign(new Error('No playable segment.'), { code: 'NO_PLAYABLE_SEGMENT' }); }
     });
     assert.equal(playback.status, 'error');
     assert.equal(playback.preparedSession, undefined);
@@ -118,7 +118,7 @@ test('metadata-only torrent preparation is rechecked before foreground reuse', a
     await preparePlayback(foreground, settings, {
       ...options,
       preflight: async candidate => {
-        if (candidate.release.endsWith('.First')) throw Object.assign(new Error('Cached torrent has become too slow.'), { code: 'PLAYBACK_TOO_SLOW' });
+        if (candidate.release.endsWith('.First')) throw Object.assign(new Error('Cached torrent no longer opens.'), { code: 'NO_PLAYABLE_SEGMENT' });
         return { sessionUrl: '/prepared/replacement' };
       }
     });
@@ -254,7 +254,7 @@ test('tries the next release when the preferred live conversion cannot sustain p
     check: async () => Buffer.from('video'),
     preflight: async candidate => {
       checked.push(candidate.release);
-      if (candidate.release === 'Preferred') throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      if (candidate.release === 'Preferred') throw Object.assign(new Error('no playable segment'), { code: 'NO_PLAYABLE_SEGMENT' });
       return { start: 0, sessionUrl: '/prepared/replacement' };
     },
     health: { has: async () => false }, plans: createPlaybackPlanCache()
@@ -274,7 +274,7 @@ test('diagnostics retain every ranked candidate and its live selection outcome',
     search: async () => releases,
     load: async () => nzb('mkv'), check: async () => Buffer.from('video'),
     preflight: async candidate => {
-      if (candidate.release === 'Film.2160p') throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      if (candidate.release === 'Film.2160p') throw Object.assign(new Error('no playable segment'), { code: 'NO_PLAYABLE_SEGMENT' });
       enteredCheck();
       await finish;
       return { sessionUrl: '/prepared/1080p' };
@@ -284,7 +284,6 @@ test('diagnostics retain every ranked candidate and its live selection outcome',
   });
   await checking;
   assert.deepEqual(playback.releaseSelection.candidates.map(candidate => candidate.status), ['deferred', 'checking', 'skipped', 'queued']);
-  assert.match(playback.releaseSelection.candidates[0].reason, /too slow/);
   assert.match(playback.releaseSelection.candidates[2].reason, /cooldown/);
   completeCheck();
   await preparation;
@@ -461,7 +460,7 @@ test('falls back from an unplayable 2160p release to 1080p before trying 720p', 
     check: async () => Buffer.from('video'),
     preflight: async candidate => {
       checked.push(candidate.release);
-      if (candidate.release.includes('2160p')) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      if (candidate.release.includes('2160p')) throw Object.assign(new Error('no playable segment'), { code: 'NO_PLAYABLE_SEGMENT' });
       return { start: 0, sessionUrl: '/prepared/1080p' };
     },
     health: { has: async () => false }, plans: createPlaybackPlanCache()
@@ -489,7 +488,7 @@ test('size tiers defer NZB and provider work until earlier tiers fail, retaining
       },
       check: async file => { checked.push(file.subject); return Buffer.from('video'); },
       preflight: async candidate => {
-        if (candidate.release !== order[chosen].title) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+        if (candidate.release !== order[chosen].title) throw Object.assign(new Error('no playable segment'), { code: 'NO_PLAYABLE_SEGMENT' });
         return { sessionUrl: '/prepared/video' };
       },
       health: { has: async () => false }, plans: createPlaybackPlanCache()
@@ -530,7 +529,7 @@ test('ignores a previously saved HDR source when finding an SDR release', async 
   assert.equal(playback.release, 'Film.1080p.SDR');
 });
 
-test('a newly opened 2160p archive must pass the live conversion check before selection', async () => {
+test('a stalled 2160p archive falls back without permanently rejecting the source', async () => {
   const playback = job(), checked = [], rejected = [];
   await preparePlayback(playback, { usenetHost: 'fixture', targetResolution: '2160p' }, {
     search: async () => [{ title: 'Film.2160p' }, { title: 'Film.1080p' }],
@@ -546,7 +545,7 @@ test('a newly opened 2160p archive must pass the live conversion check before se
     },
     preflight: async candidate => {
       checked.push(candidate.release);
-      if (candidate.release.includes('2160p')) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      if (candidate.release.includes('2160p')) throw Object.assign(new Error('no playable segment'), { code: 'NO_PLAYABLE_SEGMENT' });
       return { sessionUrl: '/prepared/1080p' };
     },
     archivePlans: { get: () => null, delete: () => {} },
@@ -554,7 +553,7 @@ test('a newly opened 2160p archive must pass the live conversion check before se
     plans: createPlaybackPlanCache()
   });
   assert.deepEqual(checked, ['Film.2160p', 'Film.1080p']);
-  assert.deepEqual(rejected, ['Film.2160p']);
+  assert.deepEqual(rejected, [], 'a missing startup segment is not proof of a permanently bad source');
   assert.equal(playback.status, 'ready');
   assert.equal(playback.release, 'Film.1080p');
 });
@@ -581,7 +580,7 @@ test('repeated missing archives defer their resolution without dropping healthy 
         return true;
       },
       preflight: async candidate => {
-        if (candidate.release === lower.title && !lowerPlayable) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+        if (candidate.release === lower.title && !lowerPlayable) throw Object.assign(new Error('no playable segment'), { code: 'NO_PLAYABLE_SEGMENT' });
         return { sessionUrl: '/prepared/video' };
       },
       archivePlans: { get: () => null, delete: () => {} },
@@ -595,13 +594,12 @@ test('repeated missing archives defer their resolution without dropping healthy 
   }
 });
 
-test('checks a targeted 2160p stream live despite one pessimistic provider speed sample', async () => {
+test('checks a targeted 2160p opening before selecting it', async () => {
   const playback = { ...job(), media: { ...media, durationHint: 60 } }, checked = [];
   await preparePlayback(playback, { targetResolution: '2160p' }, {
     search: async () => [{ title: 'Slow.Horses.S01E02.2160p' }, { title: 'Slow.Horses.S01E02.1080p' }],
     load: async release => nzb('mkv').replace('episode.mkv', `${release.title}.mkv`),
     check: async file => { file.segments[0].decodedBytes = 12_000_000; return Buffer.from('video'); },
-    speedMeter: { record() {}, rate: () => 100_000 },
     preflight: async candidate => { checked.push(candidate.release); return { start: 0, sessionUrl: '/prepared/2160p' }; },
     health: { has: async () => false }, plans: createPlaybackPlanCache()
   });
@@ -610,54 +608,47 @@ test('checks a targeted 2160p stream live despite one pessimistic provider speed
   assert.equal(playback.status, 'ready');
 });
 
-test('limits slow-sample 2160p trials before falling back to a playable 1080p release', async () => {
+test('checks each 2160p opening before falling back when none starts playback', async () => {
   const playback = { ...job(), media: { ...media, durationHint: 60 } }, checked = [];
   const releases = ['2160p.A', '2160p.B', '2160p.C', '1080p'].map(label => ({ title: `Slow.Horses.S01E02.${label}` }));
   await preparePlayback(playback, { targetResolution: '2160p' }, {
     search: async () => releases,
     load: async release => nzb('mkv').replace('episode.mkv', `${release.title}.mkv`),
     check: async file => { file.segments[0].decodedBytes = file.subject.includes('2160p') ? 12_000_000 : 3_000_000; return Buffer.from('video'); },
-    speedMeter: { record() {}, rate: () => 150_000 },
     preflight: async candidate => {
       checked.push(candidate.release);
-      if (candidate.release.includes('2160p')) throw Object.assign(new Error('too slow'), { code: 'PLAYBACK_TOO_SLOW' });
+      if (candidate.release.includes('2160p')) throw Object.assign(new Error('no first segment'), { code: 'NO_PLAYABLE_SEGMENT' });
       return { start: 0, sessionUrl: '/prepared/1080p' };
     },
     health: { has: async () => false }, plans: createPlaybackPlanCache()
   });
-  assert.deepEqual(checked, [releases[0].title, releases[1].title, releases[3].title]);
+  assert.deepEqual(checked, releases.map(release => release.title));
   assert.equal(playback.release, releases[3].title);
 });
 
-test('uses a downloaded copy if sampled provider speed cannot support any candidate', async () => {
-  const playback = { ...job(), media: { ...media, durationHint: 60 }, diagnosticsEnabled: true };
-  let downloaded = false, preflighted = false;
+test('large releases start live without a provider speed gate or downloaded fallback', async () => {
+  const playback = { ...job(), media: { ...media, durationHint: 60 } };
+  let preflighted = false;
   await preparePlayback(playback, {}, {
     search: async () => [{ title: 'Large' }], load: async () => nzb('mkv'),
     check: async file => { file.segments[0].decodedBytes = 60_000_000; return Buffer.from('video'); },
-    speedMeter: { record() {}, rate: () => 100_000 },
-    preflight: async () => { preflighted = true; },
-    cache: async candidate => { downloaded = true; candidate.status = 'ready'; candidate.mode = 'cached'; },
+    preflight: async () => { preflighted = true; return { sessionUrl: '/prepared/large' }; },
+    cache: async () => { assert.fail('a valid opening must not trigger a downloaded fallback'); },
     archive: async () => {},
     health: { has: async () => false }, plans: createPlaybackPlanCache()
   });
-  assert.equal(preflighted, false);
-  const speed = playback.events.find(event => event.activity === 'provider-speed');
-  assert.equal(speed.release, 'Large');
-  assert.equal(speed.bytesPerSecond, 100_000);
-  assert.equal(speed.requiredBytesPerSecond, 1_500_000);
-  assert.equal(downloaded, true);
+  assert.equal(preflighted, true);
   assert.equal(playback.status, 'ready');
-  assert.equal(playback.mode, 'cached');
+  assert.equal(playback.mode, 'direct');
+  assert.equal(playback.preparedSession.sessionUrl, '/prepared/large');
 });
 
-test('best quality verifies a marginal converter instead of rejecting a short startup speed sample', async () => {
+test('best quality validates the opening before exposing a prepared session', async () => {
   const playback = { ...job(), media: { ...media, durationHint: 60 } };
   let checked = 0;
   await preparePlayback(playback, { playbackQuality: 'quality' }, {
     search: async () => [{ title: 'Marginal 4K' }], load: async () => nzb('mkv'),
     check: async file => { file.segments[0].decodedBytes = 12_000_000; return Buffer.from('video'); },
-    speedMeter: { record() {}, rate: () => 250_000 },
     preflight: async () => { checked++; return { start: 0, sessionUrl: '/checked' }; },
     health: { has: async () => false }, plans: createPlaybackPlanCache()
   });

@@ -25,7 +25,7 @@ for (const origin of [0, 40]) {
           completion = once(child, 'close').then(([code]) => { assert.equal(code, 0, error); });
           await completion;
           return { completion, stop: () => completion, position: () => 24, expectedDuration: 24 };
-        }, observationMs: 0
+        }
       });
       await completion;
       const segment = await session.read('segment-000002.m4s');

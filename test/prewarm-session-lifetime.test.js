@@ -18,8 +18,7 @@ test('abandoning successful speculative playback closes its retained HLS session
   try {
     await preflightLiveCandidate({ id: 'speculative', media: { type: 'movie' }, events: [], speculative: true }, { signal: controller.signal }, 0, {
       sessionFactory: async options => { prepared = await createHlsSession({ ...options, root, maxSessions: 1, produce }); return prepared; },
-      inspect: async () => [{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '0' }],
-      observationMs: 0, minimumRate: 0
+      inspect: async () => [{ codec_type: 'video', start_time: '0' }, { codec_type: 'audio', start_time: '0' }]
     });
     assert.equal(prepared.health().closed, false);
     controller.abort(new Error('Play intent abandoned'));
