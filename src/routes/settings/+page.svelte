@@ -105,7 +105,7 @@
             <label class="grid content-start gap-2">
               <span class="text-sm font-medium">Playback preference</span>
               <select class="select select-bordered w-full" bind:value={form.playbackQuality}><option value="fast">Start fastest</option><option value="balanced">Balanced</option><option value="quality">Best quality</option></select>
-              <span class="text-xs leading-relaxed text-base-content/55">Fastest favours browser-friendly files over large archives.</span>
+              <span class="text-xs leading-relaxed text-base-content/55">Fastest favours browser-friendly files over large archives. Best quality favours resolution and source- and codec-aware bitrate, with higher-quality conversion when needed. It may use more bandwidth and CPU and take longer to start.</span>
             </label>
             <label class="grid content-start gap-2">
               <span class="text-sm font-medium">Parallel connections</span>
@@ -115,7 +115,7 @@
             <label class="grid content-start gap-2">
               <span class="text-sm font-medium">Target resolution</span>
               <select class="select select-bordered w-full" bind:value={form.targetResolution}><option value="auto">Automatic</option><option value="2160p">2160p (4K)</option><option value="1080p">1080p</option><option value="720p">720p</option></select>
-              <span class="text-xs leading-relaxed text-base-content/55">Automatic playback tries this resolution first, then lower resolutions if needed. It skips known higher resolutions. Manual release choices remain available.</span>
+              <span class="text-xs leading-relaxed text-base-content/55">Automatic playback skips known resolutions above this target. Within that limit, your playback preference determines ranking; lower resolutions remain available as fallbacks. Manual release choices remain available.</span>
             </label>
           </div>
 

@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { isIP } from 'node:net';
-import { englishAudioRelease, episodeTag, playbackStrategy, rankReleases, releaseResolution, releaseSizeTier, releaseTitleMatches, titleVariants } from '../../../media.js';
+import { englishAudioRelease, episodeTag, playbackStrategy, rankReleases, releaseQuality, releaseResolution, releaseSizeTier, releaseTitleMatches, titleVariants } from '../../../media.js';
 import { createConversionAdmission } from './conversion-admission.js';
 import { createSegmentCache } from './segment-cache.js';
 
@@ -91,7 +91,8 @@ function rankTorrentReleases(releases, media, settings) {
     // Indexer titles often omit the container. H264 can still remux in an MKV;
     // actual metadata and playback validation remain authoritative.
     const subject = /\.(?:mkv|mp4|m4v|mov|webm)(?:"|\s|$)/i.test(release.title) ? release.title : 'candidate.mkv';
-    const key = `${releaseSizeTier(release, media, settings)}:${fastest ? 'auto' : releaseResolution(release)}:${playbackStrategy(subject, release.title)}:${settings.allowUnverifiedAnimeAudio ? englishAudioRelease(release) : true}`;
+    const quality = settings.playbackQuality === 'quality' ? releaseQuality(release, media) : null;
+    const key = `${releaseSizeTier(release, media, settings)}:${fastest ? 'auto' : releaseResolution(release)}:${playbackStrategy(subject, release.title)}:${settings.allowUnverifiedAnimeAudio ? englishAudioRelease(release) : true}:${quality?.source || ''}:${quality?.bitrateTier || ''}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(index);
   }

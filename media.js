@@ -176,28 +176,104 @@ export function releaseResolution(release) {
   return 0;
 }
 
-// Soft limits: keep unknown sizes and oversized releases available as fallbacks.
+const QUALITY_CODECS = ['Unknown', 'H.264', 'HEVC', 'AV1'];
+const QUALITY_SOURCES = ['REMUX', 'Blu-ray', 'WEB-DL', 'WEBRip', 'HDTV', 'DVD', 'Unknown', 'CAM'];
+const QUALITY_BITRATE_TIERS = ['preferred', 'unknown', 'high', 'low'];
+// Broad TOTAL bitrate heuristics, not measured video quality. Efficient codecs
+// need less bitrate; audio, grain and disc remuxes can legitimately need more.
+const QUALITY_BITRATE_BANDS = {
+  2160: { minimum: [15, 15, 8, 6], maximum: 100, remuxMaximum: 160 },
+  1080: { minimum: [5, 5, 3, 2.5], maximum: 40, remuxMaximum: 80 },
+  720: { minimum: [2.5, 2.5, 1.5, 1.2], maximum: 20, remuxMaximum: 40 }
+};
+
+function qualityCodec(release) {
+  const title = String(release?.title || '');
+  if (/(?:^|[\W_])av1(?:$|[\W_])/i.test(title)) return 3;
+  if (/(?:^|[\W_])(?:hevc|[hx][ ._-]?265)(?:$|[\W_])/i.test(title)) return 2;
+  if (/(?:^|[\W_])(?:avc|[hx][ ._-]?264)(?:$|[\W_])/i.test(title)) return 1;
+  return 0;
+}
+
+function qualitySource(release) {
+  const title = String(release?.title || '');
+  // Bad acquisition tags override better-looking provenance elsewhere in a name.
+  if (/(?:^|[\W_])(?:hdcam|cam|hdts|telesync|telecine|ts|tc)(?:$|[\W_])/i.test(title)) return 7;
+  if (/(?:^|[\W_])remux(?:$|[\W_])/i.test(title)) return 0;
+  if (/(?:^|[\W_])(?:blu[ ._-]?ray|b[dr]rip)(?:$|[\W_])/i.test(title)) return 1;
+  if (/(?:^|[\W_])web[ ._-]?dl(?:$|[\W_])/i.test(title)) return 2;
+  if (/(?:^|[\W_])web[ ._-]?rip(?:$|[\W_])/i.test(title)) return 3;
+  if (/(?:^|[\W_])hdtv(?:$|[\W_])/i.test(title)) return 4;
+  if (/(?:^|[\W_])dvd(?:rip)?(?:$|[\W_])/i.test(title)) return 5;
+  return 6;
+}
+
+function qualityDuration(media) {
+  const duration = Number(media?.durationHint);
+  return Number.isFinite(duration) && duration > 0 ? duration : media?.type === 'tv' ? 2700 : 7200;
+}
+
+function qualityBitrate(release, media) {
+  const size = Number(release?.size);
+  return Number.isFinite(size) && size > 0 ? size / qualityDuration(media) * 8 / 1e6 : null;
+}
+
+function qualityBitrateTier(release, media) {
+  const bitrate = qualityBitrate(release, media);
+  const band = QUALITY_BITRATE_BANDS[releaseResolution(release)];
+  if (bitrate === null || !band) return 1;
+  if (bitrate < band.minimum[qualityCodec(release)]) return 3;
+  if (bitrate > (qualitySource(release) === 0 ? band.remuxMaximum : band.maximum)) return 2;
+  return 0;
+}
+
+export function releaseQuality(release, media) {
+  const resolution = releaseResolution(release);
+  const codec = QUALITY_CODECS[qualityCodec(release)];
+  const source = QUALITY_SOURCES[qualitySource(release)];
+  const bitrateMbps = qualityBitrate(release, media);
+  const bitrateTier = QUALITY_BITRATE_TIERS[qualityBitrateTier(release, media)];
+  const duration = Number(media?.durationHint);
+  const runtimeEstimated = !Number.isFinite(duration) || duration <= 0;
+  const bitrate = bitrateMbps === null ? 'Total bitrate unknown'
+    : `~${bitrateMbps.toFixed(1)} Mbps total (estimate from size${runtimeEstimated ? '; runtime estimate' : ' and runtime'})`;
+  const warning = bitrateTier === 'low' ? ' · Low estimated bitrate for this resolution/codec; may be heavily compressed'
+    : bitrateTier === 'high' ? ' · Above the preferred estimated bitrate band' : '';
+  return {
+    codec, source, bitrateMbps, bitrateEstimated: bitrateMbps !== null, bitrateTier,
+    summary: `${resolution ? `${resolution}p` : 'Resolution unknown'} · ${source === 'Unknown' ? 'Source unknown' : source} · ${codec === 'Unknown' ? 'Codec unknown' : codec} · ${bitrate}${warning}`
+  };
+}
+
+// Soft tiers keep every release available. Best uses bitrate bands; the other
+// presets retain their existing GiB/hour limits.
 export function releaseSizeTier(release, media, preferences = {}) {
   if (preferences.manualReleaseSelection) return 0;
+  if (preferences.playbackQuality === 'quality') return qualityBitrateTier(release, media);
   const size = Number(release.size);
   if (!Number.isFinite(size) || size <= 0) return 1;
   const duration = Number(media.durationHint);
   const hours = Number.isFinite(duration) && duration > 0
     ? duration / 3600 : media.type === 'tv' ? 0.75 : 2;
-  const gibPerHour = { fast: 2, balanced: 4, quality: 6 }[preferences.playbackQuality] || 4;
+  const gibPerHour = { fast: 2, balanced: 4 }[preferences.playbackQuality] || 4;
   return size <= gibPerHour * hours * 1024 ** 3 ? 0 : 2;
 }
 
 export function rankReleases(releases, media, preferences) {
   const target = { '2160p': 2160, '1080p': 1080, '720p': 720 }[preferences?.targetResolution] || 0;
+  const best = preferences?.playbackQuality === 'quality';
   return releases
     .filter(release => releaseTitleMatches(release, media))
     .filter(release => englishAudioRelease(release) || preferences?.allowUnverifiedAnimeAudio && unverifiedAnimeAudioRelease(release))
     .filter(release => releaseDynamicRange(release) === 'sdr')
     .filter(release => !target || releaseResolution(release) <= target)
     .sort((a, b) => (preferences?.allowUnverifiedAnimeAudio ? Number(englishAudioRelease(b)) - Number(englishAudioRelease(a)) : 0)
-      || releaseSizeTier(a, media, preferences) - releaseSizeTier(b, media, preferences)
-      || (target ? releaseResolution(b) - releaseResolution(a) : 0)
+      || (best
+        ? releaseResolution(b) - releaseResolution(a)
+          || qualitySource(a) - qualitySource(b)
+          || qualityBitrateTier(a, media) - qualityBitrateTier(b, media)
+        : releaseSizeTier(a, media, preferences) - releaseSizeTier(b, media, preferences)
+          || (target ? releaseResolution(b) - releaseResolution(a) : 0))
       || releaseScore(b, media, preferences) - releaseScore(a, media, preferences));
 }
 

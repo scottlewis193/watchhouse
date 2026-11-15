@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { catalogueAlternativeTitles, findReleases } from '../src/lib/server/streamer.js';
-import { rankReleases } from '../media.js';
+import { rankReleases, releaseQuality, releaseSizeTier } from '../media.js';
 const media = { type: 'tv', title: 'Silo', season: 1, episode: 1 };
 const settings = { indexerUrl: 'https://indexer.example', indexerKey: 'test' };
 const xml = (start, count, total) => `<rss><newznab:response offset="${start}" total="${total}" />${Array.from({length:count}, (_, i) => `<item><title>Silo.S01E01.1080p.H264.Release${start+i}</title><enclosure url="https://indexer.example/nzb/${start+i}" /></item>`).join('')}</rss>`;
@@ -89,11 +89,11 @@ test('automatic search orders target resolution before lower fallbacks while man
   assert.deepEqual(target.map(release => release.title), [...titles].reverse());
   const capped = await findReleases({ ...settings, targetResolution: '1080p' }, media, true, { request });
   assert.deepEqual(capped.map(release => release.title), titles.slice(0, 2).reverse());
-  const manual = await findReleases({ ...settings, targetResolution: '720p', manualReleaseSelection: true }, media, true, { request });
-  assert.equal(manual.length, 3);
+  const manual = await findReleases({ ...settings, playbackQuality: 'quality', targetResolution: '720p', manualReleaseSelection: true }, media, true, { request });
+  assert.deepEqual(manual.map(release => release.title), [...titles].reverse());
 });
 
-test('automatic search defers preset-oversized releases without hiding manual choices or fallbacks', async () => {
+test('automatic presets rank size fallbacks without hiding manual choices', async () => {
   const movie = { type: 'movie', title: 'Film', year: '2024', durationHint: 3600 };
   const sizes = [7, 5, 3, 0, 1];
   const titles = sizes.map(size => `Film.2024.1080p.WEB-DL.H264.Release${size}`);
@@ -102,7 +102,7 @@ test('automatic search defers preset-oversized releases without hiding manual ch
   for (const [playbackQuality, order] of [
     ['fast', [4, 3, 0, 1, 2]],
     ['balanced', [2, 4, 3, 0, 1]],
-    ['quality', [1, 2, 4, 3, 0]]
+    ['quality', [0, 1, 2, 3, 4]]
   ]) {
     const automatic = await findReleases({ ...settings, playbackQuality }, movie, true, { request });
     assert.deepEqual(automatic.map(release => release.title), order.map(index => titles[index]));
@@ -130,6 +130,128 @@ test('size deferral scales with runtime, includes the exact cap, and treats inva
   for (const size of [undefined, 0, -1, NaN, Infinity]) {
     const invalid = { ...large, size };
     assert.deepEqual(rankReleases([invalid, small], media, preferences), [small, invalid]);
+  }
+});
+
+test('Best ranks known output resolution before source and size, with requested resolution as a ceiling', () => {
+  const movie = { type: 'movie', title: 'Film', durationHint: 7200 };
+  const fullHd = { title: 'Film.1080p.BluRay.REMUX.H264', size: 8 * 1024 ** 3 };
+  const uhd = { title: 'Film.2160p.WEB-DL.HEVC', size: 20 * 1024 ** 3 };
+  const unknown = { title: 'Film.BluRay.REMUX.H264', size: 40 * 1024 ** 3 };
+  const downscale = { title: 'Film.1080p.UHD.BluRay.x265', size: 12 * 1024 ** 3 };
+  const preferences = { playbackQuality: 'quality' };
+  assert.deepEqual(rankReleases([unknown, fullHd, downscale, uhd], movie, preferences), [uhd, fullHd, downscale, unknown]);
+  assert.deepEqual(rankReleases([unknown, fullHd, uhd], movie, { ...preferences, targetResolution: '1080p' }), [fullHd, unknown]);
+  assert.deepEqual(rankReleases([unknown, fullHd, uhd], movie, { ...preferences, targetResolution: '2160p' }), [uhd, fullHd, unknown]);
+});
+
+test('Best prefers source provenance then adequate bitrate, without rewarding unlimited size', () => {
+  const movie = { type: 'movie', title: 'Film', durationHint: 3600 };
+  const remux = { title: 'Film.2160p.BluRay.REMUX.HEVC', size: 50e9 };
+  const bluray = { title: 'Film.2160p.BluRay.HEVC', size: 8e9 };
+  const low = { title: 'Film.2160p.WEB-DL.HEVC.Tiny', size: 1e9 };
+  const preferred = { title: 'Film.2160p.WEB-DL.HEVC.Normal', size: 8e9 };
+  const larger = { title: 'Film.2160p.WEB-DL.HEVC.Larger', size: 16e9 };
+  const high = { title: 'Film.2160p.WEB-DL.HEVC.Huge', size: 80e9 };
+  const unknown = { title: 'Film.2160p.WEB-DL.HEVC.Unknown' };
+  const webrip = { title: 'Film.2160p.WEBRip.HEVC', size: 8e9 };
+  const releases = [low, preferred, larger, high, unknown, webrip, bluray, remux];
+  assert.deepEqual(rankReleases(releases, movie, { playbackQuality: 'quality' }),
+    [remux, bluray, preferred, larger, unknown, high, low, webrip]);
+  assert.deepEqual(rankReleases([larger, preferred], movie, { playbackQuality: 'quality' }), [larger, preferred]);
+  assert.deepEqual(rankReleases(releases, movie, { playbackQuality: 'quality', manualReleaseSelection: true }),
+    [remux, bluray, preferred, larger, unknown, high, low, webrip]);
+});
+
+test('Best judges efficient codecs by their own bitrate bands, not a blanket file-size cap', () => {
+  const movie = { type: 'movie', title: 'Film', durationHint: 3600 };
+  const avc = { title: 'Film.2160p.WEB-DL.H264', size: 3.6e9 };
+  const hevc = { title: 'Film.2160p.WEB-DL.H265', size: 3.6e9 };
+  const av1 = { title: 'Film.2160p.WEB-DL.AV1', size: 2.7e9 };
+  const adequateAvc = { ...avc, size: 9e9 };
+  assert.equal(releaseQuality(avc, movie).bitrateTier, 'low');
+  assert.equal(releaseQuality(hevc, movie).bitrateTier, 'preferred');
+  assert.equal(releaseQuality(av1, movie).bitrateTier, 'preferred');
+  assert.deepEqual(rankReleases([avc, hevc, av1], movie, { playbackQuality: 'quality' }), [hevc, av1, avc]);
+  assert.deepEqual(rankReleases([adequateAvc, hevc], movie, { playbackQuality: 'quality' }), [adequateAvc, hevc]);
+  assert.equal(releaseSizeTier(adequateAvc, movie, { playbackQuality: 'quality' }), 0);
+});
+
+test('quality summaries expose estimated total bitrate, title provenance and low-bitrate warnings', () => {
+  const movie = { type: 'movie', title: 'Film', durationHint: 7200 };
+  const release = { title: 'Film.2160p.WEB-DL.x265', size: 9e9 };
+  assert.deepEqual(releaseQuality(release, movie), {
+    codec: 'HEVC', source: 'WEB-DL', bitrateMbps: 10, bitrateEstimated: true, bitrateTier: 'preferred',
+    summary: '2160p · WEB-DL · HEVC · ~10.0 Mbps total (estimate from size and runtime)'
+  });
+  const low = releaseQuality({ ...release, size: 9e8 }, movie);
+  assert.equal(low.bitrateMbps, 1);
+  assert.equal(low.bitrateTier, 'low');
+  assert.match(low.summary, /Low estimated bitrate.*may be heavily compressed/);
+  assert.doesNotMatch(low.summary, /video bitrate|measured quality/i);
+  for (const [tag, source] of [
+    ['Blu-ray.REMUX', 'REMUX'], ['BDRip', 'Blu-ray'], ['WEB_DL', 'WEB-DL'],
+    ['WEBRip', 'WEBRip'], ['HDTV', 'HDTV'], ['DVDRip', 'DVD'], ['CAM.BluRay', 'CAM']
+  ]) {
+    assert.equal(releaseQuality({ title: `Film.1080p.${tag}.H.264` }, movie).source, source);
+  }
+});
+
+test('quality metadata and ranking retain unknown sizes and label fallback runtime estimates', () => {
+  const movie = { type: 'movie', title: 'Film' };
+  const release = { title: 'Film.2160p.WEB-DL.HEVC', size: 9e9 };
+  for (const durationHint of [undefined, 0, -1, NaN, Infinity]) {
+    const quality = releaseQuality(release, { ...movie, durationHint });
+    assert.equal(quality.bitrateMbps, 10);
+    assert.equal(quality.bitrateEstimated, true);
+    assert.match(quality.summary, /runtime estimate/);
+  }
+  assert.equal(releaseQuality({ ...release, size: 3.375e9 }, { type: 'tv' }).bitrateMbps, 10);
+  assert.doesNotMatch(releaseQuality(release, { ...movie, durationHint: '7200' }).summary, /runtime estimate/);
+  const low = { ...release, size: 9e8 };
+  for (const size of [undefined, 0, -1, NaN, Infinity]) {
+    const unknown = { ...release, size };
+    const quality = releaseQuality(unknown, movie);
+    assert.equal(quality.bitrateMbps, null);
+    assert.equal(quality.bitrateEstimated, false);
+    assert.equal(quality.bitrateTier, 'unknown');
+    assert.match(quality.summary, /Total bitrate unknown/);
+    assert.deepEqual(rankReleases([low, unknown, release], movie, { playbackQuality: 'quality' }), [release, unknown, low]);
+  }
+  const unknown = releaseQuality({ title: 'Film', size: 9e9 }, movie);
+  assert.equal(unknown.codec, 'Unknown');
+  assert.equal(unknown.source, 'Unknown');
+  assert.equal(unknown.bitrateTier, 'unknown');
+  assert.match(unknown.summary, /Resolution unknown.*Source unknown.*Codec unknown/);
+});
+
+test('quality bitrate bands include exact boundaries across resolutions and codecs', () => {
+  const movie = { type: 'movie', title: 'Film', durationHint: 3600 };
+  for (const [resolution, codec, minimum, maximum] of [
+    [2160, 'H264', 15, 100], [2160, 'HEVC', 8, 100], [2160, 'AV1', 6, 100],
+    [1080, 'H264', 5, 40], [1080, 'HEVC', 3, 40], [1080, 'AV1', 2.5, 40],
+    [720, 'H264', 2.5, 20], [720, 'HEVC', 1.5, 20], [720, 'AV1', 1.2, 20]
+  ]) {
+    const candidate = { title: `Film.${resolution}p.WEB-DL.${codec}` };
+    for (const [mbps, expected] of [[minimum - 0.1, 'low'], [minimum, 'preferred'], [maximum, 'preferred'], [maximum + 1, 'high']]) {
+      assert.equal(releaseQuality({ ...candidate, size: mbps * 450_000_000 }, movie).bitrateTier, expected,
+        `${resolution}p ${codec} at ${mbps} Mbps`);
+    }
+  }
+});
+
+test('Best retains English, SDR and title filtering for automatic and manual choices', () => {
+  const movie = { type: 'movie', title: 'Film', durationHint: 7200 };
+  const valid = { title: 'Film.2160p.WEB-DL.English.HEVC', size: 9e9 };
+  const releases = [
+    { ...valid, title: 'Another.Film.2160p.WEB-DL.English.HEVC' },
+    { ...valid, title: 'Film.2160p.WEB-DL.French.HEVC' },
+    { ...valid, title: 'Film.2160p.WEB-DL.English.HDR10.HEVC' },
+    { ...valid, title: 'Film.2160p.WEB-DL.English.DV.HEVC' },
+    valid
+  ];
+  for (const manualReleaseSelection of [false, true]) {
+    assert.deepEqual(rankReleases(releases, movie, { playbackQuality: 'quality', manualReleaseSelection }), [valid]);
   }
 });
 

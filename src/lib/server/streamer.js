@@ -8,7 +8,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { englishAudioRelease, episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseAudioConfidence, releaseDynamicRange, releaseReadiness, releaseResolution, releaseScore, releaseSizeTier, titleVariants, unverifiedAnimeAudioRelease } from '../../../media.js';
+import { englishAudioRelease, episodeTag, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseAudioConfidence, releaseDynamicRange, releaseQuality, releaseReadiness, releaseResolution, releaseScore, releaseSizeTier, titleVariants, unverifiedAnimeAudioRelease } from '../../../media.js';
 import { offlineMediaKey } from '../offline.js';
 import { cancelDownloadJob, isDownloadCancelled, onDownloadCancel, throwIfDownloadCancelled } from './download-cancellation.js';
 import { articleSetIdentity, createReleaseHealthStore, releaseIdentity } from './release-health.js';
@@ -168,12 +168,14 @@ async function prepareTorrentPlayback(job, settings, persistence = playbackPersi
     const validate = async (source, { signal = settings.signal } = {}) => {
       signal.throwIfAborted();
       if (job.torrentSource?.infoHash !== source.infoHash) {
+        delete job.videoHandling; delete job.quality;
         delete job.preparedSession;
         delete job.torrentPreflightInfoHash;
       }
       delete job.progressiveArchive; delete job.archives;
       Object.assign(job, { torrentSource: source, file: { subject: source.name, segments: [] },
         release: source.title || source.name, releaseKey: `torrent:${source.infoHash}`,
+        quality: releaseQuality({ title: source.title || source.name, size: source.size }, job.media),
         strategy: source.strategy || playbackStrategy(source.name, source.title), mode: 'direct' });
       const checking = foreground ?? (!job.speculative && !job.prepareAhead && !job.backgroundFor);
       if (checking && job.torrentPreflightInfoHash !== source.infoHash) {
@@ -873,7 +875,7 @@ async function configurePlaybackAcceleration(job, strategy, toneMap = false, int
   }
   return acceleration;
 }
-export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null, repairVideoFrameRate = null, frameInterpolation = false) {
+export function ffmpegArgs(strategy, input, output, fragmented = false, start = 0, untaggedAudioTrack = 2, seekableInput = false, toneMap = false, acceleration = null, repairVideoFrameRate = null, frameInterpolation = false, playbackQuality = 'balanced') {
   const fallbackIndex = Math.min(7, Math.max(0, (Number(untaggedAudioTrack) || 2) - 1));
   const englishMetadataMaps = [
     '0:a:m:language:eng:?', '0:a:m:language:en:?', '0:a:m:language:en-US:?', '0:a:m:language:en-GB:?',
@@ -900,17 +902,23 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
   const filter = filters.join(',');
   const filterArgs = filter ? ['-vf', filter] : [];
   const colorArgs = toneMap ? ['-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709'] : [];
+  const bestQuality = playbackQuality === 'quality';
   const videoCodecArgs = !transcodeVideo
     ? ['-c:v', 'copy']
     : vaapi
-      ? ['-c:v', 'h264_vaapi', '-rc_mode', 'CQP', '-qp', '22']
+      ? ['-c:v', 'h264_vaapi', '-rc_mode', 'CQP', '-qp', bestQuality ? '18' : '22']
       : nvenc
-        ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '22', '-b:v', '0', '-pix_fmt', 'yuv420p']
-        : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p'];
+        ? ['-c:v', 'h264_nvenc', '-preset', bestQuality ? 'p5' : 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', bestQuality ? '18' : '22', '-b:v', '0', '-pix_fmt', 'yuv420p']
+        : ['-c:v', 'libx264', '-preset', bestQuality ? 'fast' : 'veryfast', '-crf', bestQuality ? '18' : '22', '-pix_fmt', 'yuv420p'];
   return ['-y', '-loglevel', 'error', ...hardwareInputArgs, ...reconnect, ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), ...filterArgs, ...colorArgs, ...videoCodecArgs, '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
 }
 export function audioAwarePlaybackStrategy(suggested, streams = []) {
   return suggested === 'raw' && streams.filter(stream => stream.codec_type === 'audio').length > 1 ? 'remux' : suggested;
+}
+function describeVideoHandling(strategy, playbackQuality, forceTranscode = false) {
+  return !forceTranscode && ['raw', 'remux'].includes(strategy)
+    ? 'Video preserved · no video re-encode'
+    : `Video re-encoded to H.264 · ${playbackQuality === 'quality' ? 'Best quality' : 'standard conversion'}`;
 }
 export function shouldCacheDirectPlayback(job, settings = {}) {
   return Boolean(job.offlineDownload || (job.prepareAhead && !job.speculative));
@@ -964,10 +972,11 @@ export async function optimizeCachedVideo(job, path, settings = {}) {
     jobEvent(job, 'acceleration', job.videoAcceleration);
   }
   if (repairVideoFrameRate) job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
+  job.videoHandling = describeVideoHandling(strategy, settings.playbackQuality);
   if (strategy === 'raw') return { path, mime: videoType(path), videoAcceleration: job.videoAcceleration, timelineValidated: true, decodeValidated: true };
   if (repairVideoFrameRate || shouldFinalizeCachedPlayback(job, strategy)) {
     const browserPath = `${path}.browser.mp4`;
-    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, selectedAcceleration, repairVideoFrameRate), job.directory || ROOT, job);
+    await run('ffmpeg', ffmpegArgs(strategy, path, browserPath, false, 0, job.untaggedAudioTrack, false, toneMap, selectedAcceleration, repairVideoFrameRate, false, settings.playbackQuality), job.directory || ROOT, job);
     await validatePreparedEpisode(job, browserPath);
     await inspectPlaybackSource(browserPath, job.untaggedAudioTrack, { fullTimeline: true });
     return { path: browserPath, mime: 'video/mp4', strategy: 'raw', videoAcceleration: job.videoAcceleration, timelineValidated: true, decodeValidated: true, timelineRepaired: Boolean(repairVideoFrameRate) };
@@ -1576,7 +1585,8 @@ export async function startHlsConversion(job, settings, start, directory, onProg
       jobEvent(job, 'timeline-repair', 'A video timestamp gap was detected. Repeating frames to preserve audio timing.');
     }
     job.sourceDuration = metadata.duration;
-    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration, repairVideoFrameRate, interpolate);
+    job.videoHandling = describeVideoHandling(strategy, settings.playbackQuality);
+    const mapped = ffmpegArgs(strategy, input, 'pipe:1', true, start, settings.untaggedAudioTrack, !growing || forwardSeek, toneMap, acceleration, repairVideoFrameRate, interpolate, settings.playbackQuality);
     if (interpolate) jobEvent(job, 'frame-interpolation', 'Generating motion-compensated intermediate frames at 60 FPS.');
     // Opening MKV headers contain the tracks and duration; tail seeks reconnect
     // a torrent swarm just to read its index, then reconnect again to come back.
@@ -1837,7 +1847,8 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
   const toneMap = playbackNeedsToneMapping(job);
   const acceleration = await configurePlaybackAcceleration(job, strategy, toneMap, Boolean(settings.frameInterpolation));
   const growing = job.progressiveArchive && !job.archiveSource?.complete && !job.archiveSource?.randomAccess;
-  const args = ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource) && !growing, toneMap, acceleration, null, Boolean(settings.frameInterpolation));
+  job.videoHandling = describeVideoHandling(strategy, settings.playbackQuality);
+  const args = ffmpegArgs(strategy, rangeSource?.url || 'pipe:0', 'pipe:1', true, start, settings.untaggedAudioTrack, Boolean(rangeSource) && !growing, toneMap, acceleration, null, Boolean(settings.frameInterpolation), settings.playbackQuality);
   if (growing || start === 0 && torrentMatroskaInput(job, rangeSource?.url || '')) args.splice(args.indexOf('-i'), 0, '-seekable', '0');
   const child = spawn('ffmpeg', args); let stderr = '';
   const exited = once(child, 'close'); void exited.catch(() => {});
@@ -1856,7 +1867,8 @@ async function streamConverted(req, res, job, settings, start = 0, strategyOverr
 async function streamCachedConversion(req, res, job, settings, start = 0) {
   const toneMap = playbackNeedsToneMapping(job);
   const acceleration = await configurePlaybackAcceleration(job, settings.frameInterpolation ? 'transcode' : job.strategy, toneMap, Boolean(settings.frameInterpolation));
-  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath || job.path, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration, null, Boolean(settings.frameInterpolation))); let stderr = '';
+  job.videoHandling = describeVideoHandling(job.strategy, settings.playbackQuality, Boolean(settings.frameInterpolation));
+  const child = spawn('ffmpeg', ffmpegArgs(job.strategy, job.sourcePath || job.path, 'pipe:1', true, start, settings.untaggedAudioTrack, true, toneMap, acceleration, null, Boolean(settings.frameInterpolation), settings.playbackQuality)); let stderr = '';
   const exited = once(child, 'close'); void exited.catch(() => {});
   let closed = false;
   child.stderr.on('data', chunk => stderr += chunk); res.writeHead(200, { 'content-type': 'video/mp4', 'cache-control': 'no-store' }); const output = writeStreamToResponse(child.stdout, res, { end: false }); void output.catch(() => {});
@@ -2032,6 +2044,7 @@ function startReleaseSelection(job, settings, releases, blocked) {
     source: job.manualRelease ? 'manual' : 'search',
     candidates: releases.slice(0, 80).map((release, index) => ({
       number: index + 1, title: release.title, resolution: releaseResolution(release), size: Number(release.size) || 0,
+      quality: releaseQuality(release, job.media),
       status: blocked[index] ? 'skipped' : 'queued', reason: blocked[index] || ''
     }))
   };
@@ -2039,6 +2052,7 @@ function startReleaseSelection(job, settings, releases, blocked) {
 }
 function markReleaseSelection(job, index, status, reason = '') {
   const candidate = job.releaseSelection?.candidates?.[index];
+  if (status === 'checking') { delete job.videoHandling; delete job.quality; }
   if (!candidate) return;
   candidate.status = status;
   candidate.reason = reason;
@@ -2048,7 +2062,11 @@ function finishReleaseSelection(job, selectedIndex) {
   const candidates = job.releaseSelection?.candidates;
   if (!candidates) return;
   for (let index = 0; index < candidates.length; index++) {
-    if (index === selectedIndex) Object.assign(candidates[index], { status: 'selected', reason: 'Playback source selected.' });
+    if (index === selectedIndex) {
+      const videoHandling = job.videoHandling || (job.mode === 'cached' ? 'Playing prepared file · original conversion details unavailable' : describeVideoHandling(job.strategy, job.playbackQuality));
+      Object.assign(candidates[index], { status: 'selected', reason: 'Playback source selected.', videoHandling });
+      job.quality = { ...candidates[index].quality, videoHandling };
+    }
     else if (candidates[index].status === 'queued') Object.assign(candidates[index], {
       status: 'not-tried', reason: 'Selection stopped after finding a playable source.'
     });
@@ -2174,6 +2192,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     return prepareTorrentPlayback(job, settings, persistence, { preflight: preflight || preflightLiveCandidate, foreground: torrentOnly ? true : undefined });
   };
   job.frameInterpolation = Boolean(settings.frameInterpolation);
+  job.playbackQuality = settings.playbackQuality || 'balanced';
   const automaticForeground = !job.manualRelease && !settings.manualReleaseSelection && !job.backgroundFor && !job.speculative && !job.prepareAhead && !job.offlineDownload;
   if (automaticForeground && job.selectionStart > 0) {
     const retained = await takeRetainedHlsSession(job, settings, job.selectionStart);
@@ -2184,7 +2203,10 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
     }
   }
   const providerHints = hints?.forProvider(settings);
-  const equivalentPreference = release => `${releaseAudioConfidence(release)}:${releaseSizeTier(release, job.media, settings)}:${releaseResolution(release)}:${releaseScore(release, job.media, settings)}:${playbackStrategy('candidate.mkv', release.title)}`;
+  const equivalentPreference = release => {
+    const quality = settings.playbackQuality === 'quality' ? releaseQuality(release, job.media) : null;
+    return `${releaseAudioConfidence(release)}:${releaseSizeTier(release, job.media, settings)}:${releaseResolution(release)}:${releaseScore(release, job.media, settings)}:${playbackStrategy('candidate.mkv', release.title)}:${quality?.source || ''}:${quality?.bitrateTier || ''}`;
+  };
   const recoveringSource = Boolean(job.rejectedReleases?.size);
   let failedPlanRelease = null;
   let savedDownloadChoice = null;
@@ -2875,6 +2897,10 @@ function publicJob(job) {
     ...(torrentSource ? { sourceKind: 'torrent' } : {}),
     mode: job.frameInterpolation && job.mode === 'cached' ? 'cached-convert' : job.mode,
     title: media.title,
+    ...(release ? { quality: {
+      ...(job.quality || releaseQuality({ title: release }, media)),
+      videoHandling: job.videoHandling || job.quality?.videoHandling || (job.mode === 'cached' ? 'Playing prepared file · original conversion details unavailable' : describeVideoHandling(job.strategy, job.playbackQuality, Boolean(job.frameInterpolation)))
+    } } : {}),
     hlsUrl: job.status === 'ready' && (['direct', 'cached-convert'].includes(job.mode) || job.frameInterpolation && job.mode === 'cached') ? `/api/play/${job.id}/hls` : null,
     streamUrl: job.status === 'ready' ? `/api/play/${job.id}/stream` : null,
     ...(diagnosticsEnabled ? { diagnostics: {
@@ -3074,7 +3100,7 @@ export async function handleRequest(req, res) {
       const manualSearch = { ...settings, manualReleaseSelection: true };
       let releases = await findReleases(manualSearch, media, true, { allowUnverifiedAnimeAudio: true }); if (!releases.length && (media.year || media.episode)) releases = await findReleases(manualSearch, media, false, { allowUnverifiedAnimeAudio: true });
       const expires = Date.now() + 20 * 60 * 1000;
-      const choices = releases.slice(0, 20).map(release => { const id = randomUUID(); manualReleases.set(id, { release, media, expires }); return { id, title: release.title, size: formatSize(release.size), category: release.category, published: release.published, readiness: releaseReadiness(release), audioStatus: englishAudioRelease(release) && /\b(?:eng|english|dual(?: audio)?)\b/i.test(release.title.replace(/[._-]+/g, ' ')) ? 'english' : 'unverified' }; });
+      const choices = releases.slice(0, 20).map(release => { const id = randomUUID(); manualReleases.set(id, { release, media, expires }); return { id, title: release.title, size: formatSize(release.size), quality: releaseQuality(release, media), category: release.category, published: release.published, readiness: releaseReadiness(release), audioStatus: englishAudioRelease(release) && /\b(?:eng|english|dual(?: audio)?)\b/i.test(release.title.replace(/[._-]+/g, ' ')) ? 'english' : 'unverified' }; });
       return json(res, 200, { releases: choices });
     }
     if (req.method === 'DELETE' && url.pathname === '/api/play/prewarm') {

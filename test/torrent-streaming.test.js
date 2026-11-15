@@ -130,6 +130,21 @@ test('swarm health preserves explicit target resolution and fast versus quality 
   } finally { await service.close(); }
 });
 
+test('Best quality swarm ordering never replaces a better source with a more seeded WEBRip', async () => {
+  const releases = [
+    ['Silo.S01E02.2160p.BluRay.HEVC', 2],
+    ['Silo.S01E02.2160p.WEBRip.HEVC', 10000],
+    ['Silo.S01E02.1080p.WEB-DL.HEVC', 20000]
+  ];
+  const service = createTorrentStreaming({
+    request: async () => new Response(`<rss>${releases.map(([title, seeders], index) => `<item><title>${title}</title><torznab:attr name="seeders" value="${seeders}"/><enclosure url="https://indexer.example/${index}"/></item>`).join('')}</rss>`)
+  });
+  try {
+    const ranked = await service.search(media, { ...settings, playbackQuality: 'quality', targetResolution: '2160p' });
+    assert.deepEqual(ranked.map(release => release.title), releases.map(([title]) => title));
+  } finally { await service.close(); }
+});
+
 
 test('metadata selection persists a validated source without opening video streams or embedding indexer credentials', async () => {
   const parsed = { ...metadata([video('Silo.S01E02.x264.mp4')]), infoHash: 'a'.repeat(40), pieces: ['a'] };

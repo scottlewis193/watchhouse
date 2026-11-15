@@ -1491,3 +1491,47 @@ and premature direct readiness before the fix. All 163 focused tests pass,
 including archive/direct/saved-plan preparation, autoplay handover, background
 admission, and real FFmpeg browser-ready conversion. Live provider episode
 handover latency has not been measured.
+
+## Picture-quality-first release selection (2026-11-15)
+
+Best quality now ranks output resolution, source provenance and codec-aware
+estimated total bitrate before the existing release-score tie-breaker. A larger
+4K source no longer loses to 1080p solely because it exceeds 6 GiB/hour. Source
+preference is REMUX, Blu-ray, WEB-DL, WEBRip, HDTV, DVD, unknown, then CAM.
+Within a source/resolution tier, adequate bitrate is preferred over unknown,
+unusually high and unusually low bitrate; file size is not maximized.
+Fast and Balanced retain their existing size/startup preferences.
+
+The broad preferred minimum total bitrates for H.264 / HEVC / AV1 are
+15 / 8 / 6 Mbps at 2160p, 5 / 3 / 2.5 Mbps at 1080p, and
+2.5 / 1.5 / 1.2 Mbps at 720p. Upper bands are 100 / 40 / 20 Mbps by resolution,
+with wider bands for disc remuxes. These are ranking heuristics, not video
+bitrate measurements or guarantees of picture quality. Estimates include audio
+and release overhead; missing runtimes use explicitly labelled estimates.
+Unknown or out-of-band releases remain available as fallbacks.
+
+Manual Best quality choices use the same quality ordering without the automatic
+resolution ceiling. SDR/title/audio eligibility remains unchanged. Torrent
+swarm-health ordering and Usenet readiness substitutions preserve quality tiers.
+Saved Best quality selections use a new scope so old small-file choices are
+not silently retained.
+
+When conversion is necessary, Best quality uses x264 CRF 18 / fast, NVENC
+CQ 18 / p5, or VAAPI QP 18 instead of the standard value 22. These encoder
+scales are not equivalent. Live HLS, converted streams and prepared downloads
+all receive the preference. Compatible H.264 remuxing still copies video;
+HEVC/AV1 continue through H.264 conversion for the current browser pipeline.
+Higher-fidelity conversion costs bandwidth/storage and potentially encoding
+throughput, and cannot restore detail already missing from a source.
+
+The manual picker, normal playback summary and selection diagnostics now show
+source/codec/estimated total bitrate and conversion handling. Old prepared
+files without conversion history are labelled unknown rather than lossless.
+
+Verification: 234 focused tests passed, including source ranking, torrent
+ordering, source-plan persistence, real HLS/conversion and prepare-ahead paths.
+A deterministic synthetic dark-scene fixture improved SSIM from 0.968867 with
+Balanced to 0.973798 with Best quality; H.264 remux packet hashes were unchanged.
+Browser checks covered settings, the release picker, playback summary and
+diagnostics using isolated API/media fixtures. No live provider title or
+subjective 4K dark-scene comparison has been performed.

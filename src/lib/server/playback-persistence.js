@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { offlineMediaKey } from '../offline.js';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
-// Scope 5 invalidates saved choices made before TV-series year disambiguation.
+// Quality scope 6 invalidates choices ranked with the old small-file preference.
 export const playbackScope = settings => digest(JSON.stringify([
-  5, settings.usenetHost, Number(settings.usenetPort || 563), settings.usenetUser, settings.usenetPass,
+  settings.playbackQuality === 'quality' ? 6 : 5, settings.usenetHost, Number(settings.usenetPort || 563), settings.usenetUser, settings.usenetPass,
   settings.indexerUrl, settings.indexerKey, `${settings.manualReleaseSelection ? 'manual:' : ''}${settings.playbackQuality || 'balanced'}`, settings.targetResolution || 'auto', Number(settings.untaggedAudioTrack) || 2,
   Boolean(settings.repairVideoTimeline), Boolean(settings.frameInterpolation), settings.torrentIndexerUrl, settings.torrentIndexerKey
 ]));

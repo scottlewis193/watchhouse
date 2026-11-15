@@ -66,6 +66,8 @@
                 <span class="release-selection-status shrink-0 font-semibold uppercase tracking-[0.08em]">{candidateStatuses[candidate.status] || candidate.status}</span>
               </div>
               <p class="mt-1 text-base-content/55">{candidate.resolution ? `${candidate.resolution}p` : 'Resolution unknown'} · {size(candidate.size)}{candidate.reason ? ` · ${candidate.reason}` : ''}</p>
+              {#if candidate.quality?.summary}<p class="mt-1 text-base-content/65">{candidate.quality.summary}</p>{/if}
+              {#if candidate.videoHandling}<p class="mt-1 text-base-content/55">{candidate.videoHandling}</p>{/if}
             </li>
           {/each}
         </ol>

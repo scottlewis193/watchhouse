@@ -292,6 +292,11 @@ test('diagnostics retain every ranked candidate and its live selection outcome',
   assert.equal(playback.releaseSelection.targetResolution, '2160p');
   assert.equal(playback.releaseSelection.playbackQuality, 'quality');
   assert.equal(playback.releaseSelection.start, 6826);
+  const selected = playback.releaseSelection.candidates[1];
+  assert.ok(selected.quality.bitrateMbps > 11 && selected.quality.bitrateMbps < 12);
+  assert.match(selected.quality.summary, /1080p/);
+  assert.match(selected.videoHandling, /H.264.*Best quality/);
+  assert.equal(playback.quality.summary, selected.quality.summary);
 });
 
 test('poster prewarm checks a direct release before reporting it ready', async () => {

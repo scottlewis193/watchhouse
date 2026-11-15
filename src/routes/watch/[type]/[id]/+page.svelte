@@ -380,7 +380,7 @@
         if (!['error', 'cancelled'].includes(job.status)) void poll(id, requestToken, 0);
         return;
       }
-      playback = { ...playback, diagnostics: job.diagnostics };
+      playback = { ...playback, diagnostics: job.diagnostics, quality: job.quality };
       diagnosticPollTimer = setTimeout(() => void refreshDiagnostics(id, requestToken), 1500);
     } catch {
       if (playbackRequests.isCurrent(requestToken) && playback?.id === id && playback.status === 'ready') {
@@ -1346,6 +1346,12 @@
       {:else}
         <div class="aspect-video"><PlaybackPreparation title={preparationTitle()} message={playback?.message} progress={playback?.progress} download={playback?.download} status={playback?.status} detailed={detailedPlaybackProgress} error={playback?.status === 'error'} artwork={titleDetails.backdrop || titleDetails.poster || media.poster} indeterminate={playback?.status === 'extracting' || playback?.status === 'optimizing'} /></div>
       {/if}
+      {#if playback?.status === 'ready' && (playback.quality?.summary || playback.quality?.videoHandling)}
+        <p class="playback-quality-summary mt-3 text-xs leading-relaxed text-white/65">
+          {#if playback.quality?.summary}<span class="block">{playback.quality.summary}</span>{/if}
+          {#if playback.quality?.videoHandling}<span class="block">{playback.quality.videoHandling}</span>{/if}
+        </p>
+      {/if}
       {#if playback?.status === 'error'}<div class="alert alert-error mt-4"><span>{playback.message}</span>{#if playback.id}<button class="btn btn-sm" onclick={retryPlayback}>Resume</button>{/if}{#if !offlineMode && currentMedia}<button class="btn btn-sm" onclick={() => void chooseAnotherRelease()}>Choose release</button>{/if}</div>{/if}
       </div>
     {/if}
@@ -1411,7 +1417,7 @@
           </div>
         {/if}
       {/if}
-      {#if releaseChoices.length}<div class="release-picker mt-8 border-t border-base-300 pt-6" bind:this={releasePicker} tabindex="-1" aria-labelledby="release-picker-title"><p class="page-eyebrow" id="release-picker-title">Choose a release</p><p class="mt-2 text-xs text-base-content/55">Audio marked unverified may be non-English. Check the audio tracks after playback starts.</p><div class="mt-4 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="release-option flex w-full items-start justify-between gap-3 py-4 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/45">{release.readiness.label} · {release.category} · {release.audioStatus === 'unverified' ? 'Audio unverified' : 'English audio indicated'}</span></span>{#if release.size}<span class="shrink-0 text-xs text-base-content/45">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
+      {#if releaseChoices.length}<div class="release-picker mt-8 border-t border-base-300 pt-6" bind:this={releasePicker} tabindex="-1" aria-labelledby="release-picker-title"><p class="page-eyebrow" id="release-picker-title">Choose a release</p><p class="mt-2 text-xs text-base-content/55">Audio marked unverified may be non-English. Check the audio tracks after playback starts.</p><div class="mt-4 divide-y divide-base-300 border-y border-base-300">{#each releaseChoices as release}<button class="release-option flex w-full items-start justify-between gap-3 py-4 text-left hover:text-primary" onclick={() => void startPlayback({ ...pendingMedia, releaseId: release.id }, null, pendingResume)}><span class="min-w-0"><span class="block truncate text-sm font-medium">{release.title}</span><span class="mt-1 block text-xs text-base-content/45">{release.readiness.label} · {release.category} · {release.audioStatus === 'unverified' ? 'Audio unverified' : 'English audio indicated'}</span>{#if release.quality?.summary}<span class="mt-1 block text-xs text-base-content/65">{release.quality.summary}</span>{/if}</span>{#if release.size}<span class="shrink-0 text-xs text-base-content/45">{release.size}</span>{/if}</button>{/each}</div></div>{/if}
       </div>
     {/if}
   </div>
