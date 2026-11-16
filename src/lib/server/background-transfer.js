@@ -31,19 +31,25 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
     const id = key(settings);
     if (!accounts.has(id)) accounts.set(id, { active: 0, foregroundWaiting: 0 });
     const account = accounts.get(id), background = Boolean(job), previousMessage = job?.message;
+    const limit = Math.max(1, Number(settings.maxConnections) || 4);
     let pausedMessage;
-    if (!background) { account.foregroundWaiting++; interruptBackground?.(); }
+    if (!background) account.foregroundWaiting++;
     try {
       while (true) {
         throwIfDownloadCancelled(job);
         settings.signal?.throwIfAborted();
-        const room = account.active < Math.max(1, Number(settings.maxConnections) || 4);
+        const room = account.active < limit;
         // Reports are viewer leases: silence after leaving the player must not
         // block an already queued download indefinitely. Foreground transfers
         // still win, including startup before a viewer can report its buffer.
         const viewers = [...reports.values()].filter(sample => now() - sample.at <= 10000);
         const downloadSafe = !suspended && (viewers.length ? viewers.every(sample => sample.safe) : account.active === 0);
-        if (background ? room && !backgroundActive && !account.foregroundWaiting && downloadSafe : room && !backgroundActive) break;
+        if (background ? room && !backgroundActive && !account.foregroundWaiting && downloadSafe : room) break;
+        // Reclaim a background slot only when foreground work cannot fit.
+        if (!background) {
+          interruptBackground?.();
+          if (account.active < limit) continue;
+        }
         if (background) {
           pausedMessage = suspended ? 'Paused background download · automatic downloads are disabled.' : 'Paused background download · current playback has priority.';
           job.message = pausedMessage;

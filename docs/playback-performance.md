@@ -1570,8 +1570,11 @@ only 15 seconds. Even ordinary 30-second buffers could repeatedly cross the old
 admission boundary between health reports.
 
 Background transfers now require 10 seconds buffered, a playing, non-seeking
-viewer and readyState >= 3. Foreground connection requests still preempt them;
-pausing, seeking, low buffer, stale viewer handling and connection limits are
+viewer and readyState >= 3. Foreground requests preempt background work only
+when the provider's connection budget is exhausted; spare slots allow foreground
+articles and the single background article to overlap. This avoids repeatedly
+closing background connections before their articles finish. Pausing, seeking,
+low buffer, stale viewer handling and connection limits are
 unchanged. This admits preparation below the smallest configured HLS buffer
 target without removing playback priority.
 
@@ -1579,3 +1582,10 @@ The regression replays the recorded 15.709473-second buffer through the transfer
 coordinator, verifies next-episode admission, then drains it to five seconds and
 verifies preemption. All 39 focused background-transfer, next-episode request
 and HLS-player tests pass.
+
+Live verification of the buffer-only fix exposed the second starvation path:
+S02E10 downloaded only seven articles (5 MB) while S02E09 played for more than
+two minutes. A regression reproduced unnecessary interruption with a free
+provider slot. The updated capacity-sharing contract also verifies immediate
+foreground preemption at the connection limit and preserves partial-article
+retry coverage. All 39 focused tests pass after both corrections.

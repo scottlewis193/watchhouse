@@ -37,15 +37,16 @@ test('next-episode download progresses within a constrained player buffer and yi
   assert.equal(interrupted, true, 'the download must yield before the viewer runs out of buffered video');
 });
 
-test('foreground requests interrupt background work and take the released connection first', async () => {
+test('foreground requests share spare capacity and preempt background work only when full', async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
   gate.report('watch', healthy);
   const job = { backgroundFor: 'watch' };
   let interrupted = false;
   const releaseBackground = await gate.acquire(settings, job, () => { interrupted = true; releaseBackground(); });
   const foreground = await gate.acquire(settings);
-  assert.equal(interrupted, true);
+  assert.equal(interrupted, false, 'spare provider capacity must not interrupt the background article');
   const secondForeground = await gate.acquire(settings);
+  assert.equal(interrupted, true, 'foreground must reclaim background capacity when the provider is full');
   let admitted = false;
   const pending = gate.acquire(settings, job).then(release => { admitted = true; return release; });
   await setImmediate();
@@ -80,12 +81,13 @@ test('only one background transfer runs and queued cancellation needs no socket'
   assert.equal(gate.safe('watch'), false);
 });
 
-test('foreground preemption retries an article without delivering partial or duplicate bytes', async () => {
+test('foreground preemption retries an article without delivering partial or duplicate bytes', { timeout: 2000 }, async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
   gate.report('watch', healthy);
+  const capacity = { ...settings, maxConnections: 1 };
   let connections = 0, started, rejectRead;
   const reading = new Promise(resolve => { started = resolve; });
-  const client = createBackgroundNntpClient({ ...settings, backgroundJob: { backgroundFor: 'watch' } }, gate, async () => {
+  const client = createBackgroundNntpClient({ ...capacity, backgroundJob: { backgroundFor: 'watch' } }, gate, async () => {
     const first = ++connections === 1;
     const socket = new EventEmitter();
     socket.closed = false;
@@ -104,7 +106,7 @@ test('foreground preemption retries an article without delivering partial or dup
   const delivered = [];
   const download = client.body('article', line => delivered.push(line));
   await reading;
-  const release = await gate.acquire(settings);
+  const release = await gate.acquire(capacity);
   assert.deepEqual(delivered, []);
   release();
   await download;
