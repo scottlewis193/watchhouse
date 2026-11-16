@@ -16,7 +16,8 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
   const key = settings => JSON.stringify([settings.usenetHost, settings.usenetPort || 563, settings.usenetUser]);
   function report(id, sample) {
     for (const [key, value] of reports) if (now() - value.at > 60000) reports.delete(key);
-    reports.set(id, { at: now(), safe: sample.playing === true && sample.seeking !== true && sample.readyState >= 3 && sample.bufferedAhead >= 30 });
+    // Constrained players target only 15s; leave room for playback between reports.
+    reports.set(id, { at: now(), safe: sample.playing === true && sample.seeking !== true && sample.readyState >= 3 && sample.bufferedAhead >= 10 });
     if (!reports.get(id).safe) interruptBackground?.();
     wake();
   }

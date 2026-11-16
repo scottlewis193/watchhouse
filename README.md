@@ -161,6 +161,33 @@ Create the token in [Docker Hub account settings](https://app.docker.com/setting
 The workflow uses Docker's [official GitHub Actions](https://docs.docker.com/guides/gha/)
 and caches build layers between runs. A failed test or build prevents publication.
 
+## Hosted deployment
+
+The live instance at <https://wh.hades.ws> runs on an **umbrelOS machine**,
+managed through **Arcane**. Use Arcane to inspect the deployed container's image,
+mounts and port mappings when diagnosing deployment issues.
+Arcane project: <http://192.168.0.112:3552/projects/3cbda62d-d53b-4bf7-bd19-36aacec08ec0?tab=compose>.
+Access is gated by Umbrel authentication; the owner can provide an authenticated
+browser session. Do not record credentials here.
+
+GitHub Actions publishes `scottlewis193/watchhouse` images; publication does not
+update the Arcane deployment automatically.
+
+The Arcane Compose configuration pins Watchhouse to a `sha-<full-commit-sha>`
+image tag with `pull_policy: missing`. Pulling `latest` or redeploying without
+changing that pin does not deploy a newer commit. To update, change only the
+Watchhouse `image:` tag in **Configuration**, save, then **Redeploy**. Preserve
+the VPN configuration and data volumes. Confirm the running image and the public
+`/_app/version.json` build version afterward; an "Up to Date" badge for a pinned
+tag does not mean it is the newest commit.
+
+If redeployment leaves the old container running, inspect **Activity Center**
+for the actual result. Docker Hub's unauthenticated pull rate limit can block a
+new image even after the Compose tag is saved. Arcane supports importing a Docker
+image archive through **Images → More actions → Upload Image**.
+Importing the required tagged image locally lets redeployment proceed using that
+image when registry pulls are rate-limited.
+
 ## Run the image
 
 Replace `<username>` with your Docker Hub username:

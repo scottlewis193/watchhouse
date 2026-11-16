@@ -1560,3 +1560,22 @@ being rejected during selection.
 Focused coverage includes immediate Usenet readiness, torrent startup bursts,
 sustained output, cancellation, opening validation, source fallback, retained
 sessions and real FFmpeg HLS playback. Live-provider latency is not measured.
+
+## Next-episode buffer admission (2026-11-16)
+
+The live S02E09 preparation job remained at 4% with "current playback has
+priority", while the recorded playing viewer had 15.7 seconds buffered. The
+transfer coordinator required 30 seconds, but constrained HLS players target
+only 15 seconds. Even ordinary 30-second buffers could repeatedly cross the old
+admission boundary between health reports.
+
+Background transfers now require 10 seconds buffered, a playing, non-seeking
+viewer and readyState >= 3. Foreground connection requests still preempt them;
+pausing, seeking, low buffer, stale viewer handling and connection limits are
+unchanged. This admits preparation below the smallest configured HLS buffer
+target without removing playback priority.
+
+The regression replays the recorded 15.709473-second buffer through the transfer
+coordinator, verifies next-episode admission, then drains it to five seconds and
+verifies preemption. All 39 focused background-transfer, next-episode request
+and HLS-player tests pass.

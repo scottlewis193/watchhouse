@@ -21,6 +21,22 @@ test('background work needs fresh buffer evidence from every active viewer', () 
   assert.equal(gate.safe('one'), false);
 });
 
+test('next-episode download progresses within a constrained player buffer and yields when it drains', async () => {
+  const gate = createTransferCoordinator({ wait: setImmediate });
+  const job = { backgroundFor: 'watch' };
+  gate.report('watch', { ...healthy, bufferedAhead: 15.709473 });
+  let admitted = false, interrupted = false;
+  let release;
+  const pending = gate.acquire(settings, job, () => { interrupted = true; release(); })
+    .then(value => { admitted = true; release = value; });
+  await setImmediate();
+  if (!admitted) job.cancelled = true;
+  await pending.catch(error => { assert.equal(error.code, 'DOWNLOAD_CANCELLED'); });
+  assert.equal(admitted, true, 'a playing viewer with a healthy 15-second buffer must not starve the next episode');
+  gate.report('watch', { ...healthy, bufferedAhead: 5 });
+  assert.equal(interrupted, true, 'the download must yield before the viewer runs out of buffered video');
+});
+
 test('foreground requests interrupt background work and take the released connection first', async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
   gate.report('watch', healthy);
