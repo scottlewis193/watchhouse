@@ -970,6 +970,24 @@ test('background next-episode preparation accepts an archive release', async () 
   assert.equal(playback.status, 'ready', playback.message);
   assert.deepEqual(downloaded, ['Silo S01E02 archive']);
 });
+test('background next-episode preparation prefers a later direct release over an earlier archive', async () => {
+  const playback = { ...job(), prepareAhead: true, backgroundFor: 'current-playback' };
+  const downloaded = [];
+  let preflighted = 0;
+  await preparePlayback(playback, { backgroundJob: playback }, {
+    search: async () => [{ title: 'Preferred archive' }, { title: 'Direct fallback' }],
+    load: async release => release.title === 'Preferred archive' ? nzb('rar') : nzb('mkv'),
+    check: async () => 'segment',
+    preflight: async () => { preflighted++; return { sessionUrl: '/fixture/session', start: 0 }; },
+    health: { has: async () => false },
+    plans: createPlaybackPlanCache(),
+    archive: async job => { downloaded.push(job.release); job.status = 'ready'; job.mode = 'cached'; }
+  });
+  assert.equal(playback.mode, 'direct');
+  assert.equal(playback.release, 'Direct fallback');
+  assert.equal(preflighted, 1);
+  assert.deepEqual(downloaded, []);
+});
 
 test('known unreadable archives are skipped without paying for a doomed full download', async () => {
   const playback = job(), downloaded = [];

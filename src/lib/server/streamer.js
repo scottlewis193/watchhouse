@@ -917,7 +917,7 @@ function describeVideoHandling(strategy, playbackQuality, forceTranscode = false
     : `Video re-encoded to H.264 · ${playbackQuality === 'quality' ? 'Best quality' : 'standard conversion'}`;
 }
 export function shouldCacheDirectPlayback(job, settings = {}) {
-  return Boolean(job.offlineDownload || (job.prepareAhead && !job.speculative));
+  return Boolean(job.offlineDownload);
 }
 export function shouldFinalizeCachedPlayback(job, strategy) {
   return Boolean((job.prepareAhead || job.offlineDownload) && strategy !== 'raw');
@@ -2558,7 +2558,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
             finishReleaseSelection(job, candidateIndex);
             return;
           }
-          const liveCheck = preflight && !job.backgroundFor && !job.prepareAhead && (strategy !== 'raw' || needsEnglishTrack);
+          const liveCheck = preflight && (strategy !== 'raw' || needsEnglishTrack);
           if (liveCheck) {
             const firstSegmentMs = settings.playbackQuality === 'quality' && strategy === 'transcode' && extendedSlowStarts < 2 ? 15000 : 8000;
             try { job.preparedSession = await preflight(job, settings, job.selectionStart || 0, { firstSegmentMs }); }

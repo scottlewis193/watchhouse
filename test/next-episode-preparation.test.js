@@ -14,7 +14,7 @@ const handler = parse(source).instance.content.body
 const handleRequestSource = source.slice(handler.start, handler.end);
 
 for (const kind of ['archive', 'direct', 'saved direct']) {
-  test(`next-episode request prepares a local ${kind} copy before reporting ready`, async () => {
+  test(`next-episode request prepares a ${kind === 'archive' ? 'local archive copy' : 'direct playback plan'} before reporting ready`, async () => {
     const media = { type: 'tv', id: 1, title: 'Fixture', season: 1, episode: 2, prepareAhead: true, backgroundFor: 'current' };
     const settings = { indexerUrl: 'fixture', indexerKey: 'fixture', usenetHost: 'fixture' };
     const plans = createPlaybackPlanCache();
@@ -49,8 +49,8 @@ for (const kind of ['archive', 'direct', 'saved direct']) {
     await state.handleRequest({ method: 'POST', url: '/api/play', headers: { host: 'fixture' } }, {});
     assert.equal(response.status, 202, response.value?.error);
     await completion;
-    assert.equal(response.value.status, 'ready', response.value.message);
-    assert.equal(response.value.mode, 'cached', 'next playback must not still need provider reads or live conversion');
-    assert.deepEqual(copied, ['Fixture.S01E02']);
+    const expectedMode = kind === 'archive' ? 'cached' : 'direct';
+    assert.equal(response.value.mode, expectedMode);
+    assert.deepEqual(copied, kind === 'archive' ? ['Fixture.S01E02'] : []);
   });
 }

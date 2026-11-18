@@ -230,13 +230,13 @@ test('builds a valid playback payload for the selected episode', () => {
   assert.equal(episodePlaybackMedia(show, '2', '', [{ number: 3, name: 'Third' }]), null);
 });
 
-test('makes persistent and prepare-ahead downloads fully browser-ready before playback', () => {
+test('keeps prepare-ahead direct streams ready without forcing a download', () => {
   assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'remux'), true);
   assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'remux'), true);
   assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'transcode'), true);
   assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'raw'), false);
   assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'raw'), false);
-  assert.equal(shouldCacheDirectPlayback({ prepareAhead: true }), true);
+  assert.equal(shouldCacheDirectPlayback({ prepareAhead: true }), false);
   assert.equal(shouldCacheDirectPlayback({ prepareAhead: true, speculative: true }), false);
   assert.equal(shouldCacheDirectPlayback({}), false);
   assert.equal(shouldCacheDirectPlayback({}, { repairVideoTimeline: true }), false);
