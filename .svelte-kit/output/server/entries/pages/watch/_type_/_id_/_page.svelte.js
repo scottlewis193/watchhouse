@@ -213,7 +213,8 @@ function _page($$renderer, $$props) {
         $$renderer2.push("<!--[-1-->");
       }
       $$renderer2.push(`<!--]--> <div${attr_class("hero-action-slot", void 0, {
-        "hero-action-slot-detailed": resumeStarting
+        "hero-action-slot-detailed": resumeStarting,
+        "hero-action-slot-download": playback?.status === "downloading"
       })}>`);
       {
         $$renderer2.push("<!--[-1-->");
