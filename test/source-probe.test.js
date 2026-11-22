@@ -32,11 +32,12 @@ test('metadata reuse preserves every source track, including audio starting thre
     const options = { input, execute: async args => { executions++; return execute(args); } };
     const first = await probe(options);
     const standard = JSON.parse(await execute(['-v', 'error', '-rw_timeout', '15000000',
-      '-show_entries', 'format=duration:stream=index,codec_type,codec_name,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name',
+      '-show_entries', 'format=duration:stream=index,codec_type,codec_name,pix_fmt,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name',
       '-of', 'json', input]));
     assert.deepEqual(first, standard, 'cold metadata must retain the exact standard-probe result shape');
     assert.deepEqual(first.streams.filter(stream => stream.codec_type === 'audio').map(stream => [stream.index, stream.tags.language]), [[1, 'fra'], [2, 'eng']]);
     assert.equal(first.streams.find(stream => stream.codec_type === 'video').codec_name, 'h264');
+    assert.equal(first.streams.find(stream => stream.codec_type === 'video').pix_fmt, 'yuv420p');
     assert.ok(Number(first.format.duration) >= 24);
     assert.equal(first.streams.find(stream => stream.codec_type === 'video').r_frame_rate, '25/1');
     const opening = JSON.parse((await run('ffprobe', ['-v', 'error', '-show_entries', 'stream=index,start_time', '-of', 'json', input])).stdout);
