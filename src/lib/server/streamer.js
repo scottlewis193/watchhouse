@@ -830,7 +830,10 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
   const transcodeVideo = strategy !== 'remux' || toneMap || repairTimeline || frameInterpolation;
   const vaapi = transcodeVideo && !frameInterpolation && acceleration?.kind === 'vaapi';
   const nvenc = transcodeVideo && !frameInterpolation && acceleration?.kind === 'nvenc';
-  const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi'] : [];
+  const nvdec = nvenc && acceleration.decoder && !repairTimeline;
+  const cudaFrames = nvdec && acceleration.cudaFrames;
+  const hardwareInputArgs = vaapi ? toneMap ? ['-vaapi_device', acceleration.device] : ['-hwaccel', 'vaapi', '-hwaccel_device', acceleration.device, '-hwaccel_output_format', 'vaapi']
+    : nvdec ? ['-c:v:0', acceleration.decoder, ...(cudaFrames ? ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'] : [])] : [];
   const filters = [
     ...(repairTimeline ? [`fps=${repairRate}:round=near`] : []),
     ...(toneMap ? [`zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=${vaapi ? 'nv12,hwupload' : 'yuv420p'}`] : vaapi ? ['scale_vaapi=format=nv12'] : []),
@@ -845,7 +848,7 @@ export function ffmpegArgs(strategy, input, output, fragmented = false, start = 
     : vaapi
       ? ['-c:v', 'h264_vaapi', '-rc_mode', 'CQP', '-qp', bestQuality ? '18' : '22']
       : nvenc
-        ? ['-c:v', 'h264_nvenc', '-preset', bestQuality ? 'p5' : 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', bestQuality ? '18' : '22', '-b:v', '0', '-pix_fmt', 'yuv420p']
+        ? ['-c:v', 'h264_nvenc', '-preset', bestQuality ? 'p5' : 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', bestQuality ? '18' : '22', '-b:v', '0', '-pix_fmt', cudaFrames ? 'cuda' : 'yuv420p']
         : ['-c:v', 'libx264', '-preset', bestQuality ? 'fast' : 'veryfast', '-crf', bestQuality ? '18' : '22', '-pix_fmt', 'yuv420p'];
   return ['-y', '-loglevel', 'error', ...hardwareInputArgs, ...reconnect, ...(seekableInput ? seek : []), '-i', input, ...(!seekableInput ? seek : []), '-map', '0:v:0', ...audioMaps.flatMap(map => ['-map', map]), ...filterArgs, ...colorArgs, ...videoCodecArgs, '-c:a', 'aac', '-b:a', '192k', '-disposition:a', '0', '-disposition:a:0', 'default', '-movflags', fragmented ? 'frag_keyframe+empty_moov+default_base_moof' : '+faststart', ...(fragmented ? ['-f', 'mp4'] : []), output];
 }
@@ -1436,7 +1439,7 @@ function playbackInspection(job, settings, input) {
       const probe = stored ? null : await inspect(combined);
       const video = probe?.streams?.find(stream => stream.codec_type === 'video');
       const videoIndex = stored ? stored.videoIndex : video?.index;
-      const metadata = stored ? { ...stored } : { tracks: playbackTracks(probe.streams), audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0, videoFrameRate: frameRate(video), videoCodec: video?.codec_name || null, videoIndex };
+      const metadata = stored ? { ...stored } : { tracks: playbackTracks(probe.streams), audioIndex: preferredAudioStream(probe.streams || [], settings.untaggedAudioTrack), duration: Number.isFinite(Number(probe.format?.duration)) ? Math.max(0, Number(probe.format.duration)) : 0, videoFrameRate: frameRate(video), videoCodec: video?.codec_name || null, videoPixelFormat: video?.pix_fmt || null, videoIndex };
       // A metadata hit never stands in for a fresh packet/timeline check.
       delete metadata.repairVideoFrameRate;
       if (stored) jobEvent(job, 'archive-probe-reused', 'Reused verified audio and duration metadata; checking fresh opening packets.');
@@ -1460,12 +1463,12 @@ function playbackInspection(job, settings, input) {
   }, settings.signal);
 }
 
-export async function startHlsConversion(job, settings, start, directory, onProgress = () => {}, getPacing = hlsPacing, getInspection = playbackInspection, { audioTrack } = {}) {
+export async function startHlsConversion(job, settings, start, directory, onProgress = () => {}, getPacing = hlsPacing, getInspection = playbackInspection, { audioTrack, softwareDecode = false } = {}) {
   const cached = ['cached-convert', 'cached'].includes(job.mode);
   let rangeSource;
   const requestedStrategy = seekPlaybackStrategy(job.strategy === 'raw' ? 'remux' : job.strategy, start);
   const toneMap = playbackNeedsToneMapping(job);
-  let producer;
+  let producer, nvdec;
   try {
     const growing = job.progressiveArchive && !job.archiveSource?.complete && !job.archiveSource?.randomAccess;
     const forwardSeek = growing && start > 0 && videoType(job.file.subject) === 'video/x-matroska';
@@ -1497,9 +1500,12 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     const interpolate = Boolean(settings.frameInterpolation) && (!metadata.videoFrameRate || metadata.videoFrameRate < 60);
     const strategy = repairVideoFrameRate || interpolate ? 'transcode' : requestedStrategy;
     const detectedAcceleration = repairVideoFrameRate ? null : await withPlaybackSignal(configurePlaybackAcceleration(job, strategy, toneMap, interpolate), settings.signal);
-    const acceleration = detectedAcceleration?.kind === 'vaapi' && !['h264', 'hevc'].includes(metadata.videoCodec)
-      ? null : detectedAcceleration;
-    if (acceleration !== detectedAcceleration) {
+    const compatibleCodec = ['h264', 'hevc'].includes(metadata.videoCodec);
+    nvdec = !softwareDecode && compatibleCodec && detectedAcceleration?.kind === 'nvenc'
+      ? { kind: 'nvenc', decoder: `${metadata.videoCodec}_cuvid`, cudaFrames: !toneMap && ['yuv420p', 'nv12'].includes(metadata.videoPixelFormat) }
+      : null;
+    const acceleration = nvdec || (detectedAcceleration?.kind === 'vaapi' && !compatibleCodec ? null : detectedAcceleration);
+    if (!nvdec && acceleration !== detectedAcceleration) {
       job.videoAcceleration = playbackAccelerationLabel(strategy, toneMap, null);
       jobEvent(job, 'acceleration', job.videoAcceleration);
     }
@@ -1548,7 +1554,12 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     // Encoding may run while we check the timeline. No playlist/session is
     // returned until the full existing validation has passed.
     const validated = Promise.all([inspection.validated, job.progressiveArchive && job.archiveSource?.randomAccess ? job.archiveSource.completion : undefined]);
-    await withPlaybackSignal(Promise.race([validated, producer.completion.then(() => validated)]), settings.signal);
+    const ready = nvdec ? Promise.all([validated, producer.firstVideoFrame]) : validated;
+    await withPlaybackSignal(Promise.race([ready, producer.completion.then(() => ready)]), settings.signal);
+    if (nvdec) {
+      job.videoAcceleration = `GPU · NVDEC decode + NVENC encode${toneMap ? ' + CPU HDR tone mapping' : ''}`;
+      jobEvent(job, 'acceleration', job.videoAcceleration);
+    }
     if (job.progressiveArchive && matchesTargetResolution(job.release, settings, true)) {
       const { archiveSource, archives, file, release, releaseKey, strategy } = job;
       archiveResumePlans.set(job.media, playbackScope(settings), { archiveSource, archives, file, release, releaseKey, strategy, progressiveArchive: true });
@@ -1560,6 +1571,11 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     error = job.progressiveArchive && job.archiveSource?.failure || error;
     await producer?.stop();
     await rangeSource?.close();
+    if (nvdec && error.code === 'VIDEO_CONVERTER_STARTUP' && !settings.signal?.aborted) {
+      jobEvent(job, 'decode-fallback', 'NVIDIA decoding could not start. Retrying with CPU decoding and NVENC encoding.', { start });
+      for (const name of await readdir(directory)) if (/^(index\.m3u8|init\.mp4|segment-\d+\.m4s)(\.tmp)?$/.test(name)) await rm(join(directory, name), { force: true });
+      return startHlsConversion(job, settings, start, directory, onProgress, getPacing, getInspection, { audioTrack, softwareDecode: true });
+    }
     if (job.progressiveArchive && job.archives && !settings.preflight && !['USENET_ARTICLE_MISSING', 'INVALID_MEDIA_TIMELINE', 'INVALID_MEDIA_DURATION', 'INVALID_AUDIO_TRACK'].includes(error.code) && !settings.signal?.aborted) {
       job.progressiveArchiveDisabled = true;
       await prepareArchive(job, settings, job.archives);
@@ -1712,13 +1728,21 @@ async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal,
   const release = await conversionAdmission.acquire({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
   const child = spawn('ffmpeg', ['-progress', 'pipe:3', ...args], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   let stderr = '', closed = false, paused = false, outputPosition = 0, progress = '', reportedFrame = null, reportedPosition = null, timelineError = null;
+  let resolveFirstVideoFrame, started = false;
+  const firstFrame = new Promise(resolve => { resolveFirstVideoFrame = resolve; });
   const timelineGuard = onTimelineGap ? createVideoTimelineGuard({ frameRate, start }) : null;
   child.stdio[3].on('data', chunk => {
     progress += chunk;
     let newline;
     while ((newline = progress.indexOf('\n')) >= 0) {
       const line = progress.slice(0, newline); progress = progress.slice(newline + 1);
-      if (line.startsWith('frame=')) reportedFrame = Number(line.slice(6));
+      if (line.startsWith('frame=')) {
+        reportedFrame = Number(line.slice(6));
+        if (!started && reportedFrame > 0) {
+          started = true;
+          resolveFirstVideoFrame();
+        }
+      }
       if (line.startsWith('out_time_us=')) {
         reportedPosition = Number(line.slice(12)) / 1000000;
         if (Number.isFinite(reportedPosition)) outputPosition = Math.max(outputPosition, reportedPosition);
@@ -1742,11 +1766,18 @@ async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal,
     try {
       const [code] = await exited;
       if (timelineError) throw timelineError;
-      if (!closed && !conversionSucceeded(code, stderr, 1, { httpReconnect: Boolean(rangeSource) })) throw new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`);
+      if (!closed && !conversionSucceeded(code, stderr, 1, { httpReconnect: Boolean(rangeSource) })) {
+        throw Object.assign(new Error(`Video conversion failed: ${stderr.trim() || `ffmpeg exited ${code}`}`),
+          started ? {} : { code: 'VIDEO_CONVERTER_STARTUP' });
+      }
     } finally { release(); stopConversion(child); await rangeSource?.close(); }
   })();
   void completion.catch(() => {});
-  return { completion, expectedDuration, position: () => outputPosition, setPaused(value) {
+  const firstVideoFrame = Promise.race([firstFrame, completion.then(() => {
+    if (!started && !closed) throw Object.assign(new Error('Video conversion produced no video frames.'), { code: 'VIDEO_CONVERTER_STARTUP' });
+  })]);
+  void firstVideoFrame.catch(() => {});
+  return { completion, firstVideoFrame, expectedDuration, position: () => outputPosition, setPaused(value) {
     if (closed || process.platform === 'win32' || paused === value || child.exitCode !== null) return;
     if (child.kill(value ? 'SIGSTOP' : 'SIGCONT')) paused = value;
   }, async stop() { closed = true; if (paused) child.kill('SIGCONT'); stopConversion(child); await completion.catch(() => {}); } };

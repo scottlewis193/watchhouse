@@ -26,7 +26,7 @@ RUN curl -fsSL --retry 3 -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${
     && tar -xf ffmpeg.tar.xz -C ffmpeg-src --strip-components=1 \
     && cd ffmpeg-src \
     && ./configure --prefix=/opt/ffmpeg --disable-doc --enable-gpl --enable-libx264 \
-       --enable-libzimg --enable-vaapi --enable-libdrm --enable-gnutls --enable-nvenc \
+       --enable-libzimg --enable-vaapi --enable-libdrm --enable-gnutls --enable-nvenc --enable-cuvid \
     && make -j "$(nproc)" \
     && make install
 

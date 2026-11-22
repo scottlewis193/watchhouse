@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 
-const entries = 'format=duration:stream=index,codec_type,codec_name,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name';
+const entries = 'format=duration:stream=index,codec_type,codec_name,pix_fmt,r_frame_rate,avg_frame_rate:stream_tags=language,title,handler_name';
 
 // Shortened analysis cannot prove that a later audio stream was not omitted.
 // Reuse only standard-probe metadata for the same verified byte identity instead.

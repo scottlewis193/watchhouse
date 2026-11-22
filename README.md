@@ -234,10 +234,13 @@ docker run -d --name watchhouse \
   <username>/watchhouse:latest
 ```
 
-Watchhouse probes `h264_nvenc` at startup and uses it when the NVIDIA runtime
-has supplied a working GPU and encode libraries. Video decoding and HDR tone
-mapping remain on the CPU for broad GPU-generation compatibility; H.264
-encoding runs on NVENC. Playback diagnostics then report `GPU · NVENC encode`.
+Watchhouse probes `h264_nvenc` and uses it when the NVIDIA runtime supplies a
+working GPU and encode libraries. HLS transcodes of H.264 and HEVC also try
+NVDEC. Compatible 8-bit SDR frames stay on the GPU between decode and encode.
+HDR tone mapping still runs on the CPU. If NVIDIA decoding fails to start,
+Watchhouse retries the same stream with CPU decoding and NVENC encoding.
+Playback diagnostics distinguish `GPU · NVDEC decode + NVENC encode` from
+`GPU · NVENC encode` and indicate when CPU HDR tone mapping is active.
 If Watchhouse runs inside a VM, the physical GPU must first be passed through
 to that VM and the NVIDIA driver and Container Toolkit installed in the guest.
 

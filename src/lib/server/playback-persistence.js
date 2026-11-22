@@ -81,6 +81,7 @@ function archiveProbeMetadata(metadata) {
   return {
     tracks, audioIndex: metadata.audioIndex, videoIndex: metadata.videoIndex, duration: metadata.duration,
     videoFrameRate: metadata.videoFrameRate, videoCodec: metadata.videoCodec,
+    ...(typeof metadata.videoPixelFormat === 'string' ? { videoPixelFormat: metadata.videoPixelFormat } : {}),
     ...(metadata.repairVideoFrameRate !== undefined ? { repairVideoFrameRate: metadata.repairVideoFrameRate } : {})
   };
 }
