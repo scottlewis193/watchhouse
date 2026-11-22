@@ -93,6 +93,20 @@ test('assembly cannot hold up network workers, and background work stays serial'
   });
 });
 
+test('explicit offline copies use the admitted background reader', async () => {
+  await fixture(async ({ files, state }) => {
+    const job = { offlineDownload: true, events: [] };
+    let opened = 0;
+    await writePostedFiles(files, { maxConnections: 4 }, job, state, 85, async settings => {
+      opened++;
+      assert.equal(settings.backgroundJob, job);
+      return { close() {}, body: async (_id, line) => line('k') };
+    });
+    assert.equal(opened, 1);
+    assert.equal(state.completed, 4);
+  });
+});
+
 test('out-of-order articles and batched disk writes preserve exact volume bytes', async () => {
   await fixture(async ({ files, state }) => {
     const payload = id => `${id}:` + 'x'.repeat(150000);

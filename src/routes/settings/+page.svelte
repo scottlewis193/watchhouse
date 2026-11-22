@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api';
 
-  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', torrentIndexerUrl: '', torrentIndexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, prepareSeries: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
+  let form = $state({ tmdbToken: '', indexerUrl: '', indexerKey: '', torrentIndexerUrl: '', torrentIndexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' });
   let loading = $state(true);
   let saving = $state(false);
   let notice = $state('');
@@ -32,7 +32,7 @@
   }
   async function save() { saving = true; try { applyConfig(await api.put('/api/settings', form)); form.indexerKey = ''; form.torrentIndexerKey = ''; form.usenetPass = ''; form.tmdbToken = ''; show('Settings saved. Credentials remain on this local server.'); } catch (e) { show(e.message, 'error'); } finally { saving = false; } }
   async function testConnection() { try { show('Testing Usenet connection…'); show((await api.post('/api/usenet/test', form)).message); } catch (e) { show(e.message, 'error'); } }
-  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', torrentIndexerUrl: '', torrentIndexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, prepareSeries: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; applyConfig(await api.get('/api/settings')); show('Settings cleared. Bundled indexers remain active when enabled.'); } catch (e) { show(e.message, 'error'); } }
+  async function clear() { try { await api.delete('/api/settings'); form = { tmdbToken: '', indexerUrl: '', indexerKey: '', torrentIndexerUrl: '', torrentIndexerKey: '', usenetHost: '', usenetPort: '563', usenetUser: '', usenetPass: '', manualReleaseSelection: false, autoPlayNextEpisode: true, smartAutoplay: false, detailedPlaybackProgress: false, playbackDiagnostics: false, repairVideoTimeline: false, frameInterpolation: false, playbackQuality: 'balanced', targetResolution: 'auto', untaggedAudioTrack: '2', maxConnections: '4', cacheRetentionHours: '24' }; applyConfig(await api.get('/api/settings')); show('Settings cleared. Bundled indexers remain active when enabled.'); } catch (e) { show(e.message, 'error'); } }
   function selectTheme(nextTheme) {
     theme = nextTheme;
     document.documentElement.dataset.theme = nextTheme;
@@ -152,7 +152,7 @@
             </label>
           </div>
           <p class="mt-5 border-t border-base-300 pt-5 text-sm leading-relaxed text-warning">Peers and trackers can see this server's public IP address, including during magnet metadata lookups. Your browser's connection does not hide the server's peer traffic. Use only sources you are authorised to access and configure any required VPN or network policy on the server itself.</p>
-          <p class="mt-3 text-xs leading-relaxed text-base-content/55">Background selection saves release and file metadata only, not full videos. Playback fetches requested video ranges into a bounded temporary memory piece cache. Archives and ambiguous episode files are rejected; supported containers are remuxed or transcoded for browser playback. Availability and start time depend on reachable peers.</p>
+          <p class="mt-3 text-xs leading-relaxed text-base-content/55">Playback fetches requested video ranges into a bounded temporary memory piece cache. Archives and ambiguous episode files are rejected; supported containers are remuxed or transcoded for browser playback. Availability and start time depend on reachable peers.</p>
         </div>
       </section>
 
@@ -164,11 +164,6 @@
           <label class="mt-6 flex cursor-pointer items-start gap-3 border-y border-base-300 py-5">
             <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.autoPlayNextEpisode} />
             <span><span class="block text-sm font-medium">Auto-play next episode</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Automatically continue with the next episode after the countdown. Enabled by default.</span></span>
-          </label>
-
-          <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">
-            <input class="checkbox checkbox-sm mt-0.5 shrink-0" type="checkbox" bind:checked={form.prepareSeries} />
-            <span><span class="block text-sm font-medium">Prepare stream selections for the rest of the series</span><span class="mt-1 block text-sm leading-relaxed text-base-content/65">Enabled by default. After playback starts, select streamable releases for the remaining aired episodes using your saved quality and resolution preferences. Saves release metadata only: no speculative video downloads, archive extraction, or saved Downloads. Each episode begins streaming only when played.</span></span>
           </label>
 
           <label class="mt-5 flex cursor-pointer items-start gap-3 border-b border-base-300 pb-5">

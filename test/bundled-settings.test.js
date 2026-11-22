@@ -51,13 +51,12 @@ test('saving unrelated settings never copies bundled credentials or metadata int
 test('clearing the external URL restores bundled mode and removes the old external key', async t => {
   const { store, path } = await fixture(t);
   await store.update({ torrentIndexerUrl: 'https://external.example/api', torrentIndexerKey: 'external-key' });
-  const kept = await store.update({ torrentIndexerUrl: 'https://external.example/api', torrentIndexerKey: '', prepareSeries: false });
+  const kept = await store.update({ torrentIndexerUrl: 'https://external.example/api', torrentIndexerKey: '' });
   assert.equal(kept.torrentIndexerKey, 'external-key');
   const restored = await store.update({ torrentIndexerUrl: '', torrentIndexerKey: '' });
   assert.equal(restored.torrentIndexerKey, 'private-bundled-key');
   assert.equal(restored.bundledTorrent.active, true);
-  assert.equal(restored.prepareSeries, false);
-  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { prepareSeries: false });
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {});
   const changed = await store.update({ torrentIndexerUrl: 'https://new.example/api', torrentIndexerKey: '' });
   assert.equal(changed.torrentIndexerKey, '');
   assert.equal(publicSettings(changed).hasTorrentIndexerKey, false);
@@ -100,11 +99,25 @@ test('source development without runtime configuration keeps the existing settin
   const { path } = await fixture(t);
   const store = createSettingsStore(path, { env: {} });
   assert.deepEqual(await store.read(), {});
-  await store.update({ usenetHost: 'provider.example', usenetPass: 'saved-secret', manualReleaseSelection: true, prepareSeries: false });
+  await store.update({ usenetHost: 'provider.example', usenetPass: 'saved-secret', manualReleaseSelection: true });
   assert.deepEqual(await store.update({ usenetPass: '', maxConnections: '8' }), {
-    usenetHost: 'provider.example', usenetPass: 'saved-secret', manualReleaseSelection: true, prepareSeries: false, maxConnections: '8'
+    usenetHost: 'provider.example', usenetPass: 'saved-secret', manualReleaseSelection: true, maxConnections: '8'
   });
   assert.deepEqual(await store.reset(), {});
+});
+
+test('retired series preparation is ignored without changing other saved settings', async t => {
+  const { store, path } = await fixture(t, { WATCHHOUSE_BUNDLED_INDEXER: 'false' });
+  const saved = { prepareSeries: true, autoPlayNextEpisode: false, usenetPass: 'saved-secret' };
+  await writeFile(path, JSON.stringify(saved));
+
+  const retained = { autoPlayNextEpisode: false, usenetPass: 'saved-secret' };
+  assert.deepEqual(await store.read(), retained);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), saved);
+
+  const updated = { ...retained, maxConnections: '8' };
+  assert.deepEqual(await store.update({ prepareSeries: true, maxConnections: '8' }), updated);
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), updated);
 });
 
 test('a missing generated file stays degraded until runtime publishes the ready configuration', async t => {

@@ -7,23 +7,9 @@ import { createTransferCoordinator, createBackgroundNntpClient } from '../src/li
 const settings = { usenetHost: 'provider', usenetUser: 'user', maxConnections: 2 };
 const healthy = { playing: true, readyState: 4, bufferedAhead: 40 };
 
-test('background work needs fresh buffer evidence from every active viewer', () => {
-  let now = 0;
-  const gate = createTransferCoordinator({ now: () => now });
-  assert.equal(gate.safe('one'), false);
-  gate.report('one', healthy);
-  assert.equal(gate.safe('one'), true);
-  gate.report('two', { ...healthy, bufferedAhead: 5 });
-  assert.equal(gate.safe('one'), false);
-  gate.report('two', healthy);
-  assert.equal(gate.safe('one'), true);
-  now = 10001;
-  assert.equal(gate.safe('one'), false);
-});
-
-test('next-episode download progresses within a constrained player buffer and yields when it drains', async () => {
+test('an explicit download progresses within a constrained player buffer and yields when it drains', async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
-  const job = { backgroundFor: 'watch' };
+  const job = { offlineDownload: true };
   gate.report('watch', { ...healthy, bufferedAhead: 15.709473 });
   let admitted = false, interrupted = false;
   let release;
@@ -32,7 +18,7 @@ test('next-episode download progresses within a constrained player buffer and yi
   await setImmediate();
   if (!admitted) job.cancelled = true;
   await pending.catch(error => { assert.equal(error.code, 'DOWNLOAD_CANCELLED'); });
-  assert.equal(admitted, true, 'a playing viewer with a healthy 15-second buffer must not starve the next episode');
+  assert.equal(admitted, true, 'a playing viewer with a healthy 15-second buffer must not starve the download');
   gate.report('watch', { ...healthy, bufferedAhead: 5 });
   assert.equal(interrupted, true, 'the download must yield before the viewer runs out of buffered video');
 });
@@ -40,7 +26,7 @@ test('next-episode download progresses within a constrained player buffer and yi
 test('foreground requests share spare capacity and preempt background work only when full', async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
   gate.report('watch', healthy);
-  const job = { backgroundFor: 'watch' };
+  const job = { offlineDownload: true };
   let interrupted = false;
   const releaseBackground = await gate.acquire(settings, job, () => { interrupted = true; releaseBackground(); });
   const foreground = await gate.acquire(settings);
@@ -61,7 +47,7 @@ test('buffering, pausing and seeking interrupt an active background article', as
     const gate = createTransferCoordinator();
     gate.report('watch', healthy);
     let interrupted = false;
-    const release = await gate.acquire(settings, { backgroundFor: 'watch' }, () => { interrupted = true; });
+    const release = await gate.acquire(settings, { offlineDownload: true }, () => { interrupted = true; });
     gate.report('watch', { ...healthy, ...change });
     assert.equal(interrupted, true);
     release();
@@ -71,14 +57,12 @@ test('buffering, pausing and seeking interrupt an active background article', as
 test('only one background transfer runs and queued cancellation needs no socket', async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
   gate.report('watch', healthy);
-  const release = await gate.acquire(settings, { backgroundFor: 'watch' });
-  const queued = { backgroundFor: 'watch' };
+  const release = await gate.acquire(settings, { offlineDownload: true });
+  const queued = { offlineDownload: true };
   const pending = gate.acquire(settings, queued);
   queued.cancelled = true;
   await assert.rejects(pending, { code: 'DOWNLOAD_CANCELLED' });
   release();
-  gate.pause();
-  assert.equal(gate.safe('watch'), false);
 });
 
 test('foreground preemption retries an article without delivering partial or duplicate bytes', { timeout: 2000 }, async () => {
@@ -87,7 +71,7 @@ test('foreground preemption retries an article without delivering partial or dup
   const capacity = { ...settings, maxConnections: 1 };
   let connections = 0, started, rejectRead;
   const reading = new Promise(resolve => { started = resolve; });
-  const client = createBackgroundNntpClient({ ...capacity, backgroundJob: { backgroundFor: 'watch' } }, gate, async () => {
+  const client = createBackgroundNntpClient({ ...capacity, backgroundJob: { offlineDownload: true } }, gate, async () => {
     const first = ++connections === 1;
     const socket = new EventEmitter();
     socket.closed = false;
@@ -119,7 +103,7 @@ test('queued background download resumes when the viewer leaves and its report e
   let now = 0;
   const gate = createTransferCoordinator({ now: () => now, wait: setImmediate });
   gate.report('watch', { playing: false });
-  const job = { backgroundFor: 'watch', message: 'Downloading the next episode…' };
+  const job = { offlineDownload: true, message: 'Downloading a copy for offline playback…' };
   let admitted = false;
   const pending = gate.acquire(settings, job).then(release => { admitted = true; release(); });
   await setImmediate();
@@ -129,30 +113,27 @@ test('queued background download resumes when the viewer leaves and its report e
   if (!admitted) job.cancelled = true;
   await pending.catch(error => { assert.equal(error.code, 'DOWNLOAD_CANCELLED'); });
   assert.equal(admitted, true, 'an absent viewer must not pause the download forever');
-  assert.equal(job.message, 'Downloading the next episode…');
+  assert.equal(job.message, 'Downloading a copy for offline playback…');
 });
 
-test('idle downloads still yield to foreground transfers and explicit settings suspension', async () => {
+test('idle downloads still yield to foreground transfers', async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
   const foreground = await gate.acquire(settings);
   let admitted = false;
-  const pending = gate.acquire(settings, { backgroundFor: 'departed' }).then(release => { admitted = true; release(); });
+  const pending = gate.acquire(settings, { offlineDownload: true }).then(release => { admitted = true; release(); });
   await setImmediate();
   assert.equal(admitted, false, 'a free slot must not bypass active foreground work without buffer evidence');
-  gate.pause();
   foreground();
-  await setImmediate();
-  assert.equal(admitted, false, 'turning off automatic downloads is not an expired viewer');
-  gate.resume();
   await pending;
   assert.equal(admitted, true);
 });
 
-test('a remaining unhealthy viewer blocks an orphaned download until its buffer recovers', async () => {
+test('a download waits until every active viewer has a healthy buffer', async () => {
   const gate = createTransferCoordinator({ wait: setImmediate });
+  gate.report('watch', healthy);
   gate.report('other', { ...healthy, bufferedAhead: 3 });
   let admitted = false;
-  const pending = gate.acquire(settings, { backgroundFor: 'departed' }).then(release => { admitted = true; release(); });
+  const pending = gate.acquire(settings, { offlineDownload: true }).then(release => { admitted = true; release(); });
   await setImmediate();
   assert.equal(admitted, false);
   gate.report('other', healthy);

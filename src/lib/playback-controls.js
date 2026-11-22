@@ -91,10 +91,6 @@ export function shouldShowUpNext(eligible, position, duration, threshold = 30) {
   return Boolean(eligible) && Number.isFinite(position) && position >= 0 && Number.isFinite(duration) && duration > threshold && duration - position <= threshold;
 }
 
-export function canStartNextEpisode(nextMedia, nextJob) {
-  return Boolean(nextMedia) && nextJob?.status === 'ready';
-}
-
 export function shouldContinuePlayback(autoAdvance, playback) {
   return Boolean(autoAdvance) && playback?.status === 'ready';
 }
@@ -110,14 +106,6 @@ export function playbackPresentation({ ready, warming, restarting, revealing }) 
     showControls: Boolean(ready && (!warming || restarting)),
     showSeekStatus: Boolean(ready && warming && restarting)
   };
-}
-
-export function nextEpisodeEndAction(autoPlayNext, nextMedia, nextJob) {
-  if (!autoPlayNext) return 'none';
-  if (!nextMedia) return 'resolve';
-  if (nextJob?.status === 'ready') return 'play';
-  if (nextJob?.status === 'error' || nextJob?.status === 'cancelled') return 'retry';
-  return 'wait';
 }
 
 export function upNextCountdown(startedAt, now = Date.now(), delaySeconds = 30) {
@@ -146,7 +134,7 @@ export function creditDetectionStatus({ enabled, autoPlayNext, playing, hasNextE
   if (!enabled) return { ...result, state: 'disabled', label: 'Disabled in settings' };
   if (!autoPlayNext) return { ...result, state: 'autoplay-off', label: 'Auto-play next episode is off' };
   if (!playing) return { ...result, state: 'paused', label: 'Waiting for playback' };
-  if (!hasNextEpisode) return { ...result, state: 'waiting-next', label: 'Waiting for the next episode to be prepared' };
+  if (!hasNextEpisode) return { ...result, state: 'waiting-next', label: 'No next episode identified' };
   if (!shouldSampleForCredits(position, duration)) return { ...result, state: 'waiting-window', label: sampleFrom ? `Waiting until ${Math.round(sampleFrom)}s` : 'Waiting for a reliable duration' };
   if (error) return { ...result, eligible: true, state: 'unavailable', label: error };
   if (detected) return { ...result, eligible: true, state: 'detected', label: 'Credits detected — countdown triggered' };
@@ -198,40 +186,6 @@ export function playbackPollDelay(attempt) {
   if (attempt < 5) return 200;
   if (attempt < 15) return 500;
   return 900;
-}
-
-export function createNextEpisodePreparationController() {
-  let state = 'idle';
-  let generation = 0;
-  return {
-    get preparing() { return state === 'preparing'; },
-    reset() { generation++; state = 'idle'; },
-    async attempt({ resolveCandidate, prepareCandidate, isCurrent = () => true }) {
-      if (state !== 'idle') return { status: 'skipped' };
-      const token = ++generation;
-      let media = null;
-      state = 'preparing';
-      try {
-        media = await resolveCandidate();
-        if (token !== generation || !isCurrent()) return { status: 'stale' };
-        if (!media) { state = 'unavailable'; return { status: 'unavailable' }; }
-        const job = await prepareCandidate(media);
-        if (token !== generation || !isCurrent()) return { status: 'stale' };
-        state = 'prepared';
-        return { status: 'prepared', media, job };
-      } catch (error) {
-        if (token === generation) state = 'idle';
-        return { status: 'error', media, error };
-      } finally {
-        if (token === generation && state === 'preparing') state = 'idle';
-      }
-    }
-  };
-}
-
-export function shouldPrepareNextEpisode({ playing, mediaType, manualReleaseSelection, autoPlayNextEpisode = true }) {
-  if (!playing || mediaType !== 'tv' || manualReleaseSelection || !autoPlayNextEpisode) return false;
-  return true;
 }
 
 export function createPlaybackRequestGuard() {

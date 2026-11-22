@@ -6,8 +6,11 @@ export function createSettingsStore(path, { env = process.env } = {}) {
   let reportedError = '';
 
   async function readSaved() {
-    try { return JSON.parse(await readFile(path, 'utf8')); }
-    catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+    try {
+      const saved = JSON.parse(await readFile(path, 'utf8'));
+      delete saved?.prepareSeries;
+      return saved;
+    } catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
   }
 
   async function effective(saved) {
@@ -59,7 +62,7 @@ export function createSettingsStore(path, { env = process.env } = {}) {
         }
       }
       if (!next.torrentIndexerUrl) delete next.torrentIndexerKey;
-      for (const key of ['bundledTorrent', 'hasTorrentIndexer', 'hasTorrentIndexerKey', 'hasIndexerKey', 'hasUsenetPass', 'hasTmdbToken', 'watchmodeKey', 'omdbKey', 'downloadNextEpisode']) delete next[key];
+      for (const key of ['bundledTorrent', 'hasTorrentIndexer', 'hasTorrentIndexerKey', 'hasIndexerKey', 'hasUsenetPass', 'hasTmdbToken', 'watchmodeKey', 'omdbKey', 'downloadNextEpisode', 'prepareSeries']) delete next[key];
       return save(next);
     },
     async reset() { return save({}); }

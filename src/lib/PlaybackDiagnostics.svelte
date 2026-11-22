@@ -1,5 +1,5 @@
 <script>
-  let { playback = null, nextJob = null, video = null, credits = null, interruptions = [], report = null, embedded = false } = $props();
+  let { playback = null, video = null, credits = null, interruptions = [], report = null, embedded = false } = $props();
   let selection = $derived(playback?.diagnostics?.releaseSelection);
   let currentCandidate = $derived(selection?.candidates?.find(candidate => candidate.status === 'checking'));
   let selectedCandidate = $derived(selection?.candidates?.find(candidate => candidate.status === 'selected'));
@@ -83,7 +83,6 @@
         <dt class="text-base-content/50">Pipeline</dt><dd>{playback?.diagnostics?.mode || '—'} / {playback?.diagnostics?.strategy || '—'}</dd>
         <dt class="text-base-content/50">Acceleration</dt><dd>{playback?.diagnostics?.acceleration || 'Detecting…'}</dd>
         <dt class="text-base-content/50">Audio policy</dt><dd>English language/title metadata, then track {playback?.untaggedAudioTrack || 2}, then track 1</dd>
-        <dt class="text-base-content/50">Next episode</dt><dd>{nextJob ? `${nextJob.status} · ${nextJob.message || 'working'}` : 'Not preparing'}</dd>
       </dl>
     </section>
     <section>

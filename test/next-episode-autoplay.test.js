@@ -6,26 +6,22 @@ import { parse } from 'svelte/compiler';
 import * as controls from '../src/lib/playback-controls.js';
 
 const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
-const names = ['beginUpNextCountdown', 'tickUpNextCountdown', 'playNextEpisode', 'pollNextEpisode', 'cancelUpNext'];
+const names = ['tickUpNextCountdown', 'playNextEpisode', 'cancelUpNext'];
 const handlers = parse(source).instance.content.body
   .filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name))
   .map(node => source.slice(node.start, node.end)).join('\n');
 
-function episodeState(status = 'preparing') {
+function episodeState(reason) {
   const timers = new Map();
   let timerId = 0;
   const state = {
-    ...controls, AbortSignal, Date: { now: () => 40000 },
+    ...controls, Date: { now: () => 40000 },
     nextMedia: { type: 'tv', id: 1, season: 1, episode: 2 },
     currentMedia: { type: 'tv', id: 1, season: 1, episode: 1 },
-    nextJob: { id: 'next', status },
     autoPlayNext: true, showUpNext: true, upNextStartedAt: 10000,
-    upNextSeconds: 0, upNextReason: 'Episode finished',
-    upNextTimer: null, nextPollTimer: null,
-    playbackRequests: { isCurrent: () => true },
+    upNextSeconds: 0, upNextReason: reason, upNextTimer: null,
     starts: [], setWatched() {},
     startPlayback: (...args) => { state.starts.push(args); },
-    api: { get: async () => ({ id: 'next', status: 'error' }) },
     setTimeout: callback => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: id => timers.delete(id)
   };
@@ -33,21 +29,17 @@ function episodeState(status = 'preparing') {
   return { state, timers };
 }
 
-test('an elapsed countdown retries a failed next episode instead of waiting forever', () => {
-  const { state } = episodeState('error');
-  state.tickUpNextCountdown();
-  assert.equal(state.starts.length, 1, 'the next episode must start after its preparation fails');
-  assert.equal(state.starts[0][1], null, 'retry through normal foreground preparation');
-  assert.equal(state.starts[0][3], true, 'retain autoplay intent');
-});
-
-test('preparation failing after the episode ends still advances', async () => {
-  const { state, timers } = episodeState();
+test('the ordinary end countdown does not advance a stalled episode', () => {
+  const { state } = episodeState('Episode ending');
   state.tickUpNextCountdown();
   assert.equal(state.starts.length, 0);
-  await state.pollNextEpisode('next', 1);
-  for (const callback of [...timers.values()]) callback();
-  assert.equal(state.starts.length, 1);
+});
+
+test('an elapsed credits countdown starts the next episode through foreground playback once', () => {
+  const { state } = episodeState('End credits detected');
+  state.tickUpNextCountdown();
+  state.tickUpNextCountdown();
+  assert.deepEqual(state.starts, [[state.nextMedia, false, true]]);
 });
 
 function playerLifetime(node, state, ancestors = []) {
@@ -77,31 +69,9 @@ test('episode handover preserves the video element through foreground preparatio
   assert.deepEqual(during.filter(parent => parent.type === 'KeyBlock'), before.filter(parent => parent.type === 'KeyBlock'), 'resetting retries must not create a new video');
 });
 
-for (const status of ['ready', 'cancelled']) test(`an elapsed countdown advances a ${status} next episode`, () => {
-  const { state } = episodeState(status);
-  state.tickUpNextCountdown();
-  assert.equal(state.starts.length, 1);
-  assert.equal(state.starts[0][1], status === 'ready' ? state.nextJob : null);
-});
-
-
-test('cancelling the countdown prevents a later ready poll from advancing', async () => {
-  const { state } = episodeState();
-  state.api.get = async () => ({ id: 'next', status: 'ready' });
+test('cancelling the credits countdown prevents automatic playback', () => {
+  const { state } = episodeState('End credits detected');
   state.cancelUpNext();
-  await state.pollNextEpisode('next', 1);
   state.tickUpNextCountdown();
   assert.equal(state.starts.length, 0);
-});
-
-test('a failed polling request does not strand an elapsed countdown', async () => {
-  const { state, timers } = episodeState();
-  state.api.get = async () => { throw new Error('Network unavailable'); };
-  await state.pollNextEpisode('next', 1);
-  state.tickUpNextCountdown();
-  assert.equal(state.starts.length, 0, 'transient failure retains preparation');
-  assert.ok(timers.has(state.nextPollTimer));
-  state.api.get = async () => ({ id: 'next', status: 'ready' });
-  await state.pollNextEpisode('next', 1);
-  assert.equal(state.starts.length, 1);
 });

@@ -75,7 +75,7 @@ test('a single-article video releases the header connection even without further
   assert.equal(closed, 1);
 });
 
-test('cancelling speculative preparation interrupts authentication rather than waiting for its timeout', async () => {
+test('cancelling a provider check interrupts authentication rather than waiting for its timeout', async () => {
   const { createServer } = await import('node:net');
   const { testNntp } = await import('../src/lib/server/streamer.js');
   const controller = new AbortController(), sockets = new Set();

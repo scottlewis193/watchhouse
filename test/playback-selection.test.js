@@ -106,14 +106,13 @@ test('torrent fallback remains unavailable when every source fails its opening c
   });
 });
 
-test('metadata-only torrent preparation is rechecked before foreground reuse', async () => {
+test('a cached torrent is rechecked before playback and replaced if it no longer opens', async () => {
   await withTorrentIndexer(async settings => {
     const options = { search: async () => [], plans: createPlaybackPlanCache(), persistence: null };
-    const background = { ...job(), speculative: true, prepareAhead: true };
-    await preparePlayback(background, settings, {
-      ...options, preflight: async () => { assert.fail('Background metadata lookup must not stream torrent payload.'); }
-    });
-    assert.equal(background.release, 'Slow.Horses.S01E02.1080p.x264.First');
+    const firstPlay = job();
+    await preparePlayback(firstPlay, settings, { ...options, preflight: async () => ({ sessionUrl: '/prepared/first' }) });
+    assert.equal(firstPlay.status, 'ready');
+    assert.equal(firstPlay.release, 'Slow.Horses.S01E02.1080p.x264.First');
     const foreground = job();
     await preparePlayback(foreground, settings, {
       ...options,
@@ -132,7 +131,7 @@ test('cached torrent validation and fallback search share one selection deadline
   await withTorrentIndexer(async settings => {
     const options = { search: async () => [], plans: createPlaybackPlanCache(), persistence: null };
     const requested = { ...media, id: 95482 };
-    await preparePlayback({ ...job(), media: requested, speculative: true, prepareAhead: true }, settings, options);
+    await preparePlayback({ ...job(), media: requested }, settings, { ...options, preflight: async () => ({ sessionUrl: '/prepared/first' }) });
     const playback = { ...job(), media: requested }, attempted = [];
     foreground = true;
     t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -298,8 +297,8 @@ test('diagnostics retain every ranked candidate and its live selection outcome',
   assert.equal(playback.quality.summary, selected.quality.summary);
 });
 
-test('poster prewarm checks a direct release before reporting it ready', async () => {
-  const playback = { ...job(), speculative: true, selectionStart: 6826 };
+test('explicit resume checks a newly selected direct release at the requested position', async () => {
+  const playback = { ...job(), selectionStart: 6826 };
   const checked = [];
   await preparePlayback(playback, { targetResolution: '1080p' }, {
     search: async () => [{ title: 'Film.1080p.SDR' }],
@@ -315,8 +314,8 @@ test('poster prewarm checks a direct release before reporting it ready', async (
   assert.equal(playback.preparedSession.sessionUrl, '/prepared/1080p');
 });
 
-test('poster prewarm rechecks a saved direct plan before reporting it ready', async () => {
-  const playback = { ...job(), speculative: true, selectionStart: 6826 };
+test('explicit resume rechecks a saved direct plan at the requested position without searching', async () => {
+  const playback = { ...job(), selectionStart: 6826 };
   let checked = 0;
   await preparePlayback(playback, { targetResolution: '1080p' }, {
     plans: { get: () => ({ release: 'Film.1080p.SDR', strategy: 'transcode', file: { subject: 'film.mkv' }, prefetchedSegments: new Map() }) },
@@ -328,8 +327,8 @@ test('poster prewarm rechecks a saved direct plan before reporting it ready', as
   assert.equal(playback.preparedSession.sessionUrl, '/prepared/saved');
 });
 
-test('resume prewarming retains the preferred streamable archive and validates it without a full download', async () => {
-  const playback = { ...job(), speculative: true, selectionStart: 120 }, checked = [];
+test('explicit resume validates the preferred streamable archive without a full download', async () => {
+  const playback = { ...job(), selectionStart: 120 }, checked = [];
   await preparePlayback(playback, { usenetHost: 'fixture', playbackQuality: 'quality' }, {
     search: async () => [{ title: 'Film.2160p.Archive' }, { title: 'Film.1080p.Direct' }],
     load: async release => nzb(release.title.includes('Archive') ? 'rar' : 'mkv'),
@@ -342,27 +341,13 @@ test('resume prewarming retains the preferred streamable archive and validates i
       return true;
     },
     preflight: async (candidate, _settings, start) => { checked.push([candidate.release, start]); return { sessionUrl: '/prepared/archive', start }; },
-    archive: async () => assert.fail('Speculative preparation must not download the archive'),
-    cache: async () => assert.fail('Speculative preparation must not download a full video'),
+    archive: async () => assert.fail('A streamable archive does not need a full download'),
+    cache: async () => assert.fail('A streamable archive does not need a full downloaded copy'),
     health: { has: async () => false }, plans: createPlaybackPlanCache()
   });
   assert.equal(playback.status, 'ready');
   assert.equal(playback.release, 'Film.2160p.Archive');
   assert.deepEqual(checked, [['Film.2160p.Archive', 120]]);
-});
-
-test('unsupported speculative archives wait for foreground without changing quality or downloading', async () => {
-  const playback = { ...job(), speculative: true }, loaded = [];
-  await preparePlayback(playback, { usenetHost: 'fixture' }, {
-    search: async () => [{ title: 'Film.2160p.Archive' }, { title: 'Film.1080p.Direct' }],
-    load: async release => { loaded.push(release.title); return nzb('rar'); },
-    progressive: async () => false,
-    archive: async () => assert.fail('Speculative preparation must not download an archive'),
-    cache: async () => assert.fail('Speculative preparation must not download a full video'),
-    health: { has: async () => false }, plans: createPlaybackPlanCache()
-  });
-  assert.equal(playback.status, 'error');
-  assert.deepEqual(loaded, ['Film.2160p.Archive']);
 });
 
 test('reposted missing article sets are checked once even when descriptions arrive concurrently', async () => {
@@ -957,10 +942,10 @@ test('a downloaded release with an invalid media timeline is blacklisted before 
   assert.deepEqual(rejected, ['Broken timeline']);
 });
 
-test('background next-episode preparation accepts an archive release', async () => {
-  const playback = { ...job(), prepareAhead: true, backgroundFor: 'current-playback' };
+test('an explicit offline download accepts an archive release', async () => {
+  const playback = { ...job(), offlineDownload: true };
   const downloaded = [];
-  await preparePlayback(playback, { backgroundJob: playback }, {
+  await preparePlayback(playback, {}, {
     search: async () => [{ title: 'Silo S01E02 archive' }],
     load: async () => nzb('rar'),
     health: { has: async () => false },
@@ -970,23 +955,23 @@ test('background next-episode preparation accepts an archive release', async () 
   assert.equal(playback.status, 'ready', playback.message);
   assert.deepEqual(downloaded, ['Silo S01E02 archive']);
 });
-test('background next-episode preparation prefers a later direct release over an earlier archive', async () => {
-  const playback = { ...job(), prepareAhead: true, backgroundFor: 'current-playback' };
+test('an explicit offline download prefers a later direct release over an earlier archive', async () => {
+  const playback = { ...job(), offlineDownload: true };
   const downloaded = [];
-  let preflighted = 0;
-  await preparePlayback(playback, { backgroundJob: playback }, {
+  const preflight = async () => assert.fail('A prepared local copy should not also start a live converter');
+  await preparePlayback(playback, {}, {
     search: async () => [{ title: 'Preferred archive' }, { title: 'Direct fallback' }],
     load: async release => release.title === 'Preferred archive' ? nzb('rar') : nzb('mkv'),
     check: async () => 'segment',
-    preflight: async () => { preflighted++; return { sessionUrl: '/fixture/session', start: 0 }; },
+    preflight,
     health: { has: async () => false },
     plans: createPlaybackPlanCache(),
+    cache: async job => { downloaded.push(job.release); job.status = 'ready'; job.mode = 'cached'; },
     archive: async job => { downloaded.push(job.release); job.status = 'ready'; job.mode = 'cached'; }
   });
-  assert.equal(playback.mode, 'direct');
+  assert.equal(playback.mode, 'cached');
   assert.equal(playback.release, 'Direct fallback');
-  assert.equal(preflighted, 1);
-  assert.deepEqual(downloaded, []);
+  assert.deepEqual(downloaded, ['Direct fallback']);
 });
 
 test('known unreadable archives are skipped without paying for a doomed full download', async () => {

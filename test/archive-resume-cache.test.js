@@ -14,19 +14,17 @@ function fixture() {
   return { source, leases: () => holds, plan: { archiveSource: source, progressiveArchive: true, file: { subject: 'episode.mkv' }, archives: [], release: 'Archive', strategy: 'remux' } };
 }
 test('archive resume reuses extraction without repeating release search', async () => {
-  for (const speculative of [false, true]) {
-    const cache = createArchiveResumeCache(), f = fixture();
-    try {
-      cache.set(media, 'scope', f.plan);
-      const job = { media, speculative, events: [], diagnosticsEnabled: true };
-      await preparePlayback(job, {}, { archivePlans: { get: () => cache.get(media, 'scope') }, plans: createPlaybackPlanCache(), health: { has: async () => false }, search: async () => { throw Error('Repeated search'); } });
-      assert.equal(job.status, 'ready');
-      assert.equal(job.archiveSource, f.source);
-      assert.equal(job.file, f.plan.file);
-      assert.ok(job.events.some(e => e.activity === 'archive-resume-hit'));
-    } finally { cache.clear(); }
-    assert.equal(f.leases(), 0);
-  }
+  const cache = createArchiveResumeCache(), f = fixture();
+  try {
+    cache.set(media, 'scope', f.plan);
+    const job = { media, events: [], diagnosticsEnabled: true };
+    await preparePlayback(job, {}, { archivePlans: { get: () => cache.get(media, 'scope') }, plans: createPlaybackPlanCache(), health: { has: async () => false }, search: async () => { throw Error('Repeated search'); } });
+    assert.equal(job.status, 'ready');
+    assert.equal(job.archiveSource, f.source);
+    assert.equal(job.file, f.plan.file);
+    assert.ok(job.events.some(e => e.activity === 'archive-resume-hit'));
+  } finally { cache.clear(); }
+  assert.equal(f.leases(), 0);
 });
 
 test('a resumed fallback archive skips search without changing fresh-play quality or exceeding the target', async () => {
@@ -84,20 +82,6 @@ test('an invalid resumed 2160p archive falls back to a playable 1080p release', 
   assert.equal(job.preparedSession.sessionUrl, '/prepared/1080p');
 });
 
-test('a poster-prepared archive is checked after play is pressed', async () => {
-  const f = fixture();
-  const job = { media, selectionStart: 6817, status: 'selecting', mode: 'direct', archiveNeedsCheck: true,
-    progressiveArchive: true, archiveSource: f.source, file: f.plan.file, release: 'Film.2160p', strategy: 'transcode' };
-  let checked = 0;
-  await preparePlayback(job, { usenetHost: 'fixture' }, {
-    preflight: async (_candidate, _settings, start) => { checked++; assert.equal(start, 6817); return { sessionUrl: '/prepared/2160p' }; },
-    search: async () => { throw new Error('Poster source was searched again.'); }
-  });
-  assert.equal(checked, 1);
-  assert.equal(job.status, 'ready');
-  assert.equal(job.preparedSession.sessionUrl, '/prepared/2160p');
-});
-
 test('a reused archive stays selecting until its playback opening check finishes', async () => {
   const f = fixture();
   let releaseCheck;
@@ -153,13 +137,11 @@ test('production archive retention has no arbitrary title, byte or idle cap', ()
 });
 
 test('marking watched clears warm extraction without touching offline storage', () => {
-  const deleted = [], posterKeys = [];
-  clearWatchedPlaybackWarmth(media, {}, {
-    archivePlans: { delete: value => deleted.push(value) },
-    poster: { delete: key => posterKeys.push(key) }
+  const deleted = [];
+  clearWatchedPlaybackWarmth(media, {
+    archivePlans: { delete: value => deleted.push(value) }
   });
   assert.deepEqual(deleted, [media]);
-  assert.equal(posterKeys.length, 1);
 });
 
 test('clearing progress also clears warm extraction state', () => {
@@ -169,7 +151,7 @@ test('clearing progress also clears warm extraction state', () => {
 });
 
 test('rejected archives and download requests do not reuse the streaming cache', async () => {
-  for (const flags of [{ rejectedReleases: new Set(['Archive']) }, { offlineDownload: true }, { prepareAhead: true }, { manualRelease: { title: 'Explicit' } }]) {
+  for (const flags of [{ rejectedReleases: new Set(['Archive']) }, { offlineDownload: true }, { downloadReplacement: true }, { manualRelease: { title: 'Explicit' } }]) {
     const f = fixture(); let searched = false;
     const job = { media, ...flags };
     await preparePlayback(job, {}, {

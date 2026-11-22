@@ -12,7 +12,7 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
     if (signal?.aborted) done();
   });
   const accounts = new Map(), reports = new Map();
-  let backgroundActive = false, interruptBackground, suspended = false;
+  let backgroundActive = false, interruptBackground;
   const key = settings => JSON.stringify([settings.usenetHost, settings.usenetPort || 563, settings.usenetUser]);
   function report(id, sample) {
     for (const [key, value] of reports) if (now() - value.at > 60000) reports.delete(key);
@@ -20,12 +20,6 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
     reports.set(id, { at: now(), safe: sample.playing === true && sample.seeking !== true && sample.readyState >= 3 && sample.bufferedAhead >= 10 });
     if (!reports.get(id).safe) interruptBackground?.();
     wake();
-  }
-  function safe(id) {
-    const current = reports.get(id);
-    if (!current?.safe || now() - current.at > 10000) return false;
-    for (const sample of reports.values()) if (now() - sample.at <= 10000 && !sample.safe) return false;
-    return true;
   }
   async function acquire(settings, job, interrupt) {
     const id = key(settings);
@@ -43,7 +37,7 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
         // block an already queued download indefinitely. Foreground transfers
         // still win, including startup before a viewer can report its buffer.
         const viewers = [...reports.values()].filter(sample => now() - sample.at <= 10000);
-        const downloadSafe = !suspended && (viewers.length ? viewers.every(sample => sample.safe) : account.active === 0);
+        const downloadSafe = viewers.length ? viewers.every(sample => sample.safe) : account.active === 0;
         if (background ? room && !backgroundActive && !account.foregroundWaiting && downloadSafe : room) break;
         // Reclaim a background slot only when foreground work cannot fit.
         if (!background) {
@@ -51,7 +45,7 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
           if (account.active < limit) continue;
         }
         if (background) {
-          pausedMessage = suspended ? 'Paused background download · automatic downloads are disabled.' : 'Paused background download · current playback has priority.';
+          pausedMessage = 'Paused background download · current playback has priority.';
           job.message = pausedMessage;
         }
         await waitForChange(settings.signal);
@@ -68,12 +62,12 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
       };
     } finally { if (!background) account.foregroundWaiting--; }
   }
-  return { acquire, report, forget(id) { reports.delete(id); wake(); }, pause() { suspended = true; reports.clear(); interruptBackground?.(); wake(); }, resume() { suspended = false; wake(); }, safe };
+  return { acquire, report, forget(id) { reports.delete(id); wake(); } };
 }
 
 export function createBackgroundNntpClient(settings, transfers, connect) {
   let closed = false, active;
-  const operation = async (method, ...args) => {
+  const body = async (id, consume) => {
     while (true) {
       throwIfDownloadCancelled(settings.backgroundJob);
       if (closed) throw new Error('Background connection closed.');
@@ -87,15 +81,11 @@ export function createBackgroundNntpClient(settings, transfers, connect) {
         if (interrupted) continue;
         // Deliver only complete articles. Preemption must not append half an
         // article and then duplicate it when foreground playback releases us.
-        if (method === 'body') {
-          const lines = [];
-          await active.body(args[0], line => lines.push(line));
-          if (interrupted) continue;
-          for (const line of lines) await args[1](line);
-          return;
-        }
-        const result = await active[method](...args);
-        if (!interrupted) return result;
+        const lines = [];
+        await active.body(id, line => lines.push(line));
+        if (interrupted) continue;
+        for (const line of lines) await consume(line);
+        return;
       } catch (error) { if (!interrupted) throw error; }
       finally {
         if (active && !active.socket.closed) {
@@ -105,5 +95,5 @@ export function createBackgroundNntpClient(settings, transfers, connect) {
       }
     }
   };
-  return { body: (...args) => operation('body', ...args), has: (...args) => operation('has', ...args), close() { closed = true; active?.close(); } };
+  return { body, close() { closed = true; active?.close(); } };
 }

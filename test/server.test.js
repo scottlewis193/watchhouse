@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { EventEmitter, once } from 'node:events';
 import { Readable } from 'node:stream';
-import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, beginOfflineFinalization, connectionTestSettings, conversionSucceeded, createOfflinePlaybackJob, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, preparationDownloadSettings, publicSettings, searchResults, shouldCacheDirectPlayback, shouldFinalizeCachedPlayback, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
+import { applyYencByteLayout, archiveFiles, archiveFilenames, audioAwarePlaybackStrategy, beginOfflineFinalization, connectionTestSettings, conversionSucceeded, createOfflinePlaybackJob, createPlaybackPlanCache, createPostedSegmentLoader, decodeYenc, detectVideoAcceleration, ffmpegArgs, indexerEndpoint, NntpClient, openPostedRangeServer, orderedPrefetch, parseByteRange, playableMediaHeader, playbackAccelerationLabel, postedFileByteLayout, publicSettings, searchResults, streamPostedFile, testNntp, videoFile, videoType, writePostedFileRange, writeStreamToResponse, yencName } from '../src/lib/server/streamer.js';
 import { episodeTag, englishAudioRelease, mapTmdbEpisodes, mapTmdbRuntime, mapTmdbSeasons, mapTmdbTitleDetails, mapTmdbTitles, playbackStrategy, rankReleases, releaseReadiness, titleVariants, tmdbImage } from '../media.js';
-import { audioPlaybackHealth, canAttemptCreditFrameSample, canSavePlaybackProgress, canStartNextEpisode, canUseFallback, createNextEpisodePreparationController, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, nextEpisodeEndAction, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldPrepareNextEpisode, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
+import { audioPlaybackHealth, canAttemptCreditFrameSample, canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '../src/lib/playback-controls.js';
 import { analyzeCreditFrame, updateCreditEvidence } from '../src/lib/credit-detection.js';
 import { DownloadCancelledError, cancelDownloadJob, onDownloadCancel, throwIfDownloadCancelled } from '../src/lib/server/download-cancellation.js';
 import { offlineAvailability, offlineEpisodeState, offlineEpisodes, offlineMediaKey, offlineMediaMatches } from '../src/lib/offline.js';
@@ -230,20 +230,6 @@ test('builds a valid playback payload for the selected episode', () => {
   assert.equal(episodePlaybackMedia(show, '2', '', [{ number: 3, name: 'Third' }]), null);
 });
 
-test('keeps prepare-ahead direct streams ready without forcing a download', () => {
-  assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'remux'), true);
-  assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'remux'), true);
-  assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'transcode'), true);
-  assert.equal(shouldFinalizeCachedPlayback({ offlineDownload: true }, 'raw'), false);
-  assert.equal(shouldFinalizeCachedPlayback({ prepareAhead: true }, 'raw'), false);
-  assert.equal(shouldCacheDirectPlayback({ prepareAhead: true }), false);
-  assert.equal(shouldCacheDirectPlayback({ prepareAhead: true, speculative: true }), false);
-  assert.equal(shouldCacheDirectPlayback({}), false);
-  assert.equal(shouldCacheDirectPlayback({}, { repairVideoTimeline: true }), false);
-  assert.equal(preparationDownloadSettings({ prepareAhead: true }, { maxConnections: 12 }).maxConnections, 2);
-  assert.equal(preparationDownloadSettings({}, { maxConnections: 12 }).maxConnections, 12);
-});
-
 test('does not prepare an already finalized offline MP4 again', async () => {
   const { audioSafeOfflineRecord } = await import('../src/lib/server/streamer.js');
   assert.equal(typeof audioSafeOfflineRecord, 'function');
@@ -427,53 +413,19 @@ test('normalizes browser byte ranges for cached and offline playback', () => {
   assert.equal(parseByteRange('bytes=0-1,4-5', 100), null);
 });
 
-test('polls preparation responsively and starts prepare-ahead as soon as playback begins', () => {
+test('polls foreground preparation responsively', () => {
   assert.equal(playbackPollDelay(0), 200);
   assert.equal(playbackPollDelay(8), 500);
   assert.equal(playbackPollDelay(30), 900);
-  assert.equal(shouldPrepareNextEpisode({ playing: false, mediaType: 'tv', manualReleaseSelection: false }), false);
-  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false }), true);
-  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'movie', manualReleaseSelection: false }), false);
-  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: true }), false);
-  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, autoPlayNextEpisode: false }), false);
-  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 12 }), true);
-  assert.equal(shouldPrepareNextEpisode({ playing: true, mediaType: 'tv', manualReleaseSelection: false, playbackMode: 'direct', bufferedAhead: 30 }), true);
 });
 
-test('retries next-episode preparation after episode loading fails', async () => {
-  const preparation = createNextEpisodePreparationController();
-  let attempts = 0;
-  const resolveCandidate = async () => {
-    attempts++;
-    if (attempts === 1) throw new Error('Episode catalogue temporarily unavailable');
-    return { type: 'tv', id: 20, season: 1, episode: 2 };
-  };
-  const prepareCandidate = async media => ({ id: 'next-job', status: 'selecting', media });
-
-  const failed = await preparation.attempt({ resolveCandidate, prepareCandidate });
-  assert.equal(failed.status, 'error');
-  assert.equal(preparation.preparing, false);
-
-  const retried = await preparation.attempt({ resolveCandidate, prepareCandidate });
-  assert.equal(retried.status, 'prepared');
-  assert.equal(retried.media.episode, 2);
-  assert.equal(retried.job.id, 'next-job');
-  assert.equal(attempts, 2);
-});
-
-test('waits for the prepared next episode and runs a deterministic 30 second countdown', () => {
-  assert.equal(nextEpisodeEndAction(true, null, null), 'resolve');
-  assert.equal(nextEpisodeEndAction(true, { episode: 2 }, { status: 'preparing' }), 'wait');
-  assert.equal(nextEpisodeEndAction(true, { episode: 2 }, { status: 'ready' }), 'play');
-  assert.equal(nextEpisodeEndAction(false, { episode: 2 }, { status: 'ready' }), 'none');
-  assert.equal(canStartNextEpisode({ episode: 2 }, { status: 'preparing' }), false);
-  assert.equal(canStartNextEpisode({ episode: 2 }, { status: 'ready' }), true);
+test('runs a deterministic 30 second countdown', () => {
   assert.deepEqual(upNextCountdown(10_000, 10_000), { seconds: 30, elapsed: false });
   assert.deepEqual(upNextCountdown(10_000, 39_001), { seconds: 1, elapsed: false });
   assert.deepEqual(upNextCountdown(10_000, 40_000), { seconds: 0, elapsed: true });
 });
 
-test('keeps playback running when handing off to a prepared next episode', () => {
+test('continues playback once the requested episode is ready', () => {
   assert.equal(shouldContinuePlayback(true, { status: 'ready' }), true);
   assert.equal(shouldContinuePlayback(false, { status: 'ready' }), false);
   assert.equal(shouldContinuePlayback(true, { status: 'preparing' }), false);

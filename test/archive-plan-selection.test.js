@@ -71,30 +71,3 @@ test('a validated fallback archive survives restart for resume without another r
     assert.deepEqual(starts, [0, 30], 'the saved source must still pass fresh validation at the resumed position');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
-
-for (const playable of [true, false]) test(`explicit Play preparation ${playable ? 'can reach a working third candidate' : 'stops provider work after three failed candidates'}`, async () => {
-  const loaded = [], candidates = Array.from({ length: 5 }, (_, index) => ({
-    title: `Film.2024.1080p.BluRay.x264-Choice${index + 1}`, nzbUrl: `https://fixture.invalid/${index + 1}`
-  }));
-  const job = { id: 'intent-fixture', media, speculative: true, playIntent: true, events: [] };
-  await preparePlayback(job, settings, {
-    persistence: null, health, plans: createPlaybackPlanCache(), archivePlans: { get() { return null; }, delete() {} }, hints: null,
-    search: async () => candidates,
-    load: async release => {
-      loaded.push(release.title);
-      return playable && release === candidates[2]
-        ? '<nzb><file subject=\"film.part1.rar\"><segments><segment bytes=\"1000\" number=\"1\">volume@fixture</segment></segments></file></nzb>' : '<nzb></nzb>';
-    },
-    progressive: async job => {
-      Object.assign(job, { archiveSource: source(), progressiveArchive: true, file: { subject: 'film.mkv' }, strategy: 'remux', mode: 'direct' });
-      return true;
-    },
-    preflight: async () => ({ close: async () => {} }),
-    check: async () => Buffer.from('opening'), connectAhead: null, archiveCheck: null, archiveHeader: null,
-    archive: async () => { throw new Error('Intent must not download a full archive'); },
-    cache: async () => { throw new Error('Intent must not download a full video'); }
-  });
-  assert.deepEqual(loaded, candidates.slice(0, 3).map(release => release.title));
-  assert.equal(job.status, playable ? 'ready' : 'error');
-  if (playable) assert.equal(job.release, candidates[2].title);
-});

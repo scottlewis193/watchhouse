@@ -1,19 +1,16 @@
 # Watchhouse
 
-## Discovery and proactive streaming
+## Discovery and on-demand playback
 
 Home includes movies released from January 1 through today in the current UTC
 year. Discovery shelves load additional TMDB pages as you approach their right
 edge, with retry controls on failures; Continue watching remains your saved list.
 
-Browsing Home queues background release selection for its movies and the first
-aired episode of its shows. Newly loaded shelf pages join the same queue. Selection
-uses the active playback preference, target resolution and provider configuration;
-changing settings cancels pending work and prevents reuse of incompatible choices.
-Manual release selection disables automatic preparation.
+Browsing, hovering over titles and watching an episode do not search the indexer
+for future playback. Watchhouse starts release lookup when playback is requested,
+autoplay advances to the next episode, or you request a release list or download.
+Without advance preparation, the next episode may take longer to start.
 
-Preparation saves source metadata and performs bounded Usenet availability
-probes, not full-video downloads, archive extraction or speculative conversion.
 Usenet and torrent release selections, plus validated media metadata, survive
 restarts without age or record-count eviction. They remain until the user clears
 that movie/episode's cache or a failed playback check invalidates the source.
@@ -31,12 +28,6 @@ when requesting the main film. Bracketed uploader prefixes, punctuation, numeric
 titles and standard edition labels remain supported.
 Selections cached before these identity checks are reselected once on upgrade.
 Their records and completed offline downloads are not deleted.
-
-**Prepare stream selections for the rest of the series** is enabled by default and queues stream choices
-for every remaining aired episode, including later seasons. Unknown/future air
-dates are skipped. The queue advances serially and Usenet probes yield to active
-playback when its buffer needs priority. This replaces automatic next-episode
-offline downloads; explicit Downloads remain available separately.
 
 ### Local torrent fallback
 
@@ -62,12 +53,12 @@ Preconfiguration does not guarantee search results or playable peers. Use the
 VPN deployment below to protect server-side traffic; a standalone `docker run`
 does **not** automatically provide a VPN.
 
-Only torrent metadata is fetched proactively; magnet metadata lookup may contact
-peers but does not fetch video pieces. HTTP download links that redirect to magnets
-use the same metadata-only peer lookup rather than treating magnets as HTTP URLs.
+During on-demand selection, magnet metadata lookup may contact peers but does not
+fetch video pieces. HTTP download links that redirect to magnets use the same
+metadata-only peer lookup rather than treating magnets as HTTP URLs.
 
 Foreground torrent playback must pass a live FFmpeg/HLS speed check, including
-cached and background-prepared selections. The ten-second check discards the
+saved selections. The ten-second check discards the
 first five seconds of startup output, then requires sustained output at least
 **1.25× viewing speed**. Borderline sources get four more seconds. Each preflight
 is bounded to 40 seconds, with separate 20-second metadata and opening-timeline
@@ -349,6 +340,9 @@ then correlate entries by `jobId` and `sessionId`. Container logs follow Docker'
 configured retention policy. Browser-only seeks, buffering and player state
 still require the watch page's **Download diagnostic report**; enable Playback
 diagnostics before starting playback and download the report before refreshing.
+
+Source quality and video conversion details are available in playback
+diagnostics rather than below the video.
 
 Every release-click playback attempt is reported automatically, even when
 **Playback diagnostics** is disabled and before a playback job exists. Startup

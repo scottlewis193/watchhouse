@@ -14,7 +14,7 @@ test('clears only the selected movie playback cache and keeps offline data out o
   const targetFile = {}, otherFile = {};
   const targetJob = { media: movie, file: targetFile, directory: targetDirectory, status: 'ready', archiveSource: { close: async () => { targetJob.sourceClosed = true; } } };
   const jobs = new Map([['target-job', targetJob], ['other-job', { media: other, file: otherFile, directory: otherDirectory, status: 'ready' }]]);
-  let sessionClosed = 0, planDeleted, archiveDeleted, persisted, healthDeleted, posterCancelled = 0, inspectionDeleted, segmentDeleted;
+  let sessionClosed = 0, planDeleted, archiveDeleted, persisted, healthDeleted, inspectionDeleted, segmentDeleted;
   const sessions = new Map([
     ['target-session', { jobId: 'target-job', session: { close: async () => { sessionClosed++; } } }],
     ['other-session', { jobId: 'other-job', session: { close: async () => {} } }]
@@ -28,7 +28,7 @@ test('clears only the selected movie playback cache and keeps offline data out o
       jobs, sessions,
       inspections: { delete: file => { inspectionDeleted = file; } },
       segments: { delete: file => { segmentDeleted = file; } },
-      poster: { cancel: () => { posterCancelled++; } }, root
+      root
     });
     assert.deepEqual(result, { jobs: 1, sessions: 1, sources: 2, directories: 1 });
     assert.equal(jobs.has('target-job'), false);
@@ -41,7 +41,6 @@ test('clears only the selected movie playback cache and keeps offline data out o
     assert.equal(archiveDeleted, movie);
     assert.equal(persisted, movie);
     assert.equal(healthDeleted, movie);
-    assert.equal(posterCancelled, 1);
     assert.equal(inspectionDeleted, targetFile);
     assert.equal(segmentDeleted, targetFile);
     await assert.rejects(access(targetDirectory));
