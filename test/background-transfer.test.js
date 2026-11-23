@@ -140,3 +140,36 @@ test('a download waits until every active viewer has a healthy buffer', async ()
   await pending;
   assert.equal(admitted, true);
 });
+
+test('claiming the next episode releases its queued probe and reuses foreground connections', { timeout: 2000 }, async () => {
+  const gate = createTransferCoordinator({ wait: setImmediate });
+  gate.report('other-viewer', { ...healthy, bufferedAhead: 3 });
+  const job = { nextPreparation: {} };
+  const probes = [];
+  const reader = createBackgroundNntpClient({
+    ...settings, backgroundJob: job, nextEpisodeJob: true,
+    foregroundNntp: () => ({
+      async has(id) { probes.push(['pooled', id]); return true; },
+      close() {}
+    })
+  }, gate, async () => {
+    const socket = new EventEmitter();
+    return {
+      socket,
+      async has(id) { probes.push(['opening', id]); return true; },
+      close() { socket.emit('close'); }
+    };
+  });
+  try {
+    const queued = reader.has('header');
+    await setImmediate();
+    assert.deepEqual(probes, [], 'warming must yield to another viewer with a low buffer');
+    delete job.nextPreparation;
+    assert.equal(await queued, true, 'handoff must not leave the existing probe blocked');
+    assert.equal(await reader.has('tail'), true);
+    assert.deepEqual(probes, [['opening', 'header'], ['pooled', 'tail']]);
+  } finally {
+    job.cancelled = true;
+    reader.close();
+  }
+});

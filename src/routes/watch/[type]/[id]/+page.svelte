@@ -88,6 +88,8 @@
   const playbackRequests = createPlaybackRequestGuard();
   const episodeRequests = new Map();
   let initialPreparation;
+  let nextPreparation = null;
+  onMount(() => cancelNextPreparation);
 
   onMount(() => {
     offlineMode = !navigator.onLine;
@@ -253,6 +255,9 @@
 
   async function startPlayback(selectedMedia, resume = false, autoAdvance = false) {
     if (manualReleaseSelection && !offlineMode && !selectedMedia.releaseId) return chooseRelease(selectedMedia, resume);
+    const warm = !selectedMedia.releaseId && nextPreparation?.key === itemKey(selectedMedia) ? nextPreparation : null;
+    if (warm) nextPreparation = null;
+    else cancelNextPreparation();
     guideOpen = false;
     stopBackgroundPlayback(true);
     readinessController?.abort();
@@ -286,7 +291,13 @@
       }
       const saved = progressFor(selectedMedia);
       const selectionStart = resume ? resumePosition(saved, resolvedMediaDuration(0, selectedMedia.durationHint, saved?.duration)) : 0;
-      const job = early?.job || await api.post('/api/play', { ...selectedMedia, selectionStart });
+      const preparedJobId = !selectionStart ? (await warm?.job)?.id : undefined;
+      if (warm && selectionStart) discardNextPreparation(warm);
+      if (!playbackRequests.isCurrent(requestToken)) {
+        if (preparedJobId) discardNextPreparation(warm);
+        return;
+      }
+      const job = early?.job || await api.post('/api/play', { ...selectedMedia, selectionStart, preparedJobId });
       if (!playbackRequests.isCurrent(requestToken)) { if (job.id && job.status !== 'ready') void api.post(`/api/play/${job.id}/cancel`).catch(() => {}); return; }
       if (job.status === 'ready') return await showReadyPlayback(job, requestToken);
       playback = job;
@@ -410,6 +421,27 @@
     } catch {
       // Catalogue lookup can be retried when playback actually advances.
     }
+  }
+
+  function warmNextEpisode(timeline) {
+    if (nextPreparation || !autoPlayNext || !playing || offlineMode || connectionLost || manualReleaseSelection
+        || playback?.status !== 'ready' || !playback.id || downloaded(nextMedia).available || timeline.duration <= 0
+        || (timeline.duration - timeline.position > 120 && !(smartAutoplay && shouldSampleForCredits(timeline.position, timeline.duration)))) return;
+    nextPreparation = {
+      key: itemKey(nextMedia),
+      job: api.post('/api/play', { ...nextMedia, nextFor: playback.id }).catch(() => null)
+    };
+  }
+
+  function discardNextPreparation(preparation) {
+    void preparation.job.then(job => {
+      if (job?.id) void fetch(`/api/play/${job.id}/cancel`, { method: 'POST', keepalive: true }).catch(() => {});
+    });
+  }
+
+  function cancelNextPreparation() {
+    if (nextPreparation) discardNextPreparation(nextPreparation);
+    nextPreparation = null;
   }
 
   function playEpisode(resume = true, autoplay = false) {
@@ -880,6 +912,7 @@
   }
   function cancelUpNext() {
     autoPlayNext = false; showUpNext = false; upNextStartedAt = 0; upNextReason = ''; clearTimeout(upNextTimer);
+    cancelNextPreparation();
   }
   function playNextEpisode() {
     if (!autoPlayNext || !nextMedia) return;
@@ -950,6 +983,7 @@
     playerDuration = Number.isFinite(player?.duration) ? player.duration : 0;
     restorePlaybackProgress();
     const timeline = controlTimeline();
+    if (nextMedia && autoPlayNext && seekPreview === null && !player?.seeking) warmNextEpisode(timeline);
     monitorAudioPlayback(timeline);
     if (shouldShowUpNext(autoPlayNext && Boolean(nextMedia), timeline.position, timeline.duration)) beginUpNextCountdown('Episode ending');
     sampleForEndCredits(timeline);
@@ -1113,6 +1147,7 @@
     guideOpen = open;
   }
   async function returnToHero() {
+    cancelNextPreparation();
     startupReports.finish('cancelled', { reason: 'cancelled-by-user' });
     if (document.fullscreenElement) await document.exitFullscreen();
     await savePlaybackProgress(true);

@@ -6,7 +6,7 @@ import { parse } from 'svelte/compiler';
 import * as controls from '../src/lib/playback-controls.js';
 
 const source = readFileSync(new URL('../src/routes/watch/[type]/[id]/+page.svelte', import.meta.url), 'utf8');
-const names = ['tickUpNextCountdown', 'playNextEpisode', 'cancelUpNext'];
+const names = ['loadNextEpisode', 'warmNextEpisode', 'cancelNextPreparation', 'tickUpNextCountdown', 'playNextEpisode', 'cancelUpNext'];
 const handlers = parse(source).instance.content.body
   .filter(node => node.type === 'FunctionDeclaration' && names.includes(node.id.name))
   .map(node => source.slice(node.start, node.end)).join('\n');
@@ -18,6 +18,7 @@ function episodeState(reason) {
     ...controls, Date: { now: () => 40000 },
     nextMedia: { type: 'tv', id: 1, season: 1, episode: 2 },
     currentMedia: { type: 'tv', id: 1, season: 1, episode: 1 },
+    nextPreparation: null,
     autoPlayNext: true, showUpNext: true, upNextStartedAt: 10000,
     upNextSeconds: 0, upNextReason: reason, upNextTimer: null,
     starts: [], setWatched() {},
@@ -40,6 +41,27 @@ test('an elapsed credits countdown starts the next episode through foreground pl
   state.tickUpNextCountdown();
   state.tickUpNextCountdown();
   assert.deepEqual(state.starts, [[state.nextMedia, false, true]]);
+});
+
+test('autoplay requests preparation while the current episode is still playing', async () => {
+  const { state } = episodeState('Episode ending');
+  const candidate = state.nextMedia;
+  const requests = [];
+  Object.assign(state, {
+    nextMedia: undefined, nextPreparation: null, playback: { id: 'current', status: 'ready' },
+    playing: true, offlineMode: false, connectionLost: false, manualReleaseSelection: false,
+    playbackRequests: { isCurrent: () => true },
+    smartAutoplay: false, downloaded: () => ({ available: false }),
+    itemKey: item => `${item.season}:${item.episode}`,
+    adjacentEpisodeMedia: async () => candidate,
+    api: { post: async (url, body) => { requests.push([url, body.nextFor, body.episode]); return { id: 'warm' }; } }
+  });
+  await state.loadNextEpisode(state.currentMedia, 1);
+  state.warmNextEpisode({ position: 500, duration: 1100 });
+  assert.deepEqual(requests, [], 'do not warm long before the handoff');
+  state.warmNextEpisode({ position: 1000, duration: 1100 });
+  state.warmNextEpisode({ position: 1001, duration: 1100 });
+  assert.deepEqual(requests, [['/api/play', 'current', 2]]);
 });
 
 function playerLifetime(node, state, ancestors = []) {

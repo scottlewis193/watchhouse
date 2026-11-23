@@ -21,17 +21,18 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
     if (!reports.get(id).safe) interruptBackground?.();
     wake();
   }
-  async function acquire(settings, job, interrupt) {
+  async function acquire(settings, job, interrupt, isBackground = () => Boolean(job)) {
     const id = key(settings);
     if (!accounts.has(id)) accounts.set(id, { active: 0, foregroundWaiting: 0 });
-    const account = accounts.get(id), background = Boolean(job), previousMessage = job?.message;
+    const account = accounts.get(id), previousMessage = job?.message;
     const limit = Math.max(1, Number(settings.maxConnections) || 4);
-    let pausedMessage;
-    if (!background) account.foregroundWaiting++;
+    let pausedMessage, background, foregroundWaiting = false;
     try {
       while (true) {
         throwIfDownloadCancelled(job);
         settings.signal?.throwIfAborted();
+        background = isBackground();
+        if (!background && !foregroundWaiting) { foregroundWaiting = true; account.foregroundWaiting++; }
         const room = account.active < limit;
         // Reports are viewer leases: silence after leaving the player must not
         // block an already queued download indefinitely. Foreground transfers
@@ -51,7 +52,7 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
         await waitForChange(settings.signal);
       }
       account.active++;
-      if (background && pausedMessage && job.message === pausedMessage) job.message = previousMessage;
+      if (pausedMessage && job.message === pausedMessage) job.message = previousMessage;
       if (background) { backgroundActive = true; interruptBackground = interrupt; }
       let released = false;
       return () => {
@@ -60,34 +61,37 @@ export function createTransferCoordinator({ now = Date.now, wait } = {}) {
         if (background) { backgroundActive = false; interruptBackground = null; }
         wake();
       };
-    } finally { if (!background) account.foregroundWaiting--; }
+    } finally { if (foregroundWaiting) account.foregroundWaiting--; }
   }
   return { acquire, report, forget(id) { reports.delete(id); wake(); } };
 }
 
 export function createBackgroundNntpClient(settings, transfers, connect) {
   let closed = false, active;
-  const body = async (id, consume) => {
+  const job = settings.backgroundJob;
+  const isBackground = () => !settings.nextEpisodeJob || Boolean(job.nextPreparation);
+  let foreground;
+  const promotedClient = () => !closed && !isBackground() ? (foreground ||= settings.foregroundNntp(settings)) : undefined;
+  const run = async operation => {
     while (true) {
-      throwIfDownloadCancelled(settings.backgroundJob);
+      throwIfDownloadCancelled(job);
       if (closed) throw new Error('Background connection closed.');
       let interrupted = false;
-      const release = await transfers.acquire(settings, settings.backgroundJob, () => {
-        interrupted = true; active?.socket.destroy();
-      });
+      const release = await transfers.acquire(settings, job, () => {
+        if (isBackground()) { interrupted = true; active?.socket.destroy(); }
+      }, isBackground);
+      const abort = () => active?.socket.destroy();
       try {
-        throwIfDownloadCancelled(settings.backgroundJob);
+        throwIfDownloadCancelled(job);
         active = await connect(settings);
+        settings.signal?.addEventListener('abort', abort, { once: true });
+        settings.signal?.throwIfAborted();
         if (interrupted) continue;
-        // Deliver only complete articles. Preemption must not append half an
-        // article and then duplicate it when foreground playback releases us.
-        const lines = [];
-        await active.body(id, line => lines.push(line));
-        if (interrupted) continue;
-        for (const line of lines) await consume(line);
-        return;
+        const result = await operation(active);
+        if (!interrupted) return result;
       } catch (error) { if (!interrupted) throw error; }
       finally {
+        settings.signal?.removeEventListener('abort', abort);
         if (active && !active.socket.closed) {
           const ended = once(active.socket, 'close').catch(() => {}); active.close(); await ended;
         }
@@ -95,5 +99,19 @@ export function createBackgroundNntpClient(settings, transfers, connect) {
       }
     }
   };
-  return { body, close() { closed = true; active?.close(); } };
+  return {
+    has: id => promotedClient()?.has(id) || run(client => client.has(id)),
+    async body(id, consume) {
+      const client = promotedClient();
+      if (client) return client.body(id, consume);
+      // Never deliver a partial article that would be repeated after preemption.
+      const lines = await run(async client => {
+        const result = [];
+        await client.body(id, line => result.push(line));
+        return result;
+      });
+      for (const line of lines) await consume(line);
+    },
+    close() { closed = true; active?.close(); foreground?.close(); }
+  };
 }

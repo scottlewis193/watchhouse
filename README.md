@@ -6,10 +6,14 @@ Home includes movies released from January 1 through today in the current UTC
 year. Discovery shelves load additional TMDB pages as you approach their right
 edge, with retry controls on failures; Continue watching remains your saved list.
 
-Browsing, hovering over titles and watching an episode do not search the indexer
-for future playback. Watchhouse starts release lookup when playback is requested,
-autoplay advances to the next episode, or you request a release list or download.
-Without advance preparation, the next episode may take longer to start.
+Browsing and hovering over titles do not search the indexer. With **Auto-play
+next episode** enabled, Watchhouse starts preparing only the next episode in
+the final two minutes of playback, or when Smart Autoplay starts checking for
+credits. This can fetch an NZB or contact torrent peers before the handoff.
+Usenet preparation yields to the current stream when its buffer runs low.
+Cancelling Up Next or leaving the player stops unused preparation. If preparation
+has not finished, the handoff continues the same job rather than starting over.
+With autoplay off or manual release selection enabled, playback stays on demand.
 
 Usenet and torrent release selections, plus validated media metadata, survive
 restarts without age or record-count eviction. They remain until the user clears

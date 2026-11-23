@@ -53,6 +53,39 @@ const OFFLINE_STATE_PATH = join(ROOT, 'data', 'offline-downloads.json');
 const downloads = new Map();
 const playbackJobs = new Map();
 const hlsSessions = new Map();
+const nextEpisodeJobs = new Map();
+const NEXT_PREPARATION_MS = 6 * 60 * 1000;
+
+function takeNextPreparation(job) {
+  const preparation = job.nextPreparation;
+  if (!preparation) return null;
+  delete job.nextPreparation;
+  clearTimeout(preparation.timer);
+  nextEpisodeJobs.delete(preparation.parentId);
+  return preparation;
+}
+
+async function discardNextEpisode(job) {
+  const preparation = takeNextPreparation(job);
+  if (!preparation) return;
+  playbackJobs.delete(job.id);
+  cancelDownloadJob(job);
+  preparation.controller.abort();
+  for (const entry of hlsSessions.values()) if (entry.jobId === job.id) await entry.session.close();
+}
+
+async function prepareNextEpisode(job, settings) {
+  await preparePlayback(job, settings);
+  if (job.status !== 'ready' || job.preparedSession
+      || job.mode !== 'direct' && job.mode !== 'cached-convert' && !(job.mode === 'cached' && job.frameInterpolation)) return;
+  setJob(job, 'selecting', 'Opening the next episode…', 95);
+  try {
+    job.preparedSession = await preflightLiveCandidate(job, settings, 0);
+    setJob(job, 'ready', 'Next episode is ready.', 100);
+  } catch (error) {
+    if (!settings.signal.aborted) setJob(job, 'error', error.message, 0);
+  }
+}
 
 function hlsSessionEntry(id, job, settings, start, audioTrack = null) {
   return { id, jobId: job.id, job, scope: playbackScope(settings), start, audioTrack, validated: false };
@@ -385,7 +418,7 @@ export class NntpClient {
   close() { this.socket.end('QUIT\r\n'); }
 }
 async function connectNntp(settings) {
-  if (settings.backgroundJob) return createBackgroundNntpClient(settings, transfers, async next => {
+  if (settings.backgroundJob && (!settings.nextEpisodeJob || settings.backgroundJob.nextPreparation)) return createBackgroundNntpClient(settings, transfers, async next => {
     nntpPool.clearIdle();
     return openNntp(next);
   });
@@ -1545,9 +1578,11 @@ export async function startHlsConversion(job, settings, start, directory, onProg
     args.splice(args.indexOf('-f'), 0, ...hlsKeyframeArgs(strategy, acceleration, segmentSeconds));
     const release = job.release, releaseKey = job.releaseKey || release;
     settings.signal?.throwIfAborted();
-    producer = await startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start), settings.signal,
-      job.progressiveArchive ? { frameRate: metadata.videoFrameRate, start,
-        onTimelineGap: error => rejectPlaybackSource(job, settings, release, releaseKey, error) } : {});
+    producer = await startHlsProducer(args, rangeSource, Math.max(0, metadata.duration - start), settings.signal, {
+      foreground: !job.nextPreparation,
+      ...(job.progressiveArchive ? { frameRate: metadata.videoFrameRate, start,
+        onTimelineGap: error => rejectPlaybackSource(job, settings, release, releaseKey, error) } : {})
+    });
     producer.interpolated = interpolate;
     jobEvent(job, 'encoding-start', 'Preparing the first playback segments.', { start });
     onProgress(1);
@@ -1629,7 +1664,7 @@ export function assertPlayableHlsOpening(streams = []) {
 export async function preflightLiveCandidate(job, settings, start = 0, { sessionFactory = createHlsSession, convert = startHlsConversion, inspect = async (directory, signal) => JSON.parse(await runOutput('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,start_time', '-of', 'json', join(directory, 'index.m3u8')], undefined, AbortSignal.any([signal, AbortSignal.timeout(5000)]) )).streams, wait = (ms, signal) => delay(ms, undefined, { signal }), now = () => performance.now(), firstSegmentMs = 8000, timeoutMs = 45000 } = {}) {
   const retained = await takeRetainedHlsSession(job, settings, start);
   if (retained) return retained;
-  if (sessionFactory === createHlsSession) await makeHlsRoom();
+  if (sessionFactory === createHlsSession && !job.nextPreparation) await makeHlsRoom();
   const id = randomUUID();
   const entry = hlsSessionEntry(id, job, settings, start);
   const controller = new AbortController();
@@ -1640,6 +1675,7 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
   try {
     signal.throwIfAborted();
     const opening = sessionFactory({ root: PLAYBACK_CACHE_ROOT, signal, produce: directory => convert(job, { ...settings, signal, preflight: true }, start, directory),
+      ...(job.nextPreparation ? { idleMs: NEXT_PREPARATION_MS } : {}),
       onClose: () => {
         hlsSessions.delete(entry.id);
         if (entry.job.preparedSession?.sessionUrl === entry.result?.sessionUrl) delete entry.job.preparedSession;
@@ -1724,8 +1760,8 @@ export async function preflightLiveCandidate(job, settings, start = 0, { session
     throw error;
   } finally { clearTimeout(timeout); removeCancelHandler(); }
 }
-async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal, { frameRate, start = 0, onTimelineGap } = {}) {
-  const release = await conversionAdmission.acquire({ signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
+async function startHlsProducer(args, rangeSource, expectedDuration = 0, signal, { frameRate, start = 0, onTimelineGap, foreground = true } = {}) {
+  const release = await conversionAdmission.acquire({ foreground, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000) });
   const child = spawn('ffmpeg', ['-progress', 'pipe:3', ...args], { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   let stderr = '', closed = false, paused = false, outputPosition = 0, progress = '', reportedFrame = null, reportedPosition = null, timelineError = null;
   let resolveFirstVideoFrame, started = false;
@@ -2277,7 +2313,7 @@ export async function preparePlayback(job, settings, { search = findReleases, lo
         }
       }
     }
-    if (connectAhead && settings.usenetHost && !job.offlineDownload) {
+    if (connectAhead && settings.usenetHost && !job.offlineDownload && !job.nextPreparation) {
       void connectAhead(settings).then(() => jobEvent(job, 'provider-connected', 'Provider connection ready for source checks.')).catch(() => {});
     }
     if (!job.manualRelease && !job.offlineDownload && !job.downloadReplacement && !job.progressiveArchiveDisabled) {
@@ -3010,14 +3046,33 @@ export async function handleRequest(req, res) {
     }
     if (req.method === 'POST' && url.pathname === '/api/play') {
       const media = await body(req);
-      if (media?.prepareAhead || (media != null && Object.hasOwn(media, 'backgroundFor'))) return json(res, 400, { error: 'Background playback preparation is no longer supported.' });
+      if (media?.prepareAhead || (media != null && Object.hasOwn(media, 'backgroundFor'))) return json(res, 400, { error: 'Only autoplay can prepare an episode in the background.' });
       if (!media?.title || !['movie', 'tv'].includes(media.type)) return json(res, 400, { error: 'A valid movie or show is required.' });
       if (media.type === 'tv' && (!Number.isInteger(media.season) || media.season < 1 || !Number.isInteger(media.episode) || media.episode < 1)) return json(res, 400, { error: 'Select a season and episode first.' });
+      const parent = typeof media.nextFor === 'string' ? playbackJobs.get(media.nextFor) : null;
+      if (media.nextFor != null && (parent?.status !== 'ready' || parent.nextPreparation || parent.media.type !== 'tv'
+          || media.type !== 'tv' || Number(media.id) !== Number(parent.media.id) || media.releaseId || Number(media.selectionStart)
+          || !(media.season > parent.media.season || media.season === parent.media.season && media.episode > parent.media.episode))) {
+        return json(res, 400, { error: 'Next-episode preparation requires a playing episode from the same show.' });
+      }
+      const warm = !parent && !media.releaseId && !Number(media.selectionStart) && typeof media.preparedJobId === 'string'
+        ? playbackJobs.get(media.preparedJobId) : null;
+      let playbackSettings;
+      if (parent || warm?.nextPreparation) playbackSettings = await readSettings();
+      if (warm?.nextPreparation && offlineMediaKey(warm.media) === offlineMediaKey(media)) {
+        if (!playbackSettings.manualReleaseSelection && playbackSettings.autoPlayNextEpisode !== false
+            && warm.nextPreparation.scope === playbackScope(playbackSettings) && !['error', 'cancelled', 'cancelling'].includes(warm.status)) {
+          transfers.forget(takeNextPreparation(warm).parentId);
+          return json(res, warm.status === 'ready' ? 200 : 202, publicJob(warm));
+        }
+        await discardNextEpisode(warm);
+      }
+      if (parent && (playbackSettings.manualReleaseSelection || playbackSettings.autoPlayNextEpisode === false)) return json(res, 200, {});
       const records = await readOfflineRecords();
       let offline = records.get(offlineMediaKey(media));
-      let playbackSettings;
+      if (parent && offline?.status === 'ready') return json(res, 200, {});
       if (offline?.status === 'ready') {
-        playbackSettings = await readSettings();
+        playbackSettings ||= await readSettings();
         try {
           const validated = await validateOfflinePlaybackRecord(offline, playbackSettings);
           if (validated !== offline) { offline = validated; records.set(offline.key, offline); await writeOfflineRecords(); }
@@ -3052,10 +3107,22 @@ export async function handleRequest(req, res) {
       const settings = playbackSettings || await readSettings(); if (!(settings.indexerUrl && settings.indexerKey && settings.usenetHost) && !settings.torrentIndexerUrl) return json(res, 400, { error: 'Configure a Usenet provider and indexer or a torrent indexer first.' });
       const choice = media.releaseId ? manualReleases.get(media.releaseId) : undefined;
       if (media.releaseId && (!choice || choice.expires < Date.now())) return json(res, 404, { error: 'That release selection expired. Search again.' });
+      if (parent && nextEpisodeJobs.has(parent.id)) {
+        const existing = nextEpisodeJobs.get(parent.id);
+        return json(res, 202, offlineMediaKey(existing.media) === offlineMediaKey(media) ? publicJob(existing) : {});
+      }
       const job = { id: randomUUID(), media: { id: Number(media.id), type: media.type, title: media.title, year: media.year || '', poster: media.poster || '', season: media.season, episode: media.episode, episodeTitle: media.episodeTitle || '', durationHint: media.durationHint || 0 }, selectionStart: Number.isFinite(Number(media.selectionStart)) ? Math.max(0, Number(media.selectionStart)) : 0, ...(choice ? { manualRelease: choice.release } : {}), status: 'selecting', message: 'Starting…', progress: 0, created: Date.now(), diagnosticsEnabled: Boolean(settings.playbackDiagnostics), untaggedAudioTrack: Number(settings.untaggedAudioTrack) || 2, events: [] };
       jobEvent(job, 'created', 'Playback job created.'); playbackJobs.set(job.id, job);
       const cleanup = setTimeout(() => { playbackJobs.delete(job.id); clearExpiredPlaybackCache().catch(() => {}); }, 6 * 60 * 60 * 1000); cleanup.unref();
-      void preparePlayback(job, settings);
+      if (parent) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => void discardNextEpisode(job).catch(() => {}), NEXT_PREPARATION_MS);
+        timer.unref();
+        Object.defineProperty(job, 'nextPreparation', { configurable: true, value: { parentId: parent.id, scope: playbackScope(settings), controller, timer } });
+        nextEpisodeJobs.set(parent.id, job);
+        onDownloadCancel(job, () => controller.abort());
+        void prepareNextEpisode(job, { ...settings, signal: controller.signal, backgroundJob: job, nextEpisodeJob: true, foregroundNntp: nntpPool.client });
+      } else void preparePlayback(job, settings);
       return json(res, 202, publicJob(job));
     }
     const backgroundMatch = url.pathname.match(/^\/api\/play\/([\w-]+)\/background$/);
@@ -3071,6 +3138,10 @@ export async function handleRequest(req, res) {
     if (req.method === 'POST' && cancelMatch) {
       const job = playbackJobs.get(cancelMatch[1]);
       if (!job || job.offlineDownload) return json(res, 404, { error: 'Playback preparation not found.' });
+      if (job.nextPreparation) {
+        await discardNextEpisode(job);
+        return json(res, 200, { cancelled: true });
+      }
       cancelDownloadJob(job);
       for (const entry of hlsSessions.values()) if (entry.jobId === job.id) await entry.session.close();
       return json(res, 200, { cancelled: Boolean(job.cancelled) });
