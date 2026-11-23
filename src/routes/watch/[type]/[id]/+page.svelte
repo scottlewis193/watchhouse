@@ -8,7 +8,7 @@
   import { goto, replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api';
-  import { audioPlaybackHealth, bufferedPlaybackRanges, bufferedRecoveryTarget, canAttemptCreditFrameSample, canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldSampleForCredits, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
+  import { audioPlaybackHealth, bufferedPlaybackRanges, bufferedRecoveryTarget, canAttemptCreditFrameSample, canSavePlaybackProgress, canUseFallback, createPlaybackRequestGuard, creditDetectionStatus, episodePlaybackMedia, firstUnwatchedEpisode, hasGrowingStreamDuration, playbackPollDelay, playbackPresentation, playbackTimeline, progressDuration, resumePosition, resumeStreamUrl, shouldContinuePlayback, shouldMarkWatched, shouldShowUpNext, streamInterruptionAction, upNextCountdown, videoPlaybackStats } from '$lib/playback-controls.js';
   import { analyzeCreditFrame, updateCreditEvidence } from '$lib/credit-detection.js';
   import { resolvedMediaDuration } from '$lib/playback-controls.js';
   import BufferedSeekBar from '$lib/BufferedSeekBar.svelte';
@@ -426,7 +426,7 @@
   function warmNextEpisode(timeline) {
     if (nextPreparation || !autoPlayNext || !playing || offlineMode || connectionLost || manualReleaseSelection
         || playback?.status !== 'ready' || !playback.id || downloaded(nextMedia).available || timeline.duration <= 0
-        || (timeline.duration - timeline.position > 120 && !(smartAutoplay && shouldSampleForCredits(timeline.position, timeline.duration)))) return;
+        || timeline.duration - timeline.position > 5 * 60) return;
     nextPreparation = {
       key: itemKey(nextMedia),
       job: api.post('/api/play', { ...nextMedia, nextFor: playback.id }).catch(() => null)

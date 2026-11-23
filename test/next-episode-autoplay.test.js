@@ -43,7 +43,7 @@ test('an elapsed credits countdown starts the next episode through foreground pl
   assert.deepEqual(state.starts, [[state.nextMedia, false, true]]);
 });
 
-test('autoplay requests preparation while the current episode is still playing', async () => {
+test('autoplay starts preparing the next episode with five minutes left', async () => {
   const { state } = episodeState('Episode ending');
   const candidate = state.nextMedia;
   const requests = [];
@@ -51,16 +51,17 @@ test('autoplay requests preparation while the current episode is still playing',
     nextMedia: undefined, nextPreparation: null, playback: { id: 'current', status: 'ready' },
     playing: true, offlineMode: false, connectionLost: false, manualReleaseSelection: false,
     playbackRequests: { isCurrent: () => true },
-    smartAutoplay: false, downloaded: () => ({ available: false }),
+    downloaded: () => ({ available: false }),
     itemKey: item => `${item.season}:${item.episode}`,
     adjacentEpisodeMedia: async () => candidate,
     api: { post: async (url, body) => { requests.push([url, body.nextFor, body.episode]); return { id: 'warm' }; } }
   });
   await state.loadNextEpisode(state.currentMedia, 1);
-  state.warmNextEpisode({ position: 500, duration: 1100 });
-  assert.deepEqual(requests, [], 'do not warm long before the handoff');
-  state.warmNextEpisode({ position: 1000, duration: 1100 });
-  state.warmNextEpisode({ position: 1001, duration: 1100 });
+  state.warmNextEpisode({ position: 799, duration: 1100 });
+  assert.deepEqual(requests, [], 'do not warm more than five minutes before the handoff');
+  state.warmNextEpisode({ position: 800, duration: 1100 });
+  assert.equal(requests.length, 1, 'warm at the five-minute boundary');
+  state.warmNextEpisode({ position: 801, duration: 1100 });
   assert.deepEqual(requests, [['/api/play', 'current', 2]]);
 });
 

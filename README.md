@@ -8,8 +8,8 @@ edge, with retry controls on failures; Continue watching remains your saved list
 
 Browsing and hovering over titles do not search the indexer. With **Auto-play
 next episode** enabled, Watchhouse starts preparing only the next episode in
-the final two minutes of playback, or when Smart Autoplay starts checking for
-credits. This can fetch an NZB or contact torrent peers before the handoff.
+the final five minutes of playback. This can fetch an NZB or contact torrent
+peers before the handoff.
 Usenet preparation yields to the current stream when its buffer runs low.
 Cancelling Up Next or leaving the player stops unused preparation. If preparation
 has not finished, the handoff continues the same job rather than starting over.
