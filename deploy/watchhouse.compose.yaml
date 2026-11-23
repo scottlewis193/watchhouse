@@ -28,7 +28,7 @@ services:
       com.centurylinklabs.watchtower.enable: "false"
 
   watchhouse:
-    image: scottlewis193/watchhouse:sha-206487ac548f6790637dbc292401fc307898d9fa
+    image: scottlewis193/watchhouse:sha-688ac7bc040085c1b3e6627be3b37841f1266632
     pull_policy: missing
     platform: linux/amd64
     restart: unless-stopped
